@@ -1,0 +1,14 @@
+[Unit]
+Description=Delta command center
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=delta
+WorkingDirectory=/opt/delta
+ExecStart=/opt/delta/delta-cc -addr 127.0.0.1:8080
+Restart=always
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target
