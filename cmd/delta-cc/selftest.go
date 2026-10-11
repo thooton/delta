@@ -30,7 +30,7 @@ func selfTest() error {
 	const token = "delta_selftest"
 	hash := sha256.Sum256([]byte(token))
 	u := &updater{restart: make(chan struct{}, 1)}
-	ts := httptest.NewServer(newHandler(hash[:], filesDir, 1<<20, u))
+	ts := httptest.NewServer(newHandler(hash[:], filesDir, 1<<20, u, nil))
 	defer ts.Close()
 
 	call := func(method, path, tok string, body []byte) (int, []byte, error) {
@@ -79,6 +79,8 @@ func selfTest() error {
 		{"path traversal is rejected", 400, "PUT", "/files/..%2Fescape", token, content},
 		{"update without a URL is rejected", 400, "POST", "/update", token, []byte("{}")},
 		{"missing file download", 404, "GET", "/files/missing", token, nil},
+		{"canvas relay requires the token", 401, "GET", "/canvas/api/v1/users/self", "", nil},
+		{"unconfigured canvas relay says so", 503, "GET", "/canvas/api/v1/users/self", token, nil},
 	}
 	for _, s := range steps {
 		if _, err := expect(s.desc, s.want, s.method, s.path, s.tok, s.body); err != nil {
@@ -118,5 +120,5 @@ func selfTest() error {
 	if _, err := os.Stat(filepath.Join(dir, "escape")); err == nil {
 		return fmt.Errorf("path traversal wrote outside the files directory")
 	}
-	return nil
+	return canvasSelfTest(dir)
 }

@@ -3,7 +3,7 @@
 //
 // Usage:
 //
-//	delta-cc [-data DIR] [-addr ADDR] [-max-upload BYTES]   run the server
+//	delta-cc [-data DIR] [-addr ADDR] [-max-upload BYTES] [canvas flags]   run the server
 //	delta-cc gen-token [-data DIR]                          create/rotate the auth token
 //	delta-cc version                                        print the build version
 //	delta-cc test                                           run a self-test
@@ -73,6 +73,13 @@ Usage:
                                 an update will install it.
 
 Defaults: -data ./data  -addr :8080  -max-upload 1073741824 (1 GiB)
+
+Canvas relay (see canvas.go):
+  -canvas-url URL            Canvas origin (default https://canvas.asu.edu;
+                             empty disables the relay)
+  -canvas-cookie-service URL canvas-cookie service on this machine
+                             (default http://127.0.0.1:4782)
+  -canvas-cookie-token FILE  its API token (default /etc/canvas-cookie/api-token)
 `)
 }
 
@@ -105,7 +112,15 @@ func serve(args []string) {
 	dataDir := fs.String("data", "data", "data directory")
 	addr := fs.String("addr", ":8080", "listen address")
 	maxUpload := fs.Int64("max-upload", 1<<30, "maximum upload size in bytes")
+	canvasURL := fs.String("canvas-url", "https://canvas.asu.edu", "Canvas origin; empty disables the Canvas relay")
+	cookieService := fs.String("canvas-cookie-service", "http://127.0.0.1:4782", "canvas-cookie service URL")
+	cookieToken := fs.String("canvas-cookie-token", "/etc/canvas-cookie/api-token", "canvas-cookie service API token file")
 	fs.Parse(args)
+
+	canvas, err := newCanvasProxy(*canvasURL, *cookieService, *cookieToken, *maxUpload)
+	if err != nil {
+		log.Fatal(err)
+	}
 
 	raw, err := os.ReadFile(filepath.Join(*dataDir, tokenHashFile))
 	if err != nil {
@@ -124,7 +139,7 @@ func serve(args []string) {
 	u := &updater{restart: make(chan struct{}, 1)}
 	srv := &http.Server{
 		Addr:              *addr,
-		Handler:           logRequests(newHandler(tokenHash, filesDir, *maxUpload, u)),
+		Handler:           logRequests(newHandler(tokenHash, filesDir, *maxUpload, u, canvas)),
 		ReadHeaderTimeout: 10 * time.Second,
 	}
 	errc := make(chan error, 1)
@@ -145,7 +160,8 @@ func serve(args []string) {
 }
 
 // newHandler builds the authenticated API. It is shared by serve and selfTest.
-func newHandler(tokenHash []byte, filesDir string, maxUpload int64, u *updater) http.Handler {
+// A nil canvas disables the Canvas relay.
+func newHandler(tokenHash []byte, filesDir string, maxUpload int64, u *updater, canvas *canvasProxy) http.Handler {
 	s := &server{filesDir: filesDir, maxUpload: maxUpload}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /auth", func(w http.ResponseWriter, r *http.Request) {
@@ -159,6 +175,11 @@ func newHandler(tokenHash []byte, filesDir string, maxUpload int64, u *updater) 
 	mux.HandleFunc("GET /files/{name}", s.getFile)
 	mux.HandleFunc("PUT /files/{name}", s.putFile)
 	mux.HandleFunc("DELETE /files/{name}", s.deleteFile)
+	if canvas != nil {
+		canvas.register(mux)
+	} else {
+		registerCanvasDisabled(mux)
+	}
 	return requireAuth(tokenHash, mux)
 }
 
