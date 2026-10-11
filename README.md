@@ -6,7 +6,7 @@ This repository holds the Delta command center and the Delta CLI.
 
 Delta runs in three places:
 
-1. **Phone (Sonim XP3).** The user carries a Sonim XP3 flip phone running the Delta app (sold separately), which talks to the command center.
+1. **Phone (Sonim XP3).** The user carries a Sonim XP3 flip phone running the Delta app, which lives in [thooton/sonim](https://github.com/thooton/sonim) under `delta/`. It has three tabs: **Chats** lists the user's Claude Code cloud sessions, **Session** is the conversation with one of them, and **Files** shows everything on the command center, where the user can download it, install it (APKs) or delete it.
 2. **Command center (VPS).** A server that runs around the clock. It handles authentication and relays between the phone and everything else, including external services such as Canvas. It updates itself only when an agent tells it to.
 3. **CLI (agent).** The tool an agent uses to send things to the command center.
 
@@ -14,7 +14,7 @@ A typical job looks like this. One of the apps on the phone has a bug, so the us
 
 If the problem is in Delta itself, the agent fixes it here instead. Once the fix lands on `master` and GitHub Actions has built it, the agent tells the command center to update to the new binary.
 
-The agent is never told to clone this repository, since that would only clutter its context. Instead, it is told to download the CLI binary and run `delta help`, which explains everything it needs to know to help the user.
+The agent is never told to clone this repository, since that would only clutter its context. Instead, the first message of every session started from the app opens with a short `<delta-setup>` block (written by `Setup.wrap` in the app; the phone hides it again). It tells the agent to download the CLI binary, run `delta set-auth` with the command center's URL and token, and read `delta help`, which explains everything it needs to know to help the user. So `delta help` is where anything an agent should know about the phone belongs.
 
 ## Layout
 
@@ -36,6 +36,10 @@ delta-cc gen-token
 This prints the token once and stores only its SHA-256 hash, in `data/token.sha256`. Running the command again replaces the token; restart `delta-cc` afterwards so it takes effect. Every request to the command center must include the header `Authorization: Bearer <token>`.
 
 The Delta app stores the token and includes it, along with the command center's URL, in the prompt it sends to the agent. The agent runs `delta set-auth <url> <token>`, which checks the token against the server and saves both values to `~/.config/delta/config.json` for later commands.
+
+The app gets the URL and token at build time, from the same `~/.config/delta/config.json`. So running `delta set-auth` on the machine that builds the APK is enough (`delta-center.json` beside `sonim/delta/android`, or `-Pdelta.center=<file>`, take precedence). Without one, the user can enter them from the Files tab's menu. The app only connects to an `https://` command center.
+
+Two things follow from the token travelling in the first message. It stays visible in the session on claude.ai/code. And the cloud environment's network must allow the command center's host: the app adds it when it has to create the account's first cloud environment, but an existing environment needs it added by hand.
 
 ## CLI
 
