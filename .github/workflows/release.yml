@@ -1,0 +1,51 @@
+# On every push to master: build the CLI and the command center and publish
+# them to the "latest" release. Nothing is deployed from here; the command
+# center is updated only when an agent runs `delta update-cc <binary-url>`.
+name: build
+
+on:
+  push:
+    branches: [master]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - run: go vet ./...
+      - name: Build
+        env:
+          CGO_ENABLED: "0"
+        run: |
+          mkdir -p dist
+          for target in linux/amd64 linux/arm64 darwin/amd64 darwin/arm64; do
+            GOOS=${target%/*} GOARCH=${target#*/} \
+              go build -trimpath -ldflags="-s -w" -o "dist/delta-${target%/*}-${target#*/}" ./cmd/delta
+          done
+          for target in linux/amd64 linux/arm64; do
+            GOOS=${target%/*} GOARCH=${target#*/} \
+              go build -trimpath -ldflags="-s -w" -o "dist/delta-cc-${target%/*}-${target#*/}" ./cmd/delta-cc
+          done
+      - name: Self-test delta-cc
+        run: ./dist/delta-cc-linux-amd64 test
+      - name: Publish to the "latest" release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          git tag -f latest
+          git push -f origin latest
+          gh release view latest >/dev/null 2>&1 || \
+            gh release create latest --title "Delta (latest)" \
+              --notes "Built automatically from master. Agents download the \`delta\` CLI for their platform and run \`delta help\`."
+          gh release upload latest dist/* --clobber
