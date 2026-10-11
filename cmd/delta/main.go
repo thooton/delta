@@ -21,34 +21,59 @@ const helpText = `delta: the CLI for the Delta command center
 
 WHAT THIS IS
   The user carries a Sonim XP3 flip phone running the Delta app. You (the
-  agent) were started from that app. Delta has three parts:
+  agent) are a Claude Code cloud session started from that app. Delta has
+  three parts:
 
-    PHONE           The Delta app on the user's phone. It shows the user a
-                    files list and lets them download, delete, and install
-                    files (for example APKs).
+    PHONE           The Delta app on the user's phone. It has three tabs:
+                      Chats    the user's cloud sessions, this one included
+                      Session  this conversation
+                      Files    every file on the command center; the user
+                               downloads, installs (APKs) or deletes them
     COMMAND CENTER  A server on a VPS that is always running. It relays
                     between the phone and everything else and requires an
                     auth token on every request.
     CLI             This program. You use it to send things to the command
                     center, where the user can get them from their phone.
 
+  The user reads your replies on a 240x320 screen with a keypad, so keep
+  them short and plain. They cannot easily copy long output or type long
+  answers.
+
   Relevant repositories (you have read/write access):
-    https://github.com/thooton/sonim   The apps installed on the phone.
+    https://github.com/thooton/sonim   The apps installed on the phone, one
+                                       directory each. The Delta app itself
+                                       is sonim/delta.
     https://github.com/thooton/delta   Delta itself (command center + CLI).
 
   A typical job: the user reports a bug in a phone app. Clone the sonim
-  repo, fix it, commit and push, build the APK, then run
-  "delta push path/to/app.apk". The APK appears in the files list on the
-  user's phone, where they choose whether to download and install it.
+  repo, fix it, commit and push, build the APK, then push it named after
+  the app, for example:
+
+    delta push list/android/app/build/outputs/apk/debug/app-debug.apk list.apk
+
+  Every app builds an "app-debug.apk", so always give a name: pushing the
+  same name again replaces the old file. The APK appears in the Files tab on
+  the user's phone, where they choose whether to download and install it.
+  Installing it updates the app in place and keeps its data, as long as it
+  was built with the shared key in sonim/signing (the Gradle builds use it
+  already). Then tell the user, briefly, what to install.
+
+  If the bug is in the Delta app, fix it in sonim/delta and push the APK
+  the same way (as delta.apk). A build made without its logins keeps the
+  ones the installed copy already has.
 
 SETUP
-  The prompt you got from the Delta app includes a command-center URL and
-  an auth token. Before any other command, run:
+  The first message you got from the Delta app includes a command-center
+  URL and an auth token. Before any other command, run:
 
     delta set-auth <command-center-url> <token>
 
   This checks the token with the server and saves it to the config file
-  (see FILES below), so later commands don't need it again.
+  (see FILES below), so later commands don't need it again. The token is a
+  password: never repeat it to the user or commit it anywhere. If set-auth
+  cannot reach the server at all, the sandbox's network is probably
+  blocking the command center's host; tell the user it needs adding to the
+  cloud environment's allowed hosts.
 
 COMMANDS
   delta help                         Show this text.
