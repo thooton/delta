@@ -56,6 +56,9 @@ COMMANDS
   delta push <path> [name]           Upload a file. It is stored as [name]
                                      (default: the file's base name). A file
                                      with the same name is replaced.
+  delta pull <name> [dest]           Download a file from the command center
+                                     (for example a photo the user sent from
+                                     the phone).
   delta list                         List the files on the command center.
   delta delete <name>                Delete a file from the command center.
   delta update-cc <binary-url>       Make the command center download a new
@@ -63,7 +66,17 @@ COMMANDS
                                      replace itself, and restart. See
                                      UPDATING THE COMMAND CENTER below.
 
-  Aliases: "ls" for list, "rm" for delete.
+  delta canvas <command> ...         Use the user's Canvas: courses, due
+                                     dates, assignments, attachments,
+                                     submissions, discussions, quizzes,
+                                     grades, messages. Run "delta canvas help".
+
+  Aliases: "ls" for list, "rm" for delete, "get" for pull.
+
+CANVAS
+  The user is a student who may not have a computer, so you are their way
+  into Canvas. "delta canvas help" explains everything. Read it before
+  doing anything with Canvas.
 
 UPDATING THE COMMAND CENTER
   The command center never updates on its own. To ship a fix to it:
@@ -125,6 +138,17 @@ func run(args []string) error {
 			name = args[1]
 		}
 		return push(args[0], name)
+	case "pull", "get":
+		if len(args) < 1 || len(args) > 2 {
+			return errors.New("usage: delta pull <name> [dest]")
+		}
+		dest := args[0]
+		if len(args) == 2 {
+			dest = args[1]
+		}
+		return pull(args[0], dest)
+	case "canvas":
+		return runCanvas(args)
 	case "list", "ls":
 		if len(args) != 0 {
 			return errors.New("usage: delta list")
@@ -234,6 +258,49 @@ func push(path, name string) error {
 		verb = "Replaced"
 	}
 	fmt.Printf("%s %s (%s).\n", verb, res.Name, humanSize(res.Size))
+	return nil
+}
+
+func pull(name, dest string) error {
+	c, err := loadConfig()
+	if err != nil {
+		return err
+	}
+	if info, err := os.Stat(dest); err == nil && info.IsDir() {
+		dest = filepath.Join(dest, filepath.Base(name))
+	}
+	req, err := http.NewRequest(http.MethodGet, c.Server+"/files/"+url.PathEscape(name), nil)
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Authorization", "Bearer "+c.Token)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		data, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+		var e struct {
+			Error string `json:"error"`
+		}
+		if json.Unmarshal(data, &e) == nil && e.Error != "" {
+			return fmt.Errorf("server: %s (HTTP %d)", e.Error, resp.StatusCode)
+		}
+		return fmt.Errorf("server returned HTTP %d", resp.StatusCode)
+	}
+	f, err := os.Create(dest)
+	if err != nil {
+		return err
+	}
+	n, err := io.Copy(f, resp.Body)
+	if cerr := f.Close(); err == nil {
+		err = cerr
+	}
+	if err != nil {
+		return err
+	}
+	fmt.Printf("Saved %s (%s).\n", dest, humanSize(n))
 	return nil
 }
 

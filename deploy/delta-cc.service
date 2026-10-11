@@ -5,6 +5,8 @@ Wants=network-online.target
 
 [Service]
 User=delta
+# Lets the Canvas relay read the canvas-cookie service's API token.
+SupplementaryGroups=canvas-cookie
 WorkingDirectory=/opt/delta
 ExecStart=/opt/delta/delta-cc -addr 127.0.0.1:8080
 Restart=always

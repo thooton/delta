@@ -18,8 +18,8 @@ The agent is never told to clone this repository, since that would only clutter 
 
 ## Layout
 
-- `cmd/delta-cc`: the command center, an HTTP server.
-- `cmd/delta`: the CLI. Its `delta help` text is written for the agent.
+- `cmd/delta-cc`: the command center, an HTTP server. `canvas.go` is the Canvas relay.
+- `cmd/delta`: the CLI. Its `delta help` and `delta canvas help` text is written for the agent. The `canvas*.go` files hold the Canvas commands, and `markdown.go` converts Markdown to HTML.
 - `.github/workflows/release.yml`: on every push to `master`, builds both programs and publishes them to the [`latest` release](https://github.com/thooton/delta/releases/tag/latest). It does not deploy anything.
 - `deploy/delta-cc.service`: the systemd unit for the VPS.
 
@@ -42,9 +42,11 @@ The Delta app stores the token and includes it, along with the command center's 
 ```
 delta set-auth <url> <token>   verify and save credentials
 delta push <path> [name]       upload a file, replacing any file with the same name
+delta pull <name> [dest]       download a file (e.g. a photo sent from the phone)
 delta list                     list files
 delta delete <name>            delete a file
 delta update-cc <binary-url>   update the command center to a new binary
+delta canvas <command> ...     use the user's Canvas (see below)
 ```
 
 Agents download the CLI from `https://github.com/thooton/delta/releases/download/latest/delta-linux-amd64`. Builds for `linux-arm64`, `darwin-amd64`, and `darwin-arm64` are published alongside it.
@@ -62,8 +64,37 @@ Every endpoint requires the bearer token.
 | DELETE | `/files/{name}` | Deletes a file. |
 | GET | `/version` | Returns the running build's git commit. |
 | POST | `/update` | Takes `{"url": "..."}`, installs the binary at that URL, and restarts. |
+| GET | `/canvas-status` | Canvas base URL and the cookie service's health. |
+| any | `/canvas/{path}` | Relayed to `<canvas-url>/{path}` with the user's Canvas session. |
+| POST | `/canvas-upload/{path}` | Canvas file upload. The body is the file, `{path}` is the Canvas preflight endpoint, and the query carries `name`, `content_type` and any other preflight parameters. Responds with the Canvas file object. |
 
 Running `delta-cc` with no arguments starts the server. By default it listens on `:8080`, stores data in `./data`, and accepts uploads up to 1 GiB; the `-addr`, `-data`, and `-max-upload` flags change these. The server speaks plain HTTP, so run it behind a reverse proxy that handles TLS (Caddy, for example). Otherwise the token travels unencrypted.
+
+## Canvas
+
+The agent has full student access to Canvas through `delta canvas`. That covers courses, to-dos, assignments and their attachments, file and text submissions, submission comments, peer reviews, discussions, announcements, modules, pages, files, grades, Classic Quizzes, and the Canvas inbox, plus a raw `delta canvas api` for anything else. The user may not have a laptop, so the agent is their way into Canvas. A typical job: the user photographs handwritten work and sends it to the agent. The agent reads the assignment's requirements, transcribes the photo into the format the assignment accepts, and runs `delta canvas submit`. `delta canvas help` documents every command for the agent.
+
+**How it authenticates.** The command center runs on the same machine as the canvas-cookie service from the old `canvas` project. That service keeps a logged-in Canvas browser session alive and serves its `Cookie` header on `127.0.0.1:4782` to clients holding its API token. The relay in `cmd/delta-cc/canvas.go` does the following:
+
+- Fetches that cookie and caches it for 5 minutes.
+- Attaches it to the agent's requests, along with the `X-CSRF-Token` that Canvas requires on writes made with a session.
+- When Canvas reports the session as unauthenticated, fetches a fresh cookie and retries once.
+- Follows redirects for file downloads, but sends the session only to the Canvas host. Signed storage URLs on other hosts never see it.
+- Strips `Set-Cookie` from responses, because the cookie service is the only thing that renews the session.
+
+The agent never sees the cookie, but anyone with the delta token can act as the student in Canvas.
+
+The relay is configured with `-canvas-url` (default `https://canvas.asu.edu`; empty disables it), `-canvas-cookie-service` (default `http://127.0.0.1:4782`) and `-canvas-cookie-token` (default `/etc/canvas-cookie/api-token`). The token file is readable only by root and the `canvas-cookie` group, so the systemd unit gives `delta-cc` `SupplementaryGroups=canvas-cookie`.
+
+**One-time setup on an existing VPS.** `update-cc` keeps the process's groups, so it can't pick up the new group itself. After installing the canvas-cookie service, run:
+
+```
+sudo cp deploy/delta-cc.service /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl restart delta-cc
+```
+
+If the Canvas session expires (for example after a password change or an ASU logout), `delta canvas status` reports it as not ready. The cookie service then needs a fresh seed from a browser login; see the canvas-cookie README.
 
 ## Updating the command center
 
@@ -83,7 +114,7 @@ Anyone holding the token can make the command center run any binary they like, s
 
 ## Setting up the VPS
 
-This only needs to be done once.
+This only needs to be done once. Install the canvas-cookie service first (see its README): the unit file below joins its `canvas-cookie` group, and systemd won't start `delta-cc` if that group doesn't exist.
 
 ```
 sudo useradd --system --home /opt/delta --create-home delta
