@@ -100,6 +100,9 @@ COMMANDS
                                      discographies for the user. Run
                                      "delta music help".
 
+  delta books <command> ...          Find and download ebooks for the user.
+                                     Run "delta books help".
+
   Aliases: "ls" for list, "rm" for delete, "get" for pull.
 
 CANVAS
@@ -111,6 +114,10 @@ MUSIC
   When the user wants music, "delta music" finds and downloads it to this
   machine; then "delta push" each file so it shows up on the phone. Read
   "delta music help" first.
+
+BOOKS
+  When the user wants a book, "delta books search" finds it and "delta books
+  download --push" puts it on the phone. Read "delta books help" first.
 
 UPDATING THE COMMAND CENTER
   The command center never updates on its own. To ship a fix to it:
@@ -133,7 +140,8 @@ UPDATING THE COMMAND CENTER
 
 FILES
   Config: $XDG_CONFIG_HOME/delta/config.json (usually ~/.config/delta/).
-  The music login is kept beside it, in music-login.json.
+  The music login is kept beside it, in music-login.json, and the books
+  session and last search in books-state.json.
   You can set DELTA_SERVER and DELTA_TOKEN in the environment instead.
 `
 
@@ -186,6 +194,8 @@ func run(args []string) error {
 		return runCanvas(args)
 	case "music":
 		return runMusic(args)
+	case "books":
+		return runBooks(args)
 	case "list", "ls":
 		if len(args) != 0 {
 			return errors.New("usage: delta list")
