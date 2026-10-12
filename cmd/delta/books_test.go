@@ -14,6 +14,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"unicode/utf8"
 )
 
 // fakeBooks plays both the command center and the book source.
@@ -147,7 +148,7 @@ func TestBooksEndToEnd(t *testing.T) {
 	if f.logins != 2 {
 		t.Errorf("want one new login after expiry, have %d logins", f.logins)
 	}
-	name := "TolkienJRR_TheHobbit_1937_engli_7.epub"
+	name := "J.R.R. Tolkien - The Hobbit.epub"
 	if data, err := os.ReadFile(filepath.Join(dir, name)); err != nil || string(data) != string(f.content) {
 		t.Errorf("downloaded file: %q, %v", data, err)
 	}
@@ -156,6 +157,21 @@ func TestBooksEndToEnd(t *testing.T) {
 	}
 	if entries, _ := os.ReadDir(dir); len(entries) != 1 {
 		t.Errorf("leftover files: %v", entries)
+	}
+
+	// The same book again keeps the file; a different one gets a new name.
+	if err := runBooks([]string{"download", "-o", dir, "1"}); err != nil {
+		t.Fatal(err)
+	}
+	if entries, _ := os.ReadDir(dir); len(entries) != 1 {
+		t.Errorf("same book saved twice: %v", entries)
+	}
+	f.content = []byte("another edition")
+	if err := runBooks([]string{"download", "-o", dir, "1"}); err != nil {
+		t.Fatal(err)
+	}
+	if data, err := os.ReadFile(filepath.Join(dir, "J.R.R. Tolkien - The Hobbit (2).epub")); err != nil || string(data) != "another edition" {
+		t.Errorf("second edition: %q, %v", data, err)
 	}
 	if err := runBooks([]string{"download", "-o", dir, "3"}); err == nil {
 		t.Error("out-of-range result number accepted")
@@ -169,21 +185,23 @@ func TestBookFilename(t *testing.T) {
 	cases := []struct {
 		b    bookInfo
 		ext  string
+		n    int
 		want string
 	}{
-		{bookInfo{ID: "7", Title: "The Hobbit", Author: "J.R.R. Tolkien", Year: "1937", Language: "english"}, "EPUB", "TolkienJRR_TheHobbit_1937_engli_7.epub"},
-		{bookInfo{ID: "8", Title: "Les Misérables", Author: "Hugo, Victor", Year: "0"}, ".pdf", "HugoVictor_LesMiserables_8.pdf"},
-		{bookInfo{Title: "", Author: ""}, "exe", "UnknownAuthor_UntitledBook_NoID"},
-		{bookInfo{ID: "../9", Title: "x/y", Language: "../.."}, "txt", "UnknownAuthor_XY_NoID.txt"},
+		{bookInfo{ID: "7", Title: "The Hobbit", Author: "J.R.R. Tolkien", Year: "1937", Language: "english"}, "EPUB", 1, "J.R.R. Tolkien - The Hobbit.epub"},
+		{bookInfo{Title: "Les Misérables", Author: "Victor Hugo"}, ".pdf", 2, "Victor Hugo - Les Misérables (2).pdf"},
+		{bookInfo{Title: "Sapiens: A Brief  History", Author: " "}, "epub", 1, "Sapiens - A Brief History.epub"},
+		{bookInfo{Title: "", Author: ""}, "exe", 1, "Untitled"},
+		{bookInfo{Title: "../x/y?", Author: "..."}, "txt", 1, "x y.txt"},
 	}
 	for _, c := range cases {
-		if got := bookFilename(c.b, c.ext); got != c.want {
-			t.Errorf("bookFilename(%+v) = %q, want %q", c.b, got, c.want)
+		if got := bookFilename(c.b, c.ext, c.n); got != c.want {
+			t.Errorf("bookFilename(%+v, %d) = %q, want %q", c.b, c.n, got, c.want)
 		}
 	}
-	long := bookInfo{ID: "1", Title: flexString(strings.Repeat("word ", 60)), Author: flexString(strings.Repeat("name ", 30))}
-	if got := bookFilename(long, "epub"); len(got) > 205 {
-		t.Errorf("long name not shortened: %d", len(got))
+	long := bookInfo{Title: flexString(strings.Repeat("wörd ", 60)), Author: flexString(strings.Repeat("name ", 30))}
+	if got := bookFilename(long, "epub", 99); len(got) > 255 || !utf8.ValidString(got) {
+		t.Errorf("long name not shortened cleanly: %d bytes", len(got))
 	}
 }
 
