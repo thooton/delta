@@ -652,3 +652,12 @@ func bookFilename(b bookInfo, ext string, n int) string {
 	}
 	return name
 }
+
+func expandHome(p string) string {
+	if p == "~" || strings.HasPrefix(p, "~/") {
+		if home, err := os.UserHomeDir(); err == nil {
+			return filepath.Join(home, p[1:])
+		}
+	}
+	return p
+}

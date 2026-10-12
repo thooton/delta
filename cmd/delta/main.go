@@ -406,6 +406,17 @@ func updateCC(binaryURL string) error {
 // do sends an authenticated request and returns the response body, turning
 // non-2xx responses into errors. An optional content length may follow body.
 func do(c config, method, path string, body io.Reader, contentLength ...int64) ([]byte, error) {
+	resp, err := stream(c, method, path, body, contentLength...)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	return io.ReadAll(resp.Body)
+}
+
+// stream is do for responses read as they arrive: it returns the response
+// for the caller to read and close.
+func stream(c config, method, path string, body io.Reader, contentLength ...int64) (*http.Response, error) {
 	req, err := http.NewRequest(method, c.Server+path, body)
 	if err != nil {
 		return nil, err
@@ -418,12 +429,9 @@ func do(c config, method, path string, body io.Reader, contentLength ...int64) (
 	if err != nil {
 		return nil, err
 	}
-	defer resp.Body.Close()
-	data, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return nil, err
-	}
 	if resp.StatusCode/100 != 2 {
+		defer resp.Body.Close()
+		data, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 		var e struct {
 			Error string `json:"error"`
 		}
@@ -432,7 +440,7 @@ func do(c config, method, path string, body io.Reader, contentLength ...int64) (
 		}
 		return nil, fmt.Errorf("server returned HTTP %d", resp.StatusCode)
 	}
-	return data, nil
+	return resp, nil
 }
 
 func humanSize(n int64) string {

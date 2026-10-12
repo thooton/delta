@@ -18,14 +18,14 @@ The agent is never told to clone this repository, since that would only clutter 
 
 ## Layout
 
-- `cmd/delta-cc`: the command center, an HTTP server. `canvas.go` is the Canvas relay.
+- `cmd/delta-cc`: the command center, an HTTP server. `canvas.go` is the Canvas relay, and `music_run.go` runs music downloads.
 - `cmd/delta`: the CLI. Its `delta help`, `delta canvas help`, `delta music help` and `delta books help` text is written for the agent. The `canvas*.go` files hold the Canvas commands, `music*.go` the music commands, `books*.go` the book commands, and `markdown.go` converts Markdown to HTML.
 - `scripts/install.sh`: the setup script published to the release as `install.sh`.
-- `scripts/fetch-music-engine.sh`: puts the music engine into `cmd/delta/music-engine/` for the CLI to embed (see [Music](#music)).
+- `scripts/fetch-music-engine.sh`: puts the music engine into `cmd/delta-cc/music-engine/` for the command center to embed (see [Music](#music)).
 - `.github/workflows/release.yml`: on every push to `master`, builds both programs and publishes them to the [`latest` release](https://github.com/thooton/delta/releases/tag/latest). It does not deploy anything.
 - `deploy/delta-cc.service`: the systemd unit for the VPS.
 
-Both programs use only the Go standard library. The CLI also embeds a prebuilt music engine (see [Music](#music)).
+Both programs use only the Go standard library. The command center also embeds a prebuilt music engine (see [Music](#music)).
 
 ## Authentication
 
@@ -57,6 +57,7 @@ delta set-personal-access-token <tok|->  check and save a new GitHub token
 delta update-cc <binary-url>   update the command center to a new binary
 delta canvas <command> ...     use the user's Canvas (see below)
 delta music song|album <name>  download a song or an album (see below)
+delta music re-login           give the command center a new music account
 delta books <command> ...      download ebooks (see below)
 ```
 
@@ -87,6 +88,10 @@ Every endpoint requires the bearer token.
 | GET | `/music-config` | The music downloading configuration, as text. `X-Delta-Default: true` while it is the built-in default. |
 | PUT | `/music-config` | Replaces it with the request body. Rejects anything the engine can't parse and any login. |
 | DELETE | `/music-config` | Restores the default. |
+| POST | `/music` | Takes `{"mode": "song"\|"album", "query": "..."}` and runs the download. Streams JSON lines: `{"stdout": ...}` and `{"stderr": ...}` log lines, `{}` keepalives, and finally `{"done": {"error", "job", "files"}}`. |
+| GET | `/music-jobs/{id}` | A finished download's files, as a tar. |
+| DELETE | `/music-jobs/{id}` | Removes a finished download. |
+| POST | `/music-login` | Replaces the music account with a newly made-up one. |
 | GET | `/books-login` | The book account, as `{"email", "password"}`. 404 while none is set. |
 | PUT | `/books-login` | Replaces it. Needs an email address and a password. |
 | DELETE | `/books-login` | Removes it. |
@@ -123,15 +128,17 @@ If the Canvas session expires (for example after a password change or an ASU log
 
 ## Music
 
-`delta music` lets the agent download a song (`delta music song "<artist> - <title>"`) or an album (`delta music album "<artist> - <album>"`) from the Soulseek network into `~/Music`. That is the whole interface: no other commands and no options. An earlier version passed on most of the engine's options and modes, plus search, playlists and config editing, and agents got lost in them, so now the CLI makes every choice. It searches by name and downloads the best match. If nothing was downloaded it tries once more with a broader search (`--desperate --remove-ft --remove-brackets`), and it ends by listing the files saved. `delta music help` documents it for the agent.
+`delta music` lets the agent download a song (`delta music song "<artist> - <title>"`) or an album (`delta music album "<artist> - <album>"`) from the Soulseek network into its current directory. Besides `delta music re-login` (see Logins), that is the whole interface: no other commands and no options. An earlier version passed on most of the engine's options and modes, plus search, playlists and config editing, and agents got lost in them, so now the command center makes every choice. It searches by name and downloads the best match. If nothing was downloaded it tries once more with a broader search (`--desperate --remove-ft --remove-brackets`), and the CLI ends by listing the files saved. `delta music help` documents it for the agent.
 
-**The engine.** The work is done by [sockseek](https://github.com/fiso64/sockseek), an unmodified release of which is embedded in the CLI. `scripts/fetch-music-engine.sh <goos> <goarch>` downloads the pinned release (version and SHA-256 checksums are at the top of the script) into `cmd/delta/music-engine/`, and the release workflow runs it before building each platform. A plain `go build` without it still works; `delta music` then says it isn't available. On first use the CLI unpacks the engine into the user cache directory (`~/.cache/delta/music-<hash>/`). sockseek only publishes 32-bit ARM builds for Linux, so the `linux-arm64` CLI has no music. sockseek is AGPL-3.0; its license is unpacked next to it, and its source is at the link above.
+**Where it runs.** The command center does the downloading, because agents usually run in sandboxes that can't reach Soulseek. `POST /music` downloads into a job directory, `data/music-jobs/<id>/`, and streams the engine's (filtered) log back as it goes, ending with the job's id and its files. The CLI prints the log, fetches the files as one tar (`GET /music-jobs/{id}`) into the current directory, and deletes the job. Jobs the CLI never collects are removed after 24 hours. If the CLI disconnects mid-run, the engine is stopped and the job removed.
 
-The engine is white-labeled. The agent never runs it or sees its name: the CLI runs it, closes its stdin (so nothing can wait on a prompt), and passes on its log with its name, its login and its stack traces removed. Nothing the agent sees names Soulseek or hints at file sharing. In the log, remote paths and `slsk://` links are cut down to the file or folder name. Lines other than job status lines that still mention peers, users, shares, uploads or queues are dropped, and error reasons that do become a generic "the download failed".
+**The engine.** The work is done by [sockseek](https://github.com/fiso64/sockseek), an unmodified release of which is embedded in `delta-cc`. `scripts/fetch-music-engine.sh <goos> <goarch>` downloads the pinned release (version and SHA-256 checksum are at the top of the script) into `cmd/delta-cc/music-engine/`, and the release workflow runs it before building each command center. A plain `go build` without it still works; `POST /music` then says music isn't available. On first use the command center unpacks the engine into its data directory (`data/music-engine-<hash>/`). sockseek only publishes 32-bit ARM builds for Linux, so the `linux-arm64` command center has no music. The self-test unpacks the engine and runs `--version`, so an update can't install a command center whose engine doesn't run on the VPS. sockseek is AGPL-3.0; its license is unpacked next to it, and its source is at the link above.
 
-**Configuration.** The engine's config (output directory, required and preferred formats and bitrates, file naming, and profiles such as album-only naming) is stored on the command center as `data/music.conf`, falling back to a built-in default. The CLI fetches it on every run, writes it to a private temporary file, and points the engine at it, so no local engine config is ever used. Its `output-dir` is ignored: the CLI always saves into `~/Music`. The CLI doesn't offer a way to change it; use the `/music-config` endpoints.
+The engine is white-labeled. The agent never runs it or sees its name: the command center runs it with its stdin closed (so nothing can wait on a prompt) and passes on its log with its name, its login and its stack traces removed. Nothing the agent sees names Soulseek or hints at file sharing. In the log, remote paths and `slsk://` links are cut down to the file or folder name. Lines other than job status lines that still mention peers, users, shares, uploads or queues are dropped, and error reasons that do become a generic "the download failed".
 
-**Logins.** Soulseek needs an account but registers any unknown username on first login. The config never holds one, so that agents on different machines never share an account (a second login kicks the first off). Instead each CLI instance makes up a random account on first use (16-character username, 24-character password) and keeps it in `~/.config/delta/music-login.json`. Making up a new account on every run gets the machine's IP throttled by the Soulseek server, which then never answers logins. Runs on the same machine take turns through a lock file (`music.lock`), since they share the account. If logins keep failing, a run gives up after about a minute instead of retrying forever as the engine would.
+**Configuration.** The engine's config (required and preferred formats and bitrates, file naming, and profiles such as album-only naming) is stored on the command center as `data/music.conf`, falling back to a built-in default. Each run writes it, with the login, to a private temporary file and points the engine at it. Its `output-dir` is ignored: the engine always saves into the job directory. The CLI doesn't offer a way to change it; use the `/music-config` endpoints.
+
+**Logins.** Soulseek needs an account but registers any unknown username on first login. The command center has one, made up on first use (16-character username, 24-character password) and kept in `data/music-login.json` (mode 0600); the config never holds one. It keeps the same account because making up a new one on every run gets the machine's IP throttled by the Soulseek server, which then never answers logins. `delta music re-login` (`POST /music-login`) replaces it with a new one, for when the account itself stops working; `delta music help` tells the agent to use it only after waiting and retrying fails. A second login with the same account kicks the first off, so downloads take turns: a run that arrives while another is going waits (and says so). If logins keep failing, a run gives up after about a minute instead of retrying forever as the engine would.
 
 ## GitHub access
 

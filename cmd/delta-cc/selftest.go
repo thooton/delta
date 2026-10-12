@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"crypto/sha256"
 	"encoding/json"
 	"fmt"
@@ -9,8 +10,10 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
+	"time"
 )
 
 // selfTest runs the real handler against a temporary data directory and
@@ -120,7 +123,7 @@ func selfTest() error {
 	if _, err := os.Stat(filepath.Join(dir, "escape")); err == nil {
 		return fmt.Errorf("path traversal wrote outside the files directory")
 	}
-	if err := musicSelfTest(expect, token); err != nil {
+	if err := musicSelfTest(expect, token, dir); err != nil {
 		return err
 	}
 	if err := booksSelfTest(expect, token); err != nil {
@@ -133,8 +136,58 @@ func selfTest() error {
 }
 
 // musicSelfTest checks that the music config starts as the default, can be
-// replaced and reset, and never stores a login.
-func musicSelfTest(expect func(desc string, want int, method, path, tok string, body []byte) ([]byte, error), token string) error {
+// replaced and reset, and never stores a login; that bad downloads and
+// unknown jobs are refused; that re-login replaces the account; and that the
+// bundled engine (if this build has one) runs.
+func musicSelfTest(expect func(desc string, want int, method, path, tok string, body []byte) ([]byte, error), token, dir string) error {
+	steps := []struct {
+		desc, method, path string
+		want               int
+		body               string
+	}{
+		{"music download requires the token", "POST", "/music", 401, `{"mode":"song","query":"A - B"}`},
+		{"music download with a bad mode is rejected", "POST", "/music", 400, `{"mode":"playlist","query":"A - B"}`},
+		{"music download without a query is rejected", "POST", "/music", 400, `{"mode":"song","query":" "}`},
+		{"music download of an option is rejected", "POST", "/music", 400, `{"mode":"album","query":"--help"}`},
+		{"music download that isn't JSON is rejected", "POST", "/music", 400, `song`},
+		{"unknown music job", "GET", "/music-jobs/0123456789abcdef0123456789abcdef", 404, ""},
+		{"malformed music job", "GET", "/music-jobs/not-a-job", 404, ""},
+		{"deleting an unknown music job", "DELETE", "/music-jobs/0123456789abcdef0123456789abcdef", 404, ""},
+	}
+	for _, s := range steps {
+		tok := token
+		if s.want == 401 {
+			tok = ""
+		}
+		if _, err := expect(s.desc, s.want, s.method, s.path, tok, []byte(s.body)); err != nil {
+			return err
+		}
+	}
+	loginPath := filepath.Join(dir, musicLoginFile)
+	if _, err := os.Stat(loginPath); err == nil {
+		return fmt.Errorf("music login made up before any download")
+	}
+	m := newMusicService(dir)
+	first, err := m.account(false)
+	if err != nil {
+		return fmt.Errorf("music login: %w", err)
+	}
+	if again, err := m.account(false); err != nil || again != first {
+		return fmt.Errorf("music login not kept: %+v then %+v (%v)", first, again, err)
+	}
+	if _, err := expect("music re-login", 200, "POST", "/music-login", token, nil); err != nil {
+		return err
+	}
+	if renewed, err := m.account(false); err != nil || renewed == first || len(renewed.Username) != 16 || len(renewed.Password) != 24 {
+		return fmt.Errorf("music re-login: %+v then %+v (%v)", first, renewed, err)
+	}
+	if info, err := os.Stat(loginPath); err != nil || info.Mode().Perm() != 0o600 {
+		return fmt.Errorf("music login file: %v %v", info.Mode(), err)
+	}
+	if err := musicEngineSelfTest(m); err != nil {
+		return err
+	}
+
 	if _, err := expect("music config requires the token", 401, "GET", "/music-config", "", nil); err != nil {
 		return err
 	}
@@ -166,6 +219,27 @@ func musicSelfTest(expect func(desc string, want int, method, path, tok string, 
 		return err
 	} else if string(data) != defaultMusicConfig {
 		return fmt.Errorf("music config after reset: got %q", data)
+	}
+	return nil
+}
+
+// musicEngineSelfTest unpacks the bundled engine and checks that it runs on
+// this machine and is the version it claims. Builds without an engine pass.
+func musicEngineSelfTest(m *musicService) error {
+	version, err := musicEngineFS.ReadFile("music-engine/engine.version")
+	if err != nil {
+		return nil
+	}
+	engine, err := m.engine()
+	if err != nil {
+		return fmt.Errorf("music engine: %w", err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	out, err := exec.CommandContext(ctx, engine, "--version").CombinedOutput()
+	want := strings.Fields(string(version))[0]
+	if err != nil || strings.TrimSpace(string(out)) != want {
+		return fmt.Errorf("music engine --version: got %q (%v), want %s", strings.TrimSpace(string(out)), err, want)
 	}
 	return nil
 }
