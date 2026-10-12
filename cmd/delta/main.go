@@ -46,17 +46,23 @@ WHAT THIS IS
     https://github.com/thooton/delta   Delta itself (command center + CLI).
 
   A typical job: the user reports a bug in a phone app. Clone the sonim
-  repo, fix it, commit and push, build the APK, then push it named after
-  the app, for example:
+  repo, fix it, commit and push, build the release APK, then push it named
+  after the app, for example:
 
-    delta push list/android/app/build/outputs/apk/debug/app-debug.apk list.apk
+    (cd list/android && ./gradlew :app:assembleRelease)
+    delta push list/android/app/build/outputs/apk/release/app-release.apk list.apk
 
-  Every app builds an "app-debug.apk", so always give a name: pushing the
+  Always push the release build, never the debug one: debug builds run
+  noticeably slower on the phone. A debug build is fine for checking that
+  your change compiles, but it is never what the user gets.
+
+  Every app builds an "app-release.apk", so always give a name: pushing the
   same name again replaces the old file. The APK appears in the Files tab on
   the user's phone, where they choose whether to download and install it.
-  Installing it updates the app in place and keeps its data, as long as it
-  was built with the shared key in sonim/signing (the Gradle builds use it
-  already). Then tell the user, briefly, what to install.
+  Installing it updates the app in place and keeps its data, because every
+  build is signed with the shared key in sonim/signing. Never change,
+  regenerate or bypass that key: the phone would refuse the update. Then
+  tell the user, briefly, what to install.
 
   If the bug is in the Delta app, fix it in sonim/delta and push the APK
   the same way (as delta.apk). A build made without its logins keeps the
