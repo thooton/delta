@@ -189,11 +189,11 @@ func (m *musicService) download(ctx context.Context, engine, mode, query string,
 
 	args := []string{"--config", confPath, "--input", query, "--input-type", "string", "--" + mode,
 		"--output-dir", jobDir, "--no-progress"}
-	err = runEngine(ctx, engine, tmp, args, acct.Username, out)
+	err = runEngine(ctx, engine, tmp, args, acct.Username, jobDir, out)
 	if err == errMusicFailed {
 		out.stdout("")
 		out.stdout("Nothing was downloaded; trying a broader search.")
-		err = runEngine(ctx, engine, tmp, append(args, musicBroader...), acct.Username, out)
+		err = runEngine(ctx, engine, tmp, append(args, musicBroader...), acct.Username, jobDir, out)
 	}
 	var res musicResult
 	if err != nil {
@@ -606,10 +606,11 @@ func musicLogLine(line, user string) (string, bool) {
 }
 
 // runEngine runs the engine once in dir, with its stdin closed, and sends its
-// filtered output to out. If logins keep failing it stops the engine and
+// filtered output to out, with paths in jobDir made relative to it (they mean
+// nothing to the agent, whose copies are in its own directory). If logins keep failing it stops the engine and
 // returns errMusicLogin; if the engine reports that it couldn't download
 // what it was asked for, errMusicFailed.
-func runEngine(ctx context.Context, engine, dir string, args []string, user string, out *musicStream) error {
+func runEngine(ctx context.Context, engine, dir string, args []string, user, jobDir string, out *musicStream) error {
 	cmd := exec.CommandContext(ctx, engine, args...)
 	cmd.Dir = dir
 	cmd.Env = append(os.Environ(), "NO_COLOR=1")
@@ -652,7 +653,8 @@ func runEngine(ctx context.Context, engine, dir string, args []string, user stri
 		for sc.Scan() {
 			watch(sc.Text())
 			if line, ok := musicLogLine(sc.Text(), user); ok {
-				send(line)
+				line = strings.ReplaceAll(line, jobDir+string(filepath.Separator), "")
+				send(strings.ReplaceAll(line, jobDir, "."))
 			}
 		}
 	}
