@@ -80,6 +80,11 @@ type musicService struct {
 }
 
 func newMusicService(dataDir string) *musicService {
+	// The engine runs in a temporary directory, so the paths we give it (its
+	// own, and the job's) must not be relative to ours.
+	if abs, err := filepath.Abs(dataDir); err == nil {
+		dataDir = abs
+	}
 	return &musicService{
 		dataDir: dataDir,
 		config:  &musicConfig{path: filepath.Join(dataDir, musicConfigFile)},
