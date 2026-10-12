@@ -10,12 +10,11 @@ import (
 	"strings"
 )
 
-// The music downloading configuration. `delta music` fetches it before every
-// run and hands it to its download engine. It is an INI-style file: "key =
+// The music downloading configuration, which every `delta music` run hands
+// to the download engine (see music_run.go). It is an INI-style file: "key =
 // value" lines, "#" comments, and "[profile]" sections. It never holds a
-// login: every run of the CLI makes up its own, so that two agents
-// downloading at once don't share a Soulseek account. Configs that name one
-// are rejected.
+// login: the command center keeps its own account in music-login.json, so
+// configs that name one are rejected.
 //
 // Routes (all behind the delta bearer token):
 //
@@ -69,7 +68,7 @@ func checkMusicConfig(text string) error {
 			return fmt.Errorf("line %d: expected \"key = value\", \"[profile]\" or a # comment", i+1)
 		}
 		if musicLoginKeys[strings.ToLower(key)] {
-			return fmt.Errorf("line %d: %q is not allowed; the CLI makes up a login for every run", i+1, key)
+			return fmt.Errorf("line %d: %q is not allowed; the command center keeps its own login", i+1, key)
 		}
 	}
 	return nil
@@ -83,11 +82,23 @@ func (m *musicConfig) register(mux *http.ServeMux) {
 	mux.HandleFunc("DELETE /music-config", m.reset)
 }
 
+// text returns the configuration in use.
+func (m *musicConfig) text() (string, error) {
+	text, _, err := m.read()
+	return text, err
+}
+
+func (m *musicConfig) read() (text string, isDefault bool, err error) {
+	data, err := os.ReadFile(m.path)
+	if errors.Is(err, os.ErrNotExist) {
+		return defaultMusicConfig, true, nil
+	}
+	return string(data), false, err
+}
+
 func (m *musicConfig) get(w http.ResponseWriter, r *http.Request) {
-	text, isDefault := defaultMusicConfig, true
-	if data, err := os.ReadFile(m.path); err == nil {
-		text, isDefault = string(data), false
-	} else if !errors.Is(err, os.ErrNotExist) {
+	text, isDefault, err := m.read()
+	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}

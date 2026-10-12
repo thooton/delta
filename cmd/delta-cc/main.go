@@ -175,8 +175,9 @@ func newHandler(tokenHash []byte, filesDir string, maxUpload int64, u *updater, 
 	mux.HandleFunc("GET /files/{name}", s.getFile)
 	mux.HandleFunc("PUT /files/{name}", s.putFile)
 	mux.HandleFunc("DELETE /files/{name}", s.deleteFile)
-	// The music config lives in the data directory, next to files/.
-	(&musicConfig{path: filepath.Join(filepath.Dir(filesDir), musicConfigFile)}).register(mux)
+	// Music, the book login and the access token live in the data
+	// directory, next to files/.
+	newMusicService(filepath.Dir(filesDir)).register(mux)
 	(&booksLoginStore{path: filepath.Join(filepath.Dir(filesDir), booksLoginFile)}).register(mux)
 	(&accessTokenStore{path: filepath.Join(filepath.Dir(filesDir), accessTokenFile)}).register(mux)
 	if canvas != nil {

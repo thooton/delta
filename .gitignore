@@ -2,4 +2,4 @@
 /dist/
 /delta
 /delta-cc
-/cmd/delta/music-engine/engine.*
+/cmd/delta-cc/music-engine/engine.*
