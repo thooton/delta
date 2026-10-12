@@ -64,4 +64,12 @@ jobs:
           gh release view latest >/dev/null 2>&1 || \
             gh release create latest --title "Delta (latest)" --notes-file notes.md
           gh release edit latest --notes-file notes.md
-          gh release upload latest dist/* --clobber
+          # --clobber deletes each old asset before uploading its replacement,
+          # so a failed upload (GitHub sometimes answers 500) leaves the
+          # release without it. Retry rather than leave it that way.
+          for try in 1 2 3 4 5; do
+            gh release upload latest dist/* --clobber && exit 0
+            echo "upload failed (try $try); retrying" >&2
+            sleep $((try * 10))
+          done
+          exit 1
