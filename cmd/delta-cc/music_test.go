@@ -27,6 +27,16 @@ func TestMusicConfigWithLogin(t *testing.T) {
 	}
 }
 
+// TestMusicRelativeDataDir checks that a relative -data (the default) still
+// gives the engine absolute paths, since it runs in another directory.
+func TestMusicRelativeDataDir(t *testing.T) {
+	t.Chdir(t.TempDir())
+	m := newMusicService("data")
+	if !filepath.IsAbs(m.dataDir) || !filepath.IsAbs(m.config.path) {
+		t.Errorf("relative paths kept: %q, %q", m.dataDir, m.config.path)
+	}
+}
+
 func TestMusicAccount(t *testing.T) {
 	m := newMusicService(t.TempDir())
 	a1, err := m.account(false)
