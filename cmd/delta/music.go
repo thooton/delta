@@ -148,7 +148,7 @@ func fetchMusic(cfg config, res *musicResult, dir string) error {
 		return fmt.Errorf("got %d of %d files", len(saved), len(res.Files))
 	}
 	if _, err := do(cfg, http.MethodDelete, "/music-jobs/"+url.PathEscape(res.Job), nil); err != nil {
-		fmt.Fprintln(os.Stderr, "warning: couldn't remove the download from the command center:", err)
+		fmt.Fprintln(os.Stderr, "warning: couldn't remove the download:", err)
 	}
 
 	fmt.Printf("\nSaved %d file(s), %s, in %s:\n", len(saved), humanSize(total), dir)
@@ -195,6 +195,6 @@ func musicRelogin() error {
 	if _, err := do(cfg, http.MethodPost, "/music-login", nil); err != nil {
 		return err
 	}
-	fmt.Println("The command center has a new music account; the next download logs in with it.")
+	fmt.Println("Successfully logged back into Amazon")
 	return nil
 }
