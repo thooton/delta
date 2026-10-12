@@ -22,7 +22,8 @@ const musicHelp = `delta music: download music for the user via Amazon Music
   * To process multiple tracks or albums, run the command separately for each.
 
   Once downloaded, send files to the user by running "delta push" for each file.
-  They will be able to access their music from the Files tab. Ensure authentication
+  They will be able to access their music from the Files tab, where "Move to"
+  puts each file in the phone's Music folder. Ensure authentication
   is set up beforehand using "delta set-auth" (see "delta help").
 
 CHECKING
