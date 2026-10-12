@@ -51,6 +51,8 @@ delta push <path> [name]       upload a file, replacing any file with the same n
 delta pull <name> [dest]       download a file (e.g. a photo sent from the phone)
 delta list                     list files
 delta delete <name>            delete a file
+delta get-personal-access-token          print the user's GitHub token
+delta set-personal-access-token <tok|->  check and save a new GitHub token
 delta update-cc <binary-url>   update the command center to a new binary
 delta canvas <command> ...     use the user's Canvas (see below)
 delta music <command> ...      download music (see below)
@@ -87,6 +89,8 @@ Every endpoint requires the bearer token.
 | GET | `/books-login` | The book account, as `{"email", "password"}`. 404 while none is set. |
 | PUT | `/books-login` | Replaces it. Needs an email address and a password. |
 | DELETE | `/books-login` | Removes it. |
+| GET | `/personal-access-token` | The GitHub personal access token, as `{"token"}`. 404 while none is set. |
+| PUT | `/personal-access-token` | Replaces it with the raw request body. |
 
 Running `delta-cc` with no arguments starts the server. By default it listens on `:8080`, stores data in `./data`, and accepts uploads up to 1 GiB; the `-addr`, `-data`, and `-max-upload` flags change these. The server speaks plain HTTP, so run it behind a reverse proxy that handles TLS (Caddy, for example). Otherwise the token travels unencrypted.
 
@@ -127,6 +131,10 @@ The engine is white-labeled. The agent never runs it or sees its name: the CLI p
 **Configuration.** The engine's config (output directory, required and preferred formats and bitrates, file naming, and profiles such as album-only naming) is stored on the command center as `data/music.conf`, falling back to a built-in default. The CLI fetches it on every run, writes it to a private temporary file, and points the engine at it, so no local engine config is ever used. The agent can view and replace it with `delta music config`.
 
 **Logins.** Soulseek needs an account but registers any unknown username on first login. The config never holds one, so that agents on different machines never share an account (a second login kicks the first off). Instead each CLI instance makes up a random account on first use (16-character username, 24-character password) and keeps it in `~/.config/delta/music-login.json`. Making up a new account on every run gets the machine's IP throttled by the Soulseek server, which then never answers logins. Runs on the same machine take turns through a lock file (`music.lock`), since they share the account. If logins keep failing, a run gives up after about a minute instead of retrying forever as the engine would.
+
+## GitHub access
+
+The agent reaches the user's repositories with a GitHub personal access token stored on the command center as `data/personal-access-token`. `delta help` tells the agent to install a git credential helper that runs `delta get-personal-access-token` whenever git needs a password, and to pass `GH_TOKEN=$(delta get-personal-access-token)` to `gh`, so the token is never written into a clone. `delta set-personal-access-token` checks a new token against `api.github.com/user` (refusing one GitHub rejects, saving it with a warning if GitHub can't be reached) before storing it. To set it on the VPS directly, write the token to that file, readable only by the `delta` user.
 
 ## Books
 

@@ -39,14 +39,15 @@ WHAT THIS IS
   them short and plain. They cannot easily copy long output or type long
   answers.
 
-  Relevant repositories (you have read/write access):
+  Relevant repositories (read/write with the user's GitHub token, see
+  GITHUB ACCESS below):
     https://github.com/thooton/sonim   The apps installed on the phone, one
                                        directory each. The Delta app itself
                                        is sonim/delta.
     https://github.com/thooton/delta   Delta itself (command center + CLI).
 
-  A typical job: the user reports a bug in a phone app. Clone the sonim
-  repo, fix it, commit and push, build the release APK, then push it named
+  A typical job: the user reports a bug in a phone app. Set up GitHub
+  access, clone the sonim repo, fix it, commit and push, build the release APK, then push it named
   after the app, for example:
 
     (cd list/android && ./gradlew :app:assembleRelease)
@@ -92,6 +93,12 @@ COMMANDS
                                      the phone).
   delta list                         List the files on the command center.
   delta delete <name>                Delete a file from the command center.
+  delta get-personal-access-token    Print the user's GitHub token. See
+                                     GITHUB ACCESS below.
+  delta set-personal-access-token <token|->
+                                     Check a new GitHub token with GitHub and
+                                     save it on the command center ("-"
+                                     reads it from stdin).
   delta update-cc <binary-url>       Make the command center download a new
                                      delta-cc binary from <binary-url>,
                                      replace itself, and restart. See
@@ -110,6 +117,29 @@ COMMANDS
                                      Run "delta books help".
 
   Aliases: "ls" for list, "rm" for delete, "get" for pull.
+
+GITHUB ACCESS
+  The user's GitHub personal access token is kept on the command center.
+  Before cloning, point git and gh at it once per machine:
+
+    git config --global credential.https://github.com.helper \
+      '!f() { test "$1" = get || exit 0; echo username=x-access-token; echo "password=$(delta get-personal-access-token)"; }; f'
+
+  Then clone over https (https://github.com/thooton/sonim) and push as
+  usual. The helper fetches the token each time, so it is never written to
+  disk; don't put it in a remote URL or anywhere it could be committed.
+  For gh, pass it on each command, since shell variables may not last
+  between your commands:
+
+    GH_TOKEN=$(delta get-personal-access-token) gh run watch -R thooton/delta
+
+  Like the auth token, it is a password: never show it to the user.
+
+  If git or gh says the token is missing, expired or lacks access, ask the
+  user for a new one (they create it on github.com under Settings >
+  Developer settings > Personal access tokens) and save it with:
+
+    echo <token> | delta set-personal-access-token -
 
 CANVAS
   The user is a student who may not have a computer, so you are their way
@@ -130,7 +160,7 @@ UPDATING THE COMMAND CENTER
 
     1. Commit and push the change to master in thooton/delta.
     2. Wait for the GitHub Actions build for that commit to finish
-       (for example: gh run watch -R thooton/delta). It publishes
+       (for example with gh, as in GITHUB ACCESS). It publishes
        the binaries to the "latest" release.
     3. Run:
          delta update-cc https://github.com/thooton/delta/releases/download/latest/delta-cc-linux-amd64
@@ -212,6 +242,16 @@ func run(args []string) error {
 			return errors.New("usage: delta delete <name>")
 		}
 		return del(args[0])
+	case "get-personal-access-token":
+		if len(args) != 0 {
+			return errors.New("usage: delta get-personal-access-token")
+		}
+		return getAccessToken()
+	case "set-personal-access-token":
+		if len(args) != 1 {
+			return errors.New("usage: delta set-personal-access-token <token|->")
+		}
+		return setAccessToken(args[0])
 	case "update-cc":
 		if len(args) != 1 {
 			return errors.New("usage: delta update-cc <binary-url>")
