@@ -11,9 +11,9 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
-	"regexp"
 	"strconv"
 	"strings"
+	"unicode/utf8"
 )
 
 // `delta books` searches for and downloads ebooks. The book source's login
@@ -500,19 +500,25 @@ func downloadBook(c *booksClient, b bookInfo, outDir string) (string, error) {
 	if normalizeExtension(ext) == "" {
 		ext = filepath.Ext(responseFilename(resp.Header.Get("Content-Disposition"), resp.Request.URL))
 	}
-	dest := filepath.Join(outDir, bookFilename(b, ext))
-	if err := os.Link(tmp.Name(), dest); err != nil {
-		if errors.Is(err, os.ErrExist) {
-			if st, serr := os.Stat(dest); serr == nil && st.Size() == n {
+	for i := 1; ; i++ {
+		dest := filepath.Join(outDir, bookFilename(b, ext, i))
+		if st, err := os.Lstat(dest); err == nil {
+			if st.Mode().IsRegular() && st.Size() == n {
 				return dest, nil // the same book was already downloaded here
 			}
-			return "", fmt.Errorf("refusing to replace the existing %s", dest)
+			continue // another book has this name
 		}
-		if err := os.Rename(tmp.Name(), dest); err != nil {
+		err := os.Link(tmp.Name(), dest)
+		if errors.Is(err, os.ErrExist) {
+			continue
+		} else if err != nil {
+			err = os.Rename(tmp.Name(), dest)
+		}
+		if err != nil {
 			return "", err
 		}
+		return dest, nil
 	}
-	return dest, nil
 }
 
 func booksLoginCmd(args []string) error {
@@ -586,8 +592,8 @@ func booksLoginCmd(args []string) error {
 	}
 }
 
-// Download naming, as the reference does it:
-// {AuthorCamelCase}_{TitleCamelCase}[_{Year}][_{Lang}]_{BookID}.{ext}
+// Downloads are named "{Author} - {Title}.{ext}", or "{Title}.{ext}" when
+// there is no author.
 
 var bookExtensions = map[string]bool{
 	"txt": true, "pdf": true, "fb2": true, "epub": true, "lit": true, "mobi": true,
@@ -603,101 +609,46 @@ func normalizeExtension(ext string) string {
 	return ""
 }
 
-// asciiFold maps accented Latin letters to their base letter. The reference
-// NFKD-decomposes and drops what isn't ASCII; this covers the Latin-1 and
-// Latin Extended-A letters that decompose, without leaving the standard
-// library. Anything else not ASCII is dropped, as there.
-var asciiFold = func() map[rune]rune {
-	m := map[rune]rune{}
-	for _, g := range strings.Fields("AÀÁÂÃÄÅĀĂĄ aàáâãäåāăą CÇĆĈĊČ cçćĉċč DĎ dď EÈÉÊËĒĔĖĘĚ eèéêëēĕėęě " +
-		"GĜĞĠĢ gĝğġģ HĤ hĥ IÌÍÎÏĨĪĬĮİ iìíîïĩīĭį JĴ jĵ KĶ kķ LĹĻĽĿ lĺļľŀ NÑŃŅŇ nñńņň " +
-		"OÒÓÔÕÖŌŎŐ oòóôõöōŏő RŔŖŘ rŕŗř SŚŜŞŠ sśŝşš TŢŤ tţť UÙÚÛÜŨŪŬŮŰŲ uùúûüũūŭůűų " +
-		"WŴ wŵ YÝŶŸ yýÿŷ ZŹŻŽ zźżž") {
-		r := []rune(g)
-		for _, v := range r[1:] {
-			m[v] = r[0]
+// nameText makes s fit for a file name: characters that some file systems
+// refuse become spaces (a colon before a subtitle becomes a dash), runs of
+// spaces collapse, and leading and trailing dots go.
+func nameText(s string) string {
+	s = strings.ReplaceAll(s, ": ", " - ")
+	s = strings.Map(func(r rune) rune {
+		if r < 0x20 || r == 0x7f || strings.ContainsRune(`/\:*?"<>|`, r) {
+			return ' '
 		}
-	}
-	return m
-}()
-
-var wordRe = regexp.MustCompile(`[A-Za-z0-9]+`)
-
-func toCamelCase(value string, maxLen int) string {
-	var ascii strings.Builder
-	for _, r := range strings.TrimSpace(value) {
-		if f, ok := asciiFold[r]; ok {
-			r = f
-		}
-		if r < 128 {
-			ascii.WriteRune(r)
-		}
-	}
-	var b strings.Builder
-	for _, w := range wordRe.FindAllString(ascii.String(), -1) {
-		b.WriteString(strings.ToUpper(w[:1]) + strings.ToLower(w[1:]))
-	}
-	camel := b.String()
-	if maxLen > 0 && len(camel) > maxLen {
-		camel = camel[:maxLen]
-	}
-	if camel == "" {
-		return "Unknown"
-	}
-	return camel
+		return r
+	}, s)
+	return strings.Trim(strings.Join(strings.Fields(s), " "), ". ")
 }
 
-// alnum keeps only ASCII letters and digits, so a value is safe in a file name.
-func alnum(s string) string { return strings.Join(wordRe.FindAllString(s, -1), "") }
-
-func formatAuthorCamelCase(author string) string {
-	if strings.TrimSpace(author) == "" {
-		return "UnknownAuthor"
+// clip shortens s to at most n bytes without splitting a character.
+func clip(s string, n int) string {
+	if len(s) <= n {
+		return s
 	}
-	if strings.Contains(author, ",") {
-		parts := strings.Split(author, ",")
-		for i := range parts {
-			parts[i] = strings.TrimSpace(parts[i])
-		}
-		author = strings.Join(parts, " ")
-	} else if parts := strings.Fields(author); len(parts) > 1 {
-		author = parts[len(parts)-1] + " " + strings.Join(parts[:len(parts)-1], " ")
+	for n > 0 && !utf8.RuneStart(s[n]) {
+		n--
 	}
-	return toCamelCase(author, 50)
+	return strings.TrimRight(s[:n], ". ")
 }
 
-func bookFilename(b bookInfo, ext string) string {
-	author := formatAuthorCamelCase(string(b.Author))
-	title := "UntitledBook"
-	if t := string(b.Title); t != "" {
-		title = toCamelCase(t, 100)
+// bookFilename names copy n (from 1) of a book. Copies after the first, for
+// different books that would share a name, get " (n)".
+func bookFilename(b bookInfo, ext string, n int) string {
+	name := clip(nameText(string(b.Title)), 150)
+	if name == "" {
+		name = "Untitled"
 	}
-	id := strings.TrimSpace(string(b.ID))
-	if id == "" || strings.ContainsAny(id, `/\`) {
-		id = "NoID"
+	if a := clip(nameText(string(b.Author)), 80); a != "" {
+		name = a + " - " + name
 	}
-
-	parts := []string{author, title}
-	if y := alnum(nonZero(b.Year)); y != "" {
-		parts = append(parts, y)
-	}
-	if l := []rune(strings.ToLower(strings.TrimSpace(string(b.Language)))); len(l) > 0 {
-		if l := alnum(string(l[:min(5, len(l))])); l != "" {
-			parts = append(parts, l)
-		}
-	}
-	parts = append(parts, id)
-	base := strings.Join(parts, "_")
-
-	const maxTotal = 200
-	if len(base) > maxTotal {
-		avail := maxTotal - len(id) - 1
-		authorMax := int(float64(avail) * 0.4)
-		titleMax := avail - authorMax
-		base = author[:min(authorMax, len(author))] + "_" + title[:min(titleMax, len(title))] + "_" + id
+	if n > 1 {
+		name += fmt.Sprintf(" (%d)", n)
 	}
 	if e := normalizeExtension(ext); e != "" {
-		return base + "." + e
+		name += "." + e
 	}
-	return base
+	return name
 }

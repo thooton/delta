@@ -36,9 +36,10 @@ COMMANDS
     -o, --output-dir DIR     Save here (default: the current directory).
     --push                   Also push each file to the command center.
 
-  Files are named Author_Title_Year_lang_ID.ext, for example
-  TolkienJRR_TheHobbit_1937_engli_123456.epub. Downloading the same book
-  into the same directory again keeps the existing file.
+  Files are named "Author - Title.ext", for example "J.R.R. Tolkien -
+  The Hobbit.epub". Downloading the same book into the same directory
+  again keeps the existing file; a different book that would get the same
+  name has " (2)" added.
 
 CHOOSING
   Prefer epub unless the user says otherwise: it reflows on small screens.
