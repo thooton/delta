@@ -26,9 +26,6 @@ WHAT THIS IS
   center, which they can download, install or delete). The command center
   is an always-on server; this CLI talks to it.
 
-  The user reads your replies on a 240x320 screen with a keypad, so keep
-  them short and plain.
-
   Repositories (see GITHUB):
     thooton/sonim   The phone's apps, one directory each (the Delta app is
                     sonim/delta).
@@ -43,7 +40,7 @@ WHAT THIS IS
   Always push release builds; debug builds run slowly on the phone. It
   shows up in the Files tab, and installing it updates the app in place
   because every build is signed with the key in sonim/signing. Never
-  change or bypass that key. Then tell the user briefly what to install.
+  change or bypass that key. Then tell the user what to install.
   (The Delta app is delta.apk; a build without its logins keeps the
   installed copy's.)
 
