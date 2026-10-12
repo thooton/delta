@@ -70,8 +70,10 @@ COMMANDS
   delta canvas ...                   The user's Canvas (they are a student).
   delta music ...                    Download a song or an album.
   delta books ...                    Find and download ebooks.
+  delta docx                         How to make Word documents (.docx).
 
-  Read "delta canvas|music|books help" before using those.
+  Read "delta canvas|music|books help" before using those, and
+  "delta docx" before making or editing a Word document.
   Aliases: ls = list, rm = delete, get = pull.
 
 GITHUB
@@ -154,6 +156,8 @@ func run(args []string) error {
 		return runMusic(args)
 	case "books":
 		return runBooks(args)
+	case "docx":
+		return runDocx(args)
 	case "list", "ls":
 		if len(args) != 0 {
 			return errors.New("usage: delta list")
