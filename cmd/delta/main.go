@@ -68,7 +68,7 @@ COMMANDS
                                      reads stdin).
   delta update-cc <binary-url>       Update the command center (see below).
   delta canvas ...                   The user's Canvas (they are a student).
-  delta music ...                    Download a song or an album.
+  delta music ...                    Purchase and download a song or an album.
   delta books ...                    Find and download ebooks.
   delta docx                         How to make Word documents (.docx).
   delta docx extract [dir]           Extract the scripts that guide uses.
