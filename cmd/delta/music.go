@@ -7,6 +7,7 @@ import (
 	"compress/gzip"
 	"crypto/rand"
 	"embed"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -47,11 +48,11 @@ var musicEngineFS embed.FS
 const (
 	musicValueFlags = "output-dir format pref-format min-bitrate max-bitrate pref-min-bitrate pref-max-bitrate " +
 		"length-tol album-track-count min-album-track-count max-album-track-count number offset name-format " +
-		"cond pref input-type search-timeout max-stale-time skip-music-dir album-art banned-users regex " +
+		"cond pref input-type search-timeout max-stale-time skip-music-dir album-art regex " +
 		"spotify-id spotify-secret spotify-token spotify-refresh youtube-key"
 	musicBoolFlags = "strict-title strict-artist strict-album strict-conditions strict-album-quality fast-search " +
 		"desperate remove-ft remove-brackets artist-maybe-wrong upgrade-to-album reverse no-skip-existing " +
-		"write-playlist verbose"
+		"write-playlist"
 	// Our own options, plus short forms: -o output-dir, -n number, -d desperate.
 	musicOwnValueFlags = "o n limit"
 	musicOwnBoolFlags  = "d dry-run"
@@ -107,8 +108,10 @@ func runMusic(args []string) error {
 		}
 		delete(o.vals, "n")
 	}
-	if cmd == "get" {
-		input = toEngineNames(input)
+	if cmd == "get" && strings.HasPrefix(input, musicLinkPrefix) {
+		if input, err = decodeMusicLink(input); err != nil {
+			return err
+		}
 	}
 	engineArgs, err := musicEngineArgs(o)
 	if err != nil {
@@ -235,19 +238,34 @@ func musicEngineArgs(o *opts) ([]string, error) {
 	return out, nil
 }
 
-// The agent never sees the network's or the engine's own names. Links to
-// search results use music:// rather than slsk://, and the name-format tags
-// slsk-foldername and slsk-filename are remote-foldername and
-// remote-filename. These translate between the two at the boundary.
+// The agent never sees the network's or the engine's names, or anything
+// that shows where files come from. Search results are music:<id> links that
+// hide the engine's slsk://user/path links, and the name-format tags
+// slsk-foldername and slsk-filename are original-foldername and
+// original-filename.
+const musicLinkPrefix = "music:"
+
 var (
-	toEngine = strings.NewReplacer("music://", "slsk://",
-		"remote-foldername", "slsk-foldername", "remote-filename", "slsk-filename")
-	fromEngine = strings.NewReplacer("slsk://", "music://",
-		"slsk-foldername", "remote-foldername", "slsk-filename", "remote-filename")
+	toEngine   = strings.NewReplacer("original-foldername", "slsk-foldername", "original-filename", "slsk-filename")
+	fromEngine = strings.NewReplacer("slsk-foldername", "original-foldername", "slsk-filename", "original-filename")
 )
 
 func toEngineNames(s string) string   { return toEngine.Replace(s) }
 func fromEngineNames(s string) string { return fromEngine.Replace(s) }
+
+// musicLink makes the link for one file, or for a folder when path ends in "/".
+func musicLink(user, path string) string {
+	return musicLinkPrefix + base64.RawURLEncoding.EncodeToString([]byte(user+"\x00"+path))
+}
+
+func decodeMusicLink(link string) (string, error) {
+	raw, err := base64.RawURLEncoding.DecodeString(strings.TrimPrefix(link, musicLinkPrefix))
+	user, path, ok := strings.Cut(string(raw), "\x00")
+	if err != nil || !ok || user == "" || path == "" {
+		return "", fmt.Errorf("%q is not a link from delta music search", link)
+	}
+	return "slsk://" + user + "/" + path, nil
+}
 
 // musicLoginKeys are the config keys that set the Soulseek login. The command
 // center never stores them, but strip them anyway: the login must be ours.
@@ -471,8 +489,6 @@ func unpackMusicEngine(dir string) error {
 
 var (
 	ansiEscape  = regexp.MustCompile(`\x1b\[[0-9;?]*[A-Za-z]`)
-	engineName  = regexp.MustCompile(`(?i)sockseek`)
-	slskName    = regexp.MustCompile(`(?i)slsk`)
 	engineNoise = []string{"[cli] Starting CLI session", "[soulseek] Logging in as"}
 	// The network's name, with the space after it so "No Soulseek file
 	// results" reads "No file results".
@@ -498,8 +514,20 @@ func isLoginFailure(line string) bool {
 		strings.HasPrefix(line, "[error] [soulseek] Initial Soulseek login failed")
 }
 
+var (
+	// A remote path as the engine logs it: user\\..\\folder\\file or
+	// user\\folder\\file, up to the end of the line or a quote.
+	remotePath = regexp.MustCompile(`[^\s:'"\\]+(\\[^\\'"\n]+)+`)
+	engineLink = regexp.MustCompile(`slsk://([^/\s]+)/(.*)$`)
+	jobLine    = regexp.MustCompile(`^\[\d+\] \w+Job: `)
+	errorLine  = regexp.MustCompile(`^(\s*)(Error|Reason):`)
+	// Words that would give away where the files come from.
+	sourceWords = regexp.MustCompile(`(?i)\bpeers?\b|upload|\bshares?\b|\bshared\b|\busers?(name)?\b|queued \([rl]\)|slsk|soulseek|sockseek`)
+)
+
 // musicLogLine rewrites one line of engine output for the agent, or drops it.
-// The engine's name and the made-up login never get through.
+// The engine's name, the network's, the login, and the people files come
+// from never get through.
 func musicLogLine(line, user string) (string, bool) {
 	line = strings.TrimRight(ansiEscape.ReplaceAllString(line, ""), "\r")
 	for _, p := range engineNoise {
@@ -507,18 +535,33 @@ func musicLogLine(line, user string) (string, bool) {
 			return "", false
 		}
 	}
-	if isLoginFailure(line) || stackTrace.MatchString(line) {
+	if isLoginFailure(line) || stackTrace.MatchString(line) || strings.HasPrefix(line, "[debug]") || strings.HasPrefix(line, "[trace]") {
 		return "", false
 	}
 	if rest, ok := strings.CutPrefix(line, "[error] [cli] "); ok {
 		line = "error: " + strings.TrimPrefix(rest, "Input error: ")
 	}
 	line = strings.TrimPrefix(line, "[cli] ")
-	line = engineName.ReplaceAllString(line, "delta music")
 	line = networkName.ReplaceAllString(line, "")
-	line = slskName.ReplaceAllString(fromEngineNames(line), "remote")
 	if user != "" {
-		line = strings.ReplaceAll(line, user, "(delta)")
+		line = strings.ReplaceAll(line, user, "")
+	}
+	line = engineLink.ReplaceAllStringFunc(line, func(m string) string {
+		sub := engineLink.FindStringSubmatch(m)
+		return musicLink(sub[1], sub[2])
+	})
+	line = remotePath.ReplaceAllStringFunc(line, func(p string) string {
+		parts := strings.Split(strings.TrimRight(p, "\\"), "\\")
+		return parts[len(parts)-1]
+	})
+	line = fromEngineNames(line)
+	// Job lines are left with a status, the search and a file or folder
+	// name; anything else that still hints at the source is not passed on.
+	if !jobLine.MatchString(line) && sourceWords.MatchString(line) {
+		if m := errorLine.FindStringSubmatch(line); m != nil {
+			return m[1] + m[2] + ": the download failed", true
+		}
+		return "", false
 	}
 	return line, true
 }
@@ -703,14 +746,14 @@ type musicResult struct {
 
 // musicHit is one search result as we show it.
 type musicHit struct {
-	Link     string `json:"link"`
-	User     string `json:"user"`
-	Tracks   int    `json:"tracks,omitempty"`
-	Seconds  int    `json:"seconds,omitempty"`
-	Bitrate  int    `json:"bitrate_kbps,omitempty"`
-	Format   string `json:"format,omitempty"`
-	Bytes    int64  `json:"bytes"`
-	FreeSlot bool   `json:"free_slot"`
+	Link      string `json:"link"`
+	Name      string `json:"name"`
+	Tracks    int    `json:"tracks,omitempty"`
+	Seconds   int    `json:"seconds,omitempty"`
+	Bitrate   int    `json:"bitrate_kbps,omitempty"`
+	Format    string `json:"format,omitempty"`
+	Bytes     int64  `json:"bytes"`
+	SlowStart bool   `json:"slow_start"`
 }
 
 func musicSearch(engine string, args []string, user, input string, album bool, limit int, asJSON bool) error {
@@ -759,10 +802,10 @@ func musicSearch(engine string, args []string, user, input string, album bool, l
 			info = append(info, h.Format)
 		}
 		info = append(info, humanSize(h.Bytes))
-		if !h.FreeSlot {
-			info = append(info, "queued")
+		if h.SlowStart {
+			info = append(info, "may start slowly")
 		}
-		fmt.Printf("%2d. %s\n    %s\n", i+1, strings.Join(info, ", "), h.Link)
+		fmt.Printf("%2d. %s\n    %s\n    %s\n", i+1, h.Name, strings.Join(info, ", "), h.Link)
 	}
 	return nil
 }
@@ -770,10 +813,11 @@ func musicSearch(engine string, args []string, user, input string, album bool, l
 func musicHits(results []musicResult) []musicHit {
 	var hits []musicHit
 	for _, r := range results {
-		h := musicHit{User: r.User.Username, FreeSlot: r.User.HasFreeUploadSlot}
+		h := musicHit{SlowStart: !r.User.HasFreeUploadSlot}
 		switch {
 		case r.File != nil:
-			h.Link = "music://" + r.User.Username + "/" + strings.ReplaceAll(r.File.Filename, `\`, "/")
+			p := strings.ReplaceAll(r.File.Filename, `\`, "/")
+			h.Link, h.Name = musicLink(r.User.Username, p), path.Base(p)
 			h.Seconds, h.Bitrate, h.Bytes = r.File.Length, r.File.Bitrate, r.File.Size
 			h.Format = strings.TrimPrefix(strings.ToLower(path.Ext(r.File.Filename)), ".")
 		case len(r.Files) > 0:
@@ -793,7 +837,8 @@ func musicHits(results []musicResult) []musicHit {
 				}
 			}
 			dir := strings.ReplaceAll(commonSlskDir(names), `\`, "/")
-			h.Link = "music://" + r.User.Username + "/" + strings.TrimSuffix(dir, "/") + "/"
+			dir = strings.TrimSuffix(dir, "/")
+			h.Link, h.Name = musicLink(r.User.Username, dir+"/"), path.Base(dir)
 			h.Tracks = len(r.Files)
 			if rated > 0 {
 				h.Bitrate = rateSum / rated
