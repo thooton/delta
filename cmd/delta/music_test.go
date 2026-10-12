@@ -1,7 +1,6 @@
 package main
 
 import (
-	"reflect"
 	"strings"
 	"testing"
 )
@@ -17,15 +16,6 @@ func TestMusicConfigWithLogin(t *testing.T) {
 	}
 	if !strings.Contains(got, "[albums]\nprofile-cond = album\n") {
 		t.Errorf("profile lost:\n%s", got)
-	}
-}
-
-func TestMusicConfigOutputDir(t *testing.T) {
-	if got := musicConfigOutputDir("format = mp3\noutput-dir = \"~/a b\"\n[x]\noutput-dir = /no\n"); got != "~/a b" {
-		t.Errorf("got %q", got)
-	}
-	if got := musicConfigOutputDir("[x]\noutput-dir = /no\n"); got != "." {
-		t.Errorf("profile output-dir used: %q", got)
 	}
 }
 
@@ -69,7 +59,8 @@ func TestMusicLogLine(t *testing.T) {
 		{"[warn] Too many uploads queued by user bob", "", false},
 		{"[debug] anything", "", false},
 		{"Logged in as secretuser", "Logged in as ", true},
-		{"[001] ExtractJob: Input: slsk://bob/a b/", "[001] ExtractJob: Input: " + musicLink("bob", "a b/"), true},
+		{"[001] ExtractJob: Input: slsk://bob/Music/a b/", "[001] ExtractJob: Input: a b", true},
+		{"[001] ExtractJob: Input: slsk://bob/Music/a/b.mp3", "[001] ExtractJob: Input: b.mp3", true},
 	}
 	for _, c := range cases {
 		got, keep := musicLogLine(c.in, "secretuser")
@@ -79,68 +70,14 @@ func TestMusicLogLine(t *testing.T) {
 	}
 }
 
-func TestMusicEngineArgs(t *testing.T) {
-	o, err := parseOpts([]string{"x", "-o", "/music", "--format=flac", "-d", "--strict-title", "-n", "3", "--dry-run"},
-		musicValueFlags+" "+musicOwnValueFlags, musicBoolFlags+" "+musicOwnBoolFlags+" album")
-	if err != nil {
-		t.Fatal(err)
-	}
-	got, err := musicEngineArgs(o)
-	if err != nil {
-		t.Fatal(err)
-	}
-	want := []string{"--format", "flac", "--number", "3", "--output-dir", "/music", "--desperate", "--strict-title"}
-	if !reflect.DeepEqual(got, want) {
-		t.Errorf("got %q\nwant %q", got, want)
-	}
-	if _, err := parseOpts([]string{"--config", "x"}, musicValueFlags, musicBoolFlags); err == nil {
-		t.Error("--config accepted")
-	}
-}
-
-func TestMusicHits(t *testing.T) {
-	results := []musicResult{
-		{User: musicUser{Username: "u", HasFreeUploadSlot: true},
-			File: &musicFile{Filename: `m\A\B\01 X.MP3`, Size: 100, Bitrate: 320, Length: 61}},
-		{User: musicUser{Username: "v"}, Files: []musicFile{
-			{Filename: `m\A\Album\01.mp3`, Size: 10, Bitrate: 320, Length: 100},
-			{Filename: `m\A\Album\CD2\02.flac`, Size: 20, Bitrate: 0, Length: 50},
-		}},
-	}
-	hits := musicHits(results)
-	if len(hits) != 2 {
-		t.Fatalf("got %d hits", len(hits))
-	}
-	if h := hits[0]; h.Link != musicLink("u", "m/A/B/01 X.MP3") || h.Name != "01 X.MP3" || h.Format != "mp3" || h.SlowStart {
-		t.Errorf("song hit %+v", h)
-	}
-	if h := hits[1]; h.Link != musicLink("v", "m/A/Album/") || h.Name != "Album" || !h.SlowStart || h.Tracks != 2 || h.Bytes != 30 || h.Seconds != 150 || h.Bitrate != 320 || h.Format != "flac,mp3" {
-		t.Errorf("album hit %+v", h)
-	}
-}
-
-func TestMusicNameTranslation(t *testing.T) {
-	engine := "name-format = {slsk-foldername}/{slsk-filename}\n"
-	agent := "name-format = {original-foldername}/{original-filename}\n"
-	if got := fromEngineNames(engine); got != agent {
-		t.Errorf("fromEngineNames: %q", got)
-	}
-	if got := toEngineNames(agent); got != engine {
-		t.Errorf("toEngineNames: %q", got)
-	}
-	o, _ := parseOpts([]string{"--input-type", "link", "--name-format", "{original-filename}"}, musicValueFlags, musicBoolFlags)
-	got, err := musicEngineArgs(o)
-	if err != nil || !reflect.DeepEqual(got, []string{"--input-type", "soulseek", "--name-format", "{slsk-filename}"}) {
-		t.Errorf("got %q, %v", got, err)
-	}
-	link := musicLink("bob", "Music/A/X/")
-	if strings.Contains(link, "bob") || strings.Contains(link, "Music") {
-		t.Errorf("link shows its source: %s", link)
-	}
-	if got, err := decodeMusicLink(link); err != nil || got != "slsk://bob/Music/A/X/" {
-		t.Errorf("decodeMusicLink = %q, %v", got, err)
-	}
-	if _, err := decodeMusicLink("music:nonsense!"); err == nil {
-		t.Error("bad link accepted")
+func TestMusicArgs(t *testing.T) {
+	for _, args := range [][]string{
+		{"search", "x"}, {"get", "x"}, {"config"},
+		{"song"}, {"album", " "},
+		{"song", "--format", "flac", "A - B"}, {"album", "A - B", "-n", "3"},
+	} {
+		if err := runMusic(args); err == nil {
+			t.Errorf("runMusic(%q) accepted", args)
+		}
 	}
 }

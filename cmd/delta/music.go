@@ -3,11 +3,9 @@ package main
 import (
 	"archive/tar"
 	"bufio"
-	"bytes"
 	"compress/gzip"
 	"crypto/rand"
 	"embed"
-	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -31,36 +29,31 @@ import (
 // `delta music` downloads music from the Soulseek network. The work is done
 // by an engine bundled into this binary (an unmodified sockseek release, see
 // scripts/fetch-music-engine.sh), which the agent never runs or sees
-// directly: we parse our own arguments, translate them into engine options,
-// and pass on its log with its own name taken out.
+// directly: we run it for them and pass on its log with its own name taken
+// out.
+//
+// There are two commands, song and album, and no options. Agents got lost in
+// the engine's many settings and modes, so the CLI makes every choice: it
+// searches by name, downloads the best match into ~/Music, and if nothing
+// was downloaded tries once more with a broader search.
 //
 // The engine's configuration comes from the command center on every run
-// (GET /music-config) and can only be changed there. It never holds a
-// Soulseek login. Each CLI instance makes up its own account instead (see
-// musicLogin), so agents downloading at the same time never share one.
+// (GET /music-config). It never holds a Soulseek login. Each CLI instance
+// makes up its own account instead (see musicLogin), so agents downloading
+// at the same time never share one.
 
 //go:embed music-engine
 var musicEngineFS embed.FS
 
-// musicValueFlags and musicBoolFlags are the options passed on to the engine
-// under the same names. Short forms and our own options are handled in
-// musicEngineArgs.
-const (
-	musicValueFlags = "output-dir format pref-format min-bitrate max-bitrate pref-min-bitrate pref-max-bitrate " +
-		"length-tol album-track-count min-album-track-count max-album-track-count number offset name-format " +
-		"cond pref input-type search-timeout max-stale-time skip-music-dir album-art regex " +
-		"spotify-id spotify-secret spotify-token spotify-refresh youtube-key"
-	musicBoolFlags = "strict-title strict-artist strict-album strict-conditions strict-album-quality fast-search " +
-		"desperate remove-ft remove-brackets artist-maybe-wrong upgrade-to-album reverse no-skip-existing " +
-		"write-playlist"
-	// Our own options, plus short forms: -o output-dir, -n number, -d desperate.
-	musicOwnValueFlags = "o n limit"
-	musicOwnBoolFlags  = "d dry-run"
-)
+// musicDir is where downloads go, whatever the config says.
+const musicDir = "~/Music"
 
-// musicPathFlags are resolved against the current directory before the
-// engine sees them.
-var musicPathFlags = map[string]bool{"output-dir": true, "skip-music-dir": true}
+// musicBroader is what the second try adds: search for the artist and the
+// title separately, and leave "feat. ..." and [bracketed] text out.
+var musicBroader = []string{"--desperate", "--remove-ft", "--remove-brackets"}
+
+var errMusicFailed = errors.New(`nothing was downloaded (see above). Try the name written differently: ` +
+	`a shorter title, without "feat. ..." or remix and edition names, or without the artist if it is "Various Artists"`)
 
 func runMusic(args []string) error {
 	if len(args) == 0 || args[0] == "help" || args[0] == "-h" || args[0] == "--help" {
@@ -68,69 +61,18 @@ func runMusic(args []string) error {
 		return nil
 	}
 	cmd, args := args[0], args[1:]
-	switch cmd {
-	case "config":
-		return musicConfigCmd(args)
-	case "song", "album", "artist", "get", "search":
-	default:
-		return fmt.Errorf("unknown music command %q (run `delta music help`)", cmd)
+	what := map[string]string{"song": "artist - title", "album": "artist - album"}[cmd]
+	if what == "" {
+		return fmt.Errorf("unknown music command %q; there are only \"song\" and \"album\" (run `delta music help`)", cmd)
 	}
-
-	o, err := parseOpts(args, musicValueFlags+" "+musicOwnValueFlags, musicBoolFlags+" "+musicOwnBoolFlags+" album")
-	if err != nil {
-		return err
+	for _, a := range args {
+		if strings.HasPrefix(a, "-") && a != "-" {
+			return fmt.Errorf("delta music takes no options (got %s); give only %q", a, what)
+		}
 	}
-	input := strings.TrimSpace(strings.Join(o.pos, " "))
+	input := strings.TrimSpace(strings.Join(args, " "))
 	if input == "" {
-		return fmt.Errorf("usage: delta music %s <%s> [options]", cmd, map[string]string{
-			"song": "artist - title", "album": "artist - album", "artist": "artist",
-			"get": "url|music-link|file", "search": "artist - title",
-		}[cmd])
-	}
-	if o.bools["album"] && cmd != "search" {
-		return errors.New("--album only applies to search; use `delta music album` to download one")
-	}
-	if cmd != "search" && (o.str("limit") != "" || o.bools["json"]) {
-		return errors.New("--limit and --json only apply to search")
-	}
-	if cmd == "search" && o.bools["dry-run"] {
-		return errors.New("search never downloads anything; --dry-run is not needed")
-	}
-
-	limit := 0
-	if cmd == "search" {
-		// In a search, -n is the number of results to show.
-		if limit, err = o.int("limit", 0); err == nil && limit == 0 {
-			limit, err = o.int("n", 10)
-		}
-		if err != nil {
-			return err
-		}
-		delete(o.vals, "n")
-	}
-	if cmd == "get" && strings.HasPrefix(input, musicLinkPrefix) {
-		if input, err = decodeMusicLink(input); err != nil {
-			return err
-		}
-	}
-	engineArgs, err := musicEngineArgs(o)
-	if err != nil {
-		return err
-	}
-	switch cmd {
-	case "song":
-		engineArgs = append(engineArgs, "--song")
-	case "album":
-		engineArgs = append(engineArgs, "--album")
-	case "artist":
-		input = "artist=" + input
-		engineArgs = append(engineArgs, "--album", "--aggregate")
-	case "search":
-		if o.bools["album"] {
-			engineArgs = append(engineArgs, "--album")
-		} else {
-			engineArgs = append(engineArgs, "--song")
-		}
+		return fmt.Errorf("usage: delta music %s \"<%s>\"", cmd, what)
 	}
 
 	cfg, err := loadConfig()
@@ -142,6 +84,10 @@ func runMusic(args []string) error {
 		return fmt.Errorf("fetching the music config from the command center: %w", err)
 	}
 	engine, err := musicEngine()
+	if err != nil {
+		return err
+	}
+	outDir, err := filepath.Abs(expandHome(musicDir))
 	if err != nil {
 		return err
 	}
@@ -160,111 +106,19 @@ func runMusic(args []string) error {
 	if err := os.WriteFile(confPath, []byte(musicConfigWithLogin(string(confText), user, pass)), 0o600); err != nil {
 		return err
 	}
-	engineArgs = append([]string{"--config", confPath, "--input", input}, engineArgs...)
 
-	if cmd == "search" {
-		return musicSearch(engine, engineArgs, user, input, o.bools["album"], limit, o.bools["json"])
+	engineArgs := []string{"--config", confPath, "--input", input, "--input-type", "string", "--" + cmd,
+		"--output-dir", outDir, "--no-progress"}
+	before := snapshotDir(outDir)
+	err = musicRun(engine, engineArgs, user)
+	if err == errMusicFailed {
+		fmt.Println("\nNothing was downloaded; trying a broader search.")
+		err = musicRun(engine, append(engineArgs, musicBroader...), user)
 	}
-
-	outDir := o.str("output-dir")
-	if outDir == "" {
-		outDir = o.str("o")
+	if err != errMusicLogin {
+		printNewFiles(outDir, before)
 	}
-	if outDir == "" {
-		outDir = musicConfigOutputDir(string(confText))
-	}
-	if outDir, err = filepath.Abs(expandHome(outDir)); err != nil {
-		return err
-	}
-	if o.bools["dry-run"] {
-		return musicRun(engine, append(engineArgs, "--print", "jobs", "--no-progress"), user, "")
-	}
-	return musicRun(engine, append(engineArgs, "--no-progress"), user, outDir)
-}
-
-// musicEngineArgs translates our options into engine options.
-func musicEngineArgs(o *opts) ([]string, error) {
-	var out []string
-	add := func(name, val string) error {
-		if musicPathFlags[name] {
-			abs, err := filepath.Abs(expandHome(val))
-			if err != nil {
-				return err
-			}
-			val = abs
-		}
-		if name == "input-type" && val == "link" {
-			val = "soulseek"
-		} else if name == "input-type" && val == "soulseek" {
-			return fmt.Errorf("unknown --input-type %q", val)
-		}
-		out = append(out, "--"+name, toEngineNames(val))
-		return nil
-	}
-	alias := map[string]string{"o": "output-dir", "n": "number"}
-	names := make([]string, 0, len(o.vals))
-	for name := range o.vals {
-		names = append(names, name)
-	}
-	sort.Strings(names)
-	for _, name := range names {
-		if name == "limit" {
-			continue
-		}
-		engineName := name
-		if a, ok := alias[name]; ok {
-			engineName = a
-		}
-		for _, v := range o.vals[name] {
-			if err := add(engineName, v); err != nil {
-				return nil, err
-			}
-		}
-	}
-	bools := make([]string, 0, len(o.bools))
-	for name := range o.bools {
-		bools = append(bools, name)
-	}
-	sort.Strings(bools)
-	for _, name := range bools {
-		switch name {
-		case "d":
-			out = append(out, "--desperate")
-		case "dry-run", "json", "album":
-		default:
-			out = append(out, "--"+name)
-		}
-	}
-	return out, nil
-}
-
-// The agent never sees the network's or the engine's names, or anything
-// that shows where files come from. Search results are music:<id> links that
-// hide the engine's slsk://user/path links, and the name-format tags
-// slsk-foldername and slsk-filename are original-foldername and
-// original-filename.
-const musicLinkPrefix = "music:"
-
-var (
-	toEngine   = strings.NewReplacer("original-foldername", "slsk-foldername", "original-filename", "slsk-filename")
-	fromEngine = strings.NewReplacer("slsk-foldername", "original-foldername", "slsk-filename", "original-filename")
-)
-
-func toEngineNames(s string) string   { return toEngine.Replace(s) }
-func fromEngineNames(s string) string { return fromEngine.Replace(s) }
-
-// musicLink makes the link for one file, or for a folder when path ends in "/".
-func musicLink(user, path string) string {
-	return musicLinkPrefix + base64.RawURLEncoding.EncodeToString([]byte(user+"\x00"+path))
-}
-
-func decodeMusicLink(link string) (string, error) {
-	raw, err := base64.RawURLEncoding.DecodeString(strings.TrimPrefix(link, musicLinkPrefix))
-	user, path, ok := strings.Cut(string(raw), "\x00")
-	if err != nil || !ok || user == "" || path == "" {
-		return "", fmt.Errorf("%q is not a link from delta music search", link)
-	}
-	return "slsk://" + user + "/" + path, nil
+	return err
 }
 
 // musicLoginKeys are the config keys that set the Soulseek login. The command
@@ -287,25 +141,6 @@ func musicConfigWithLogin(text, user, pass string) string {
 		b.WriteByte('\n')
 	}
 	return b.String()
-}
-
-// musicConfigOutputDir finds the output-dir before the first [profile].
-func musicConfigOutputDir(text string) string {
-	for _, line := range strings.Split(text, "\n") {
-		line = strings.TrimSpace(line)
-		if strings.HasPrefix(line, "[") {
-			break
-		}
-		key, val, ok := strings.Cut(line, "=")
-		if ok && strings.TrimSpace(key) == "output-dir" {
-			val = strings.TrimSpace(val)
-			if len(val) >= 2 && val[0] == '"' && val[len(val)-1] == '"' {
-				val = val[1 : len(val)-1]
-			}
-			return val
-		}
-	}
-	return "."
 }
 
 func expandHome(p string) string {
@@ -518,7 +353,7 @@ var (
 	// A remote path as the engine logs it: user\\..\\folder\\file or
 	// user\\folder\\file, up to the end of the line or a quote.
 	remotePath = regexp.MustCompile(`[^\s:'"\\]+(\\[^\\'"\n]+)+`)
-	engineLink = regexp.MustCompile(`slsk://([^/\s]+)/(.*)$`)
+	engineLink = regexp.MustCompile(`slsk://[^/\s]+/(.*?)/?$`)
 	jobLine    = regexp.MustCompile(`^\[\d+\] \w+Job: `)
 	errorLine  = regexp.MustCompile(`^(\s*)(Error|Reason):`)
 	// Words that would give away where the files come from.
@@ -547,14 +382,12 @@ func musicLogLine(line, user string) (string, bool) {
 		line = strings.ReplaceAll(line, user, "")
 	}
 	line = engineLink.ReplaceAllStringFunc(line, func(m string) string {
-		sub := engineLink.FindStringSubmatch(m)
-		return musicLink(sub[1], sub[2])
+		return path.Base(engineLink.FindStringSubmatch(m)[1])
 	})
 	line = remotePath.ReplaceAllStringFunc(line, func(p string) string {
 		parts := strings.Split(strings.TrimRight(p, "\\"), "\\")
 		return parts[len(parts)-1]
 	})
-	line = fromEngineNames(line)
 	// Job lines are left with a status, the search and a file or folder
 	// name; anything else that still hints at the source is not passed on.
 	if !jobLine.MatchString(line) && sourceWords.MatchString(line) {
@@ -632,23 +465,20 @@ func startEngine(engine string, args []string, user string, onStdout func(string
 	return err
 }
 
-// musicRun downloads, then lists what arrived in outDir (if given).
-func musicRun(engine string, args []string, user, outDir string) error {
-	before := snapshotDir(outDir)
+// musicRun runs one download. It returns errMusicFailed when the engine
+// reports that it couldn't download what it was asked for.
+func musicRun(engine string, args []string, user string) error {
 	err := startEngine(engine, args, user, func(line string) {
 		if line, ok := musicLogLine(line, user); ok {
 			fmt.Println(line)
 		}
 	})
-	if outDir != "" && err != errMusicLogin {
-		printNewFiles(outDir, before)
-	}
 	var exit *exec.ExitError
 	if errors.As(err, &exit) {
 		if exit.ExitCode() == 2 {
 			return errors.New("the music download was given invalid input (see above)")
 		}
-		return errors.New("not everything was downloaded (see above)")
+		return errMusicFailed
 	}
 	return err
 }
@@ -718,236 +548,5 @@ func printNewFiles(dir string, before map[string]fileStamp) {
 			break
 		}
 		fmt.Println("  " + rel)
-	}
-}
-
-// ---- search ----
-
-type musicFile struct {
-	Length     int    `json:"Length"`
-	Filename   string `json:"Filename"`
-	Size       int64  `json:"Size"`
-	Bitrate    int    `json:"Bitrate"`
-	SampleRate int    `json:"SampleRate"`
-	BitDepth   int    `json:"BitDepth"`
-}
-
-type musicUser struct {
-	Username          string  `json:"Username"`
-	UploadSpeed       float64 `json:"UploadSpeed"`
-	HasFreeUploadSlot bool    `json:"HasFreeUploadSlot"`
-}
-
-type musicResult struct {
-	User  musicUser   `json:"User"`
-	File  *musicFile  `json:"File"`  // song results
-	Files []musicFile `json:"Files"` // album results
-}
-
-// musicHit is one search result as we show it.
-type musicHit struct {
-	Link      string `json:"link"`
-	Name      string `json:"name"`
-	Tracks    int    `json:"tracks,omitempty"`
-	Seconds   int    `json:"seconds,omitempty"`
-	Bitrate   int    `json:"bitrate_kbps,omitempty"`
-	Format    string `json:"format,omitempty"`
-	Bytes     int64  `json:"bytes"`
-	SlowStart bool   `json:"slow_start"`
-}
-
-func musicSearch(engine string, args []string, user, input string, album bool, limit int, asJSON bool) error {
-	var results []musicResult
-	var parseErr error
-	err := startEngine(engine, append(args, "--print", "json-all", "--progress-json"), user, func(line string) {
-		if strings.HasPrefix(line, "[") {
-			parseErr = json.Unmarshal([]byte(line), &results)
-		}
-	})
-	var exit *exec.ExitError
-	if err != nil && !(errors.As(err, &exit) && exit.ExitCode() == 1) {
-		return fmt.Errorf("search failed: %w", err)
-	}
-	if parseErr != nil {
-		return fmt.Errorf("reading search results: %w", parseErr)
-	}
-	hits := musicHits(results)
-	if asJSON {
-		if limit > 0 && len(hits) > limit {
-			hits = hits[:limit]
-		}
-		return printJSON(hits)
-	}
-	if len(hits) == 0 {
-		fmt.Printf("No results for %q that meet the music config's requirements.\n", input)
-		return nil
-	}
-	fmt.Printf("%d result(s) for %q, best first:\n", len(hits), input)
-	for i, h := range hits {
-		if limit > 0 && i == limit {
-			fmt.Printf("... %d more (--limit %d shows them)\n", len(hits)-limit, len(hits))
-			break
-		}
-		var info []string
-		if album {
-			info = append(info, fmt.Sprintf("%d tracks", h.Tracks))
-		}
-		if h.Seconds > 0 {
-			info = append(info, fmtDuration(h.Seconds))
-		}
-		if h.Bitrate > 0 {
-			info = append(info, fmt.Sprintf("%dkbps", h.Bitrate))
-		}
-		if h.Format != "" {
-			info = append(info, h.Format)
-		}
-		info = append(info, humanSize(h.Bytes))
-		if h.SlowStart {
-			info = append(info, "may start slowly")
-		}
-		fmt.Printf("%2d. %s\n    %s\n    %s\n", i+1, h.Name, strings.Join(info, ", "), h.Link)
-	}
-	return nil
-}
-
-func musicHits(results []musicResult) []musicHit {
-	var hits []musicHit
-	for _, r := range results {
-		h := musicHit{SlowStart: !r.User.HasFreeUploadSlot}
-		switch {
-		case r.File != nil:
-			p := strings.ReplaceAll(r.File.Filename, `\`, "/")
-			h.Link, h.Name = musicLink(r.User.Username, p), path.Base(p)
-			h.Seconds, h.Bitrate, h.Bytes = r.File.Length, r.File.Bitrate, r.File.Size
-			h.Format = strings.TrimPrefix(strings.ToLower(path.Ext(r.File.Filename)), ".")
-		case len(r.Files) > 0:
-			names := make([]string, len(r.Files))
-			formats := map[string]bool{}
-			var rateSum, rated int
-			for i, f := range r.Files {
-				names[i] = f.Filename
-				h.Seconds += f.Length
-				h.Bytes += f.Size
-				if f.Bitrate > 0 {
-					rateSum += f.Bitrate
-					rated++
-				}
-				if ext := strings.TrimPrefix(strings.ToLower(path.Ext(f.Filename)), "."); ext != "" {
-					formats[ext] = true
-				}
-			}
-			dir := strings.ReplaceAll(commonSlskDir(names), `\`, "/")
-			dir = strings.TrimSuffix(dir, "/")
-			h.Link, h.Name = musicLink(r.User.Username, dir+"/"), path.Base(dir)
-			h.Tracks = len(r.Files)
-			if rated > 0 {
-				h.Bitrate = rateSum / rated
-			}
-			h.Format = strings.Join(sortedSet(formats), ",")
-		default:
-			continue
-		}
-		hits = append(hits, h)
-	}
-	return hits
-}
-
-// commonSlskDir is the deepest folder (backslash-separated, as Soulseek
-// paths are) that holds every one of the files.
-func commonSlskDir(files []string) string {
-	if len(files) == 0 {
-		return ""
-	}
-	dir := func(f string) []string {
-		parts := strings.Split(f, `\`)
-		return parts[:len(parts)-1]
-	}
-	common := dir(files[0])
-	for _, f := range files[1:] {
-		parts := dir(f)
-		n := 0
-		for n < len(common) && n < len(parts) && common[n] == parts[n] {
-			n++
-		}
-		common = common[:n]
-	}
-	return strings.Join(common, `\`)
-}
-
-func sortedSet(m map[string]bool) []string {
-	out := make([]string, 0, len(m))
-	for k := range m {
-		out = append(out, k)
-	}
-	sort.Strings(out)
-	return out
-}
-
-func fmtDuration(sec int) string {
-	if sec >= 3600 {
-		return fmt.Sprintf("%d:%02d:%02d", sec/3600, sec/60%60, sec%60)
-	}
-	return fmt.Sprintf("%d:%02d", sec/60, sec%60)
-}
-
-// ---- config ----
-
-func musicConfigCmd(args []string) error {
-	cfg, err := loadConfig()
-	if err != nil {
-		return err
-	}
-	sub := "show"
-	if len(args) > 0 {
-		sub = args[0]
-	}
-	switch {
-	case sub == "show" && len(args) <= 1:
-		req, err := http.NewRequest(http.MethodGet, cfg.Server+"/music-config", nil)
-		if err != nil {
-			return err
-		}
-		req.Header.Set("Authorization", "Bearer "+cfg.Token)
-		resp, err := http.DefaultClient.Do(req)
-		if err != nil {
-			return err
-		}
-		defer resp.Body.Close()
-		if resp.StatusCode != http.StatusOK {
-			return fmt.Errorf("server returned HTTP %d", resp.StatusCode)
-		}
-		if resp.Header.Get("X-Delta-Default") == "true" {
-			fmt.Println("# The default music config (never changed).")
-		}
-		data, err := io.ReadAll(resp.Body)
-		if err != nil {
-			return err
-		}
-		fmt.Print(fromEngineNames(string(data)))
-		return nil
-	case sub == "set" && len(args) == 2:
-		var data []byte
-		if args[1] == "-" {
-			data, err = io.ReadAll(os.Stdin)
-		} else {
-			data, err = os.ReadFile(args[1])
-		}
-		if err != nil {
-			return err
-		}
-		data = []byte(toEngineNames(string(data)))
-		if _, err := do(cfg, http.MethodPut, "/music-config", bytes.NewReader(data)); err != nil {
-			return err
-		}
-		fmt.Println("Music config saved on the command center.")
-		return nil
-	case sub == "reset" && len(args) == 1:
-		if _, err := do(cfg, http.MethodDelete, "/music-config", nil); err != nil {
-			return err
-		}
-		fmt.Println("Music config reset to the default.")
-		return nil
-	default:
-		return errors.New("usage: delta music config [show | set <file|-> | reset]")
 	}
 }
