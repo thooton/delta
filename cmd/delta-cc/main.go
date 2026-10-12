@@ -177,6 +177,7 @@ func newHandler(tokenHash []byte, filesDir string, maxUpload int64, u *updater, 
 	mux.HandleFunc("DELETE /files/{name}", s.deleteFile)
 	// The music config lives in the data directory, next to files/.
 	(&musicConfig{path: filepath.Join(filepath.Dir(filesDir), musicConfigFile)}).register(mux)
+	(&booksLoginStore{path: filepath.Join(filepath.Dir(filesDir), booksLoginFile)}).register(mux)
 	if canvas != nil {
 		canvas.register(mux)
 	} else {

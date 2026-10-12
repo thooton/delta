@@ -123,6 +123,9 @@ func selfTest() error {
 	if err := musicSelfTest(expect, token); err != nil {
 		return err
 	}
+	if err := booksSelfTest(expect, token); err != nil {
+		return err
+	}
 	return canvasSelfTest(dir)
 }
 
@@ -162,4 +165,38 @@ func musicSelfTest(expect func(desc string, want int, method, path, tok string, 
 		return fmt.Errorf("music config after reset: got %q", data)
 	}
 	return nil
+}
+
+// booksSelfTest checks that the book login can be set, read back and removed,
+// and that incomplete logins are rejected.
+func booksSelfTest(expect func(desc string, want int, method, path, tok string, body []byte) ([]byte, error), token string) error {
+	if _, err := expect("book login requires the token", 401, "GET", "/books-login", "", nil); err != nil {
+		return err
+	}
+	if _, err := expect("no book login yet", 404, "GET", "/books-login", token, nil); err != nil {
+		return err
+	}
+	for _, bad := range []string{"", "nope", `{"email":"a@b.c"}`, `{"email":"ab","password":"x"}`} {
+		if _, err := expect(fmt.Sprintf("book login %q is rejected", bad), 400, "PUT", "/books-login", token, []byte(bad)); err != nil {
+			return err
+		}
+	}
+	login := booksLogin{Email: "reader@example.com", Password: "p@ss word"}
+	body, _ := json.Marshal(login)
+	if _, err := expect("set book login", 200, "PUT", "/books-login", token, body); err != nil {
+		return err
+	}
+	data, err := expect("read book login", 200, "GET", "/books-login", token, nil)
+	if err != nil {
+		return err
+	}
+	var got booksLogin
+	if err := json.Unmarshal(data, &got); err != nil || got != login {
+		return fmt.Errorf("read book login: got %s", data)
+	}
+	if _, err := expect("remove book login", 200, "DELETE", "/books-login", token, nil); err != nil {
+		return err
+	}
+	_, err = expect("book login after removal", 404, "GET", "/books-login", token, nil)
+	return err
 }

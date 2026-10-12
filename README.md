@@ -19,7 +19,7 @@ The agent is never told to clone this repository, since that would only clutter 
 ## Layout
 
 - `cmd/delta-cc`: the command center, an HTTP server. `canvas.go` is the Canvas relay.
-- `cmd/delta`: the CLI. Its `delta help`, `delta canvas help` and `delta music help` text is written for the agent. The `canvas*.go` files hold the Canvas commands, `music*.go` the music commands, and `markdown.go` converts Markdown to HTML.
+- `cmd/delta`: the CLI. Its `delta help`, `delta canvas help`, `delta music help` and `delta books help` text is written for the agent. The `canvas*.go` files hold the Canvas commands, `music*.go` the music commands, `books*.go` the book commands, and `markdown.go` converts Markdown to HTML.
 - `scripts/fetch-music-engine.sh`: puts the music engine into `cmd/delta/music-engine/` for the CLI to embed (see [Music](#music)).
 - `.github/workflows/release.yml`: on every push to `master`, builds both programs and publishes them to the [`latest` release](https://github.com/thooton/delta/releases/tag/latest). It does not deploy anything.
 - `deploy/delta-cc.service`: the systemd unit for the VPS.
@@ -53,6 +53,7 @@ delta delete <name>            delete a file
 delta update-cc <binary-url>   update the command center to a new binary
 delta canvas <command> ...     use the user's Canvas (see below)
 delta music <command> ...      download music (see below)
+delta books <command> ...      download ebooks (see below)
 ```
 
 Agents download the CLI from `https://github.com/thooton/delta/releases/download/latest/delta-linux-amd64`. Builds for `linux-arm64`, `darwin-amd64`, and `darwin-arm64` are published alongside it.
@@ -76,6 +77,9 @@ Every endpoint requires the bearer token.
 | GET | `/music-config` | The music downloading configuration, as text. `X-Delta-Default: true` while it is the built-in default. |
 | PUT | `/music-config` | Replaces it with the request body. Rejects anything the engine can't parse and any login. |
 | DELETE | `/music-config` | Restores the default. |
+| GET | `/books-login` | The book account, as `{"email", "password"}`. 404 while none is set. |
+| PUT | `/books-login` | Replaces it. Needs an email address and a password. |
+| DELETE | `/books-login` | Removes it. |
 
 Running `delta-cc` with no arguments starts the server. By default it listens on `:8080`, stores data in `./data`, and accepts uploads up to 1 GiB; the `-addr`, `-data`, and `-max-upload` flags change these. The server speaks plain HTTP, so run it behind a reverse proxy that handles TLS (Caddy, for example). Otherwise the token travels unencrypted.
 
@@ -116,6 +120,16 @@ The engine is white-labeled. The agent never runs it or sees its name: the CLI p
 **Configuration.** The engine's config (output directory, required and preferred formats and bitrates, file naming, and profiles such as album-only naming) is stored on the command center as `data/music.conf`, falling back to a built-in default. The CLI fetches it on every run, writes it to a private temporary file, and points the engine at it, so no local engine config is ever used. The agent can view and replace it with `delta music config`.
 
 **Logins.** Soulseek needs an account but registers any unknown username on first login. The config never holds one, so that agents on different machines never share an account (a second login kicks the first off). Instead each CLI instance makes up a random account on first use (16-character username, 24-character password) and keeps it in `~/.config/delta/music-login.json`. Making up a new account on every run gets the machine's IP throttled by the Soulseek server, which then never answers logins. Runs on the same machine take turns through a lock file (`music.lock`), since they share the account. If logins keep failing, a run gives up after about a minute instead of retrying forever as the engine would.
+
+## Books
+
+`delta books` lets the agent search for ebooks and download them by result number, optionally pushing each straight to the command center (`--push`). `delta books help` documents it for the agent.
+
+**The source.** Books come from Z-Library's `/eapi` JSON API. The client in `cmd/delta/books_source.go` is ported from the standalone zlib CLI, which copies [rookslog/zlibrary-mcp](https://github.com/rookslog/zlibrary-mcp): same domain probing and fallback list, login, search fields, headers, cookies and download flow. Two things differ so the CLI keeps to the standard library: it doesn't offer brotli (`Accept-Encoding: gzip, deflate`), and file names fold accented Latin letters with a small table instead of full NFKD. `DELTA_BOOKS_DOMAIN` pins a domain instead of probing.
+
+It is white-labeled like music: nothing the agent sees names Z-Library or its hosts. Network errors lose their URLs, the anti-bot wall becomes "blocking requests from this machine", and any message from the source is scrubbed of the source's names before it is printed. Files are saved as `Author_Title_Year_lang_ID.ext`.
+
+**The account.** The Z-Library email and password are stored on the command center as `data/books-login.json` (mode 0600) and set with `delta books login set <email> -` (password on stdin), which tries the login first and refuses to save one that is rejected. The CLI fetches the account only when it has to log in. Logins are rate-limited (about 10 an hour per IP), so it keeps the session cookies, with the last search and its results, in `~/.config/delta/books-state.json` and reuses them. When a call fails with a stored session, it logs in again once and retries. A session from before an account change keeps working on that machine until it expires.
 
 ## Updating the command center
 
