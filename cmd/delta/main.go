@@ -60,6 +60,8 @@ COMMANDS
                                      sent.
   delta list                         List files.
   delta delete <name>                Delete a file.
+  delta git <args>                   Run git with the user's GitHub token.
+  delta gh <args>                    Run gh with the user's GitHub token.
   delta get-personal-access-token    Print the user's GitHub token.
   delta set-personal-access-token <token|->
                                      Check and save a new GitHub token ("-"
@@ -73,15 +75,18 @@ COMMANDS
   Aliases: ls = list, rm = delete, get = pull.
 
 GITHUB
-  Use the user's token for git and gh. Once per machine:
+  The user has given you a GitHub personal access token for their
+  repositories, kept on the command center. Use "delta git" and "delta gh"
+  in place of git and gh for anything that talks to GitHub; they pass the
+  token to that one command and store it nowhere:
 
-    git config --global credential.https://github.com.helper \
-      '!f() { test "$1" = get || exit 0; echo username=x-access-token; echo "password=$(delta get-personal-access-token)"; }; f'
+    delta git clone https://github.com/thooton/sonim
+    delta git push
+    delta gh run watch -R thooton/delta
 
-  then clone https://github.com/thooton/<repo>. For gh, prefix each
-  command with GH_TOKEN=$(delta get-personal-access-token). Never show the
-  token or put it in a URL or file. If it is missing or expired, ask the
-  user for a new one and save it with set-personal-access-token.
+  Never show the token or put it in a URL or file. If it is missing or
+  expired, ask the user for a new one and save it with
+  set-personal-access-token.
 
 UPDATING THE COMMAND CENTER
   Push the change to master in thooton/delta, wait for its GitHub Actions
@@ -169,6 +174,8 @@ func run(args []string) error {
 			return errors.New("usage: delta set-personal-access-token <token|->")
 		}
 		return setAccessToken(args[0])
+	case "git", "gh":
+		return runWithAccessToken(cmd, args)
 	case "update-cc":
 		if len(args) != 1 {
 			return errors.New("usage: delta update-cc <binary-url>")

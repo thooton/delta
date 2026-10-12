@@ -51,6 +51,7 @@ delta push <path> [name]       upload a file, replacing any file with the same n
 delta pull <name> [dest]       download a file (e.g. a photo sent from the phone)
 delta list                     list files
 delta delete <name>            delete a file
+delta git <args> / delta gh <args>       run git or gh with the user's GitHub token
 delta get-personal-access-token          print the user's GitHub token
 delta set-personal-access-token <tok|->  check and save a new GitHub token
 delta update-cc <binary-url>   update the command center to a new binary
@@ -134,7 +135,7 @@ The engine is white-labeled. The agent never runs it or sees its name: the CLI p
 
 ## GitHub access
 
-The agent reaches the user's repositories with a GitHub personal access token stored on the command center as `data/personal-access-token`. `delta help` tells the agent to install a git credential helper that runs `delta get-personal-access-token` whenever git needs a password, and to pass `GH_TOKEN=$(delta get-personal-access-token)` to `gh`, so the token is never written into a clone. `delta set-personal-access-token` checks a new token against `api.github.com/user` (refusing one GitHub rejects, saving it with a warning if GitHub can't be reached) before storing it. To set it on the VPS directly, write the token to that file, readable only by the `delta` user.
+The agent reaches the user's repositories with a GitHub personal access token stored on the command center as `data/personal-access-token`. The agent runs `delta git ...` and `delta gh ...` instead of `git` and `gh`. Each fetches the token and hands it to that one process through its environment: to git as an `http.https://github.com/.extraheader` basic-auth header via `GIT_CONFIG_COUNT`/`GIT_CONFIG_KEY_n`/`GIT_CONFIG_VALUE_n` (as actions/checkout does), to gh as `GH_TOKEN`. So no git config, remote URL or clone ever holds it. (An earlier version had the agent install a global git credential helper, which Claude Code's auto-mode classifier blocks as unauthorized persistence.) `delta set-personal-access-token` checks a new token against `api.github.com/user` (refusing one GitHub rejects, saving it with a warning if GitHub can't be reached) before storing it. To set it on the VPS directly, write the token to that file, readable only by the `delta` user.
 
 ## Books
 
