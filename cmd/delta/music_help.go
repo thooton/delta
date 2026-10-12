@@ -3,8 +3,8 @@ package main
 const musicHelp = `delta music: download music for the user
 
 HOW IT WORKS
-  delta music searches a peer-to-peer music network and downloads the best
-  match to this machine. To get it onto the phone, push it with
+  delta music searches for the requested song or album and downloads the
+  best match to this machine. To get it onto the phone, push it with
   "delta push" afterwards. Run "delta set-auth" first (see "delta help"):
   every run reads the music config from the command center.
 
@@ -47,7 +47,7 @@ DOWNLOADING
 
 CHOOSING BY HAND
   search "<artist> - <title>" [--album] [--limit 10] [--json]
-                         Show what the network has, best first, without
+                         Show what's available, best first, without
                          downloading. Each result has a music:// link (a
                          folder link with --album); pass it to "get" to
                          download exactly that one. Use this when the
