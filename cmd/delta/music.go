@@ -83,7 +83,7 @@ func runMusic(args []string) error {
 	if input == "" {
 		return fmt.Errorf("usage: delta music %s <%s> [options]", cmd, map[string]string{
 			"song": "artist - title", "album": "artist - album", "artist": "artist",
-			"get": "url|slsk-link|file", "search": "artist - title",
+			"get": "url|music-link|file", "search": "artist - title",
 		}[cmd])
 	}
 	if o.bools["album"] && cmd != "search" {
@@ -106,6 +106,9 @@ func runMusic(args []string) error {
 			return err
 		}
 		delete(o.vals, "n")
+	}
+	if cmd == "get" {
+		input = toEngineNames(input)
 	}
 	engineArgs, err := musicEngineArgs(o)
 	if err != nil {
@@ -187,7 +190,12 @@ func musicEngineArgs(o *opts) ([]string, error) {
 			}
 			val = abs
 		}
-		out = append(out, "--"+name, val)
+		if name == "input-type" && val == "link" {
+			val = "soulseek"
+		} else if name == "input-type" && val == "soulseek" {
+			return fmt.Errorf("unknown --input-type %q", val)
+		}
+		out = append(out, "--"+name, toEngineNames(val))
 		return nil
 	}
 	alias := map[string]string{"o": "output-dir", "n": "number"}
@@ -226,6 +234,20 @@ func musicEngineArgs(o *opts) ([]string, error) {
 	}
 	return out, nil
 }
+
+// The agent never sees the network's or the engine's own names. Links to
+// search results use music:// rather than slsk://, and the name-format tags
+// slsk-foldername and slsk-filename are remote-foldername and
+// remote-filename. These translate between the two at the boundary.
+var (
+	toEngine = strings.NewReplacer("music://", "slsk://",
+		"remote-foldername", "slsk-foldername", "remote-filename", "slsk-filename")
+	fromEngine = strings.NewReplacer("slsk://", "music://",
+		"slsk-foldername", "remote-foldername", "slsk-filename", "remote-filename")
+)
+
+func toEngineNames(s string) string   { return toEngine.Replace(s) }
+func fromEngineNames(s string) string { return fromEngine.Replace(s) }
 
 // musicLoginKeys are the config keys that set the Soulseek login. The command
 // center never stores them, but strip them anyway: the login must be ours.
@@ -302,7 +324,7 @@ func musicLogin() (acct musicAccount, release func(), err error) {
 		return acct, nil, err
 	}
 	if syscall.Flock(int(lock.Fd()), syscall.LOCK_EX|syscall.LOCK_NB) != nil {
-		fmt.Fprintln(os.Stderr, "Another delta music run is using this machine's Soulseek login; waiting for it to finish.")
+		fmt.Fprintln(os.Stderr, "Another delta music run is using this machine's music login; waiting for it to finish.")
 		if err := syscall.Flock(int(lock.Fd()), syscall.LOCK_EX); err != nil {
 			lock.Close()
 			return acct, nil, err
@@ -450,7 +472,11 @@ func unpackMusicEngine(dir string) error {
 var (
 	ansiEscape  = regexp.MustCompile(`\x1b\[[0-9;?]*[A-Za-z]`)
 	engineName  = regexp.MustCompile(`(?i)sockseek`)
+	slskName    = regexp.MustCompile(`(?i)slsk`)
 	engineNoise = []string{"[cli] Starting CLI session", "[soulseek] Logging in as"}
+	// The network's name, with the space after it so "No Soulseek file
+	// results" reads "No file results".
+	networkName = regexp.MustCompile(`(?i)\[soulseek\] |soulseek ?`)
 	// Lines that continue an exception's stack trace.
 	stackTrace = regexp.MustCompile(`^\s+(at |--- End of |---> )`)
 )
@@ -461,8 +487,8 @@ var (
 // minute.
 const musicLoginTries = 4
 
-var errMusicLogin = errors.New("could not log in to the Soulseek network (" + fmt.Sprint(musicLoginTries) +
-	" tries). It may be down, or limiting new logins from this machine; try again in a few minutes")
+var errMusicLogin = errors.New("could not log in to the music network (" + fmt.Sprint(musicLoginTries) +
+	" tries). It may be down, or limiting logins from this machine; try again in a few minutes")
 
 // isLoginFailure reports whether an engine log line says a login attempt
 // failed.
@@ -489,6 +515,8 @@ func musicLogLine(line, user string) (string, bool) {
 	}
 	line = strings.TrimPrefix(line, "[cli] ")
 	line = engineName.ReplaceAllString(line, "delta music")
+	line = networkName.ReplaceAllString(line, "")
+	line = slskName.ReplaceAllString(fromEngineNames(line), "remote")
 	if user != "" {
 		line = strings.ReplaceAll(line, user, "(delta)")
 	}
@@ -523,7 +551,7 @@ func startEngine(engine string, args []string, user string, onStdout func(string
 		case strings.HasPrefix(line, "[warn] [soulseek] Connection lost"):
 			failures++
 			if failures == 1 {
-				fmt.Fprintln(os.Stderr, "Logging in to the Soulseek network failed; retrying.")
+				fmt.Fprintln(os.Stderr, "Logging in to the music network failed; retrying.")
 			}
 			if failures >= musicLoginTries && !gaveUp {
 				gaveUp = true
@@ -745,7 +773,7 @@ func musicHits(results []musicResult) []musicHit {
 		h := musicHit{User: r.User.Username, FreeSlot: r.User.HasFreeUploadSlot}
 		switch {
 		case r.File != nil:
-			h.Link = "slsk://" + r.User.Username + "/" + strings.ReplaceAll(r.File.Filename, `\`, "/")
+			h.Link = "music://" + r.User.Username + "/" + strings.ReplaceAll(r.File.Filename, `\`, "/")
 			h.Seconds, h.Bitrate, h.Bytes = r.File.Length, r.File.Bitrate, r.File.Size
 			h.Format = strings.TrimPrefix(strings.ToLower(path.Ext(r.File.Filename)), ".")
 		case len(r.Files) > 0:
@@ -765,7 +793,7 @@ func musicHits(results []musicResult) []musicHit {
 				}
 			}
 			dir := strings.ReplaceAll(commonSlskDir(names), `\`, "/")
-			h.Link = "slsk://" + r.User.Username + "/" + strings.TrimSuffix(dir, "/") + "/"
+			h.Link = "music://" + r.User.Username + "/" + strings.TrimSuffix(dir, "/") + "/"
 			h.Tracks = len(r.Files)
 			if rated > 0 {
 				h.Bitrate = rateSum / rated
@@ -846,8 +874,12 @@ func musicConfigCmd(args []string) error {
 		if resp.Header.Get("X-Delta-Default") == "true" {
 			fmt.Println("# The default music config (never changed).")
 		}
-		_, err = io.Copy(os.Stdout, resp.Body)
-		return err
+		data, err := io.ReadAll(resp.Body)
+		if err != nil {
+			return err
+		}
+		fmt.Print(fromEngineNames(string(data)))
+		return nil
 	case sub == "set" && len(args) == 2:
 		var data []byte
 		if args[1] == "-" {
@@ -858,6 +890,7 @@ func musicConfigCmd(args []string) error {
 		if err != nil {
 			return err
 		}
+		data = []byte(toEngineNames(string(data)))
 		if _, err := do(cfg, http.MethodPut, "/music-config", bytes.NewReader(data)); err != nil {
 			return err
 		}

@@ -63,6 +63,10 @@ func TestMusicLogLine(t *testing.T) {
 		{"[error] [cli] Input error: Unknown argument: --x", "error: Unknown argument: --x", true},
 		{"\x1b[32m[002] SongJob: succeeded: A - B\x1b[0m", "[002] SongJob: succeeded: A - B", true},
 		{"Wrote the Sockseek index for secretuser", "Wrote the delta music index for (delta)", true},
+		{"    Error: No Soulseek file results found.", "    Error: No file results found.", true},
+		{"[warn] [soulseek] Peer slow", "[warn] Peer slow", true},
+		{"[001] ExtractJob: Input: slsk://u/a/", "[001] ExtractJob: Input: music://u/a/", true},
+		{"tag slsk-foldername, slskd", "tag remote-foldername, remoted", true},
 	}
 	for _, c := range cases {
 		got, keep := musicLogLine(c.in, "secretuser")
@@ -104,10 +108,26 @@ func TestMusicHits(t *testing.T) {
 	if len(hits) != 2 {
 		t.Fatalf("got %d hits", len(hits))
 	}
-	if h := hits[0]; h.Link != "slsk://u/m/A/B/01 X.MP3" || h.Format != "mp3" || !h.FreeSlot {
+	if h := hits[0]; h.Link != "music://u/m/A/B/01 X.MP3" || h.Format != "mp3" || !h.FreeSlot {
 		t.Errorf("song hit %+v", h)
 	}
-	if h := hits[1]; h.Link != "slsk://v/m/A/Album/" || h.Tracks != 2 || h.Bytes != 30 || h.Seconds != 150 || h.Bitrate != 320 || h.Format != "flac,mp3" {
+	if h := hits[1]; h.Link != "music://v/m/A/Album/" || h.Tracks != 2 || h.Bytes != 30 || h.Seconds != 150 || h.Bitrate != 320 || h.Format != "flac,mp3" {
 		t.Errorf("album hit %+v", h)
+	}
+}
+
+func TestMusicNameTranslation(t *testing.T) {
+	engine := "name-format = {slsk-foldername}/{slsk-filename}\nx = slsk://u/f/\n"
+	agent := "name-format = {remote-foldername}/{remote-filename}\nx = music://u/f/\n"
+	if got := fromEngineNames(engine); got != agent {
+		t.Errorf("fromEngineNames: %q", got)
+	}
+	if got := toEngineNames(agent); got != engine {
+		t.Errorf("toEngineNames: %q", got)
+	}
+	o, _ := parseOpts([]string{"--input-type", "link", "--name-format", "{remote-filename}"}, musicValueFlags, musicBoolFlags)
+	got, err := musicEngineArgs(o)
+	if err != nil || !reflect.DeepEqual(got, []string{"--input-type", "soulseek", "--name-format", "{slsk-filename}"}) {
+		t.Errorf("got %q, %v", got, err)
 	}
 }

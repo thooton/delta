@@ -3,8 +3,8 @@ package main
 const musicHelp = `delta music: download music for the user
 
 HOW IT WORKS
-  delta music searches the Soulseek peer-to-peer network and downloads the
-  best match to this machine. To get it onto the phone, push it with
+  delta music searches a peer-to-peer music network and downloads the best
+  match to this machine. To get it onto the phone, push it with
   "delta push" afterwards. Run "delta set-auth" first (see "delta help"):
   every run reads the music config from the command center.
 
@@ -30,8 +30,8 @@ DOWNLOADING
                          artist, compilations included. This can be a lot;
                          -n limits how many albums.
   get <input> [options]  Anything else:
-                           slsk://user/path/file.mp3   one file from a search
-                           slsk://user/path/folder/    one album from a search
+                           music://user/path/file.mp3  one file from a search
+                           music://user/path/folder/   one album from a search
                            Spotify, YouTube, Bandcamp or MusicBrainz URLs
                              (playlist, album, track, artist, release)
                            a CSV file (columns like Artist, Title, Album)
@@ -48,7 +48,7 @@ DOWNLOADING
 CHOOSING BY HAND
   search "<artist> - <title>" [--album] [--limit 10] [--json]
                          Show what the network has, best first, without
-                         downloading. Each result has an slsk:// link (a
+                         downloading. Each result has a music:// link (a
                          folder link with --album); pass it to "get" to
                          download exactly that one. Use this when the
                          automatic choice was wrong, or to compare versions.
@@ -75,7 +75,7 @@ OPTIONS (song, album, artist, get, search)
   --album-art largest|most   Fetch extra cover art for albums.
   --name-format FMT          File naming, e.g. "{artist} - {title}". Tags:
                              artist, albumartist, title, album, year, track,
-                             disc, filename, slsk-foldername; "{a|b}" uses b
+                             disc, filename, remote-foldername; "{a|b}" uses b
                              when a is missing; "( - )" adds text only if
                              tags are present.
   -n, --number N / --offset N / --reverse    Which playlist items.
@@ -95,7 +95,7 @@ OPTIONS (song, album, artist, get, search)
   --no-skip-existing         Download again even if already downloaded.
   --write-playlist           Write an .m3u playlist of the downloads.
   --input-type TYPE          csv|youtube|spotify|bandcamp|string|list|
-                             soulseek|musicbrainz (normally detected).
+                             link|musicbrainz (normally detected).
   --spotify-id/--spotify-secret/--spotify-token/--spotify-refresh,
   --youtube-key              Credentials for those sources.
   --verbose                  More detail in the log.
@@ -119,6 +119,6 @@ THE MUSIC CONFIG
                          for album-only settings. Show it first and edit
                          that; only change it when the user asks.
   config reset           Go back to the default.
-  It never holds a login: this machine makes up its own Soulseek account
+  It never holds a login: this machine makes up its own music account
   on first use and keeps it in the delta config directory.
 `
