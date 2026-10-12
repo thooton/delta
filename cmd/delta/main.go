@@ -38,6 +38,8 @@ WHAT THIS IS
     (cd list/android && ./gradlew :app:assembleRelease)
     delta push list/android/app/build/outputs/apk/release/app-release.apk list.apk
 
+  (If list.apk is already there, push it as list-2.apk and so on.)
+
   Always push release builds; debug builds run slowly on the phone. It
   shows up in the Files tab, and installing it updates the app in place
   because every build is signed with the key in sonim/signing. Never
@@ -56,7 +58,8 @@ SETUP
 
 COMMANDS
   delta set-auth <url> <token>       Verify and save the URL and token.
-  delta push <path> [name]           Upload a file (same name replaces it).
+  delta push <path> [name]           Upload a file. A name already taken is
+                                     refused: pick a different one.
   delta pull <name> [dest]           Download a file, e.g. a photo the user
                                      sent.
   delta list                         List files.
@@ -269,18 +272,13 @@ func push(path, name string) error {
 		return err
 	}
 	var res struct {
-		Name     string `json:"name"`
-		Size     int64  `json:"size"`
-		Replaced bool   `json:"replaced"`
+		Name string `json:"name"`
+		Size int64  `json:"size"`
 	}
 	if err := json.Unmarshal(body, &res); err != nil {
 		return err
 	}
-	verb := "Pushed"
-	if res.Replaced {
-		verb = "Replaced"
-	}
-	fmt.Printf("%s %s (%s).\n", verb, res.Name, humanSize(res.Size))
+	fmt.Printf("Pushed %s (%s).\n", res.Name, humanSize(res.Size))
 	return nil
 }
 
