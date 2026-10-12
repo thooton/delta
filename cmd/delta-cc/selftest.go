@@ -126,6 +126,9 @@ func selfTest() error {
 	if err := booksSelfTest(expect, token); err != nil {
 		return err
 	}
+	if err := accessTokenSelfTest(expect, token); err != nil {
+		return err
+	}
 	return canvasSelfTest(dir)
 }
 
@@ -199,4 +202,39 @@ func booksSelfTest(expect func(desc string, want int, method, path, tok string, 
 	}
 	_, err = expect("book login after removal", 404, "GET", "/books-login", token, nil)
 	return err
+}
+
+// accessTokenSelfTest checks that the personal access token can be set,
+// read back and replaced, and that malformed tokens are rejected.
+func accessTokenSelfTest(expect func(desc string, want int, method, path, tok string, body []byte) ([]byte, error), token string) error {
+	if _, err := expect("personal access token requires the token", 401, "GET", "/personal-access-token", "", nil); err != nil {
+		return err
+	}
+	if _, err := expect("no personal access token yet", 404, "GET", "/personal-access-token", token, nil); err != nil {
+		return err
+	}
+	for _, bad := range []string{"", " \n", "two words", "a\x00b"} {
+		if _, err := expect(fmt.Sprintf("personal access token %q is rejected", bad), 400, "PUT", "/personal-access-token", token, []byte(bad)); err != nil {
+			return err
+		}
+	}
+	if _, err := expect("oversized personal access token is rejected", 413, "PUT", "/personal-access-token", token, make([]byte, maxAccessToken+1)); err != nil {
+		return err
+	}
+	for _, pat := range []string{"ghp_first", "github_pat_second"} {
+		if _, err := expect("set personal access token", 200, "PUT", "/personal-access-token", token, []byte(pat+"\n")); err != nil {
+			return err
+		}
+		data, err := expect("read personal access token", 200, "GET", "/personal-access-token", token, nil)
+		if err != nil {
+			return err
+		}
+		var got struct {
+			Token string `json:"token"`
+		}
+		if err := json.Unmarshal(data, &got); err != nil || got.Token != pat {
+			return fmt.Errorf("read personal access token: got %s, want %q", data, pat)
+		}
+	}
+	return nil
 }
