@@ -62,11 +62,14 @@ func TestMusicLogLine(t *testing.T) {
 		{"[cli] Completed: 1 succeeded, 0 failed.", "Completed: 1 succeeded, 0 failed.", true},
 		{"[error] [cli] Input error: Unknown argument: --x", "error: Unknown argument: --x", true},
 		{"\x1b[32m[002] SongJob: succeeded: A - B\x1b[0m", "[002] SongJob: succeeded: A - B", true},
-		{"Wrote the Sockseek index for secretuser", "Wrote the delta music index for (delta)", true},
 		{"    Error: No Soulseek file results found.", "    Error: No file results found.", true},
-		{"[warn] [soulseek] Peer slow", "[warn] Peer slow", true},
-		{"[001] ExtractJob: Input: slsk://u/a/", "[001] ExtractJob: Input: music://u/a/", true},
-		{"tag slsk-foldername, slskd", "tag remote-foldername, remoted", true},
+		{"[002] SongJob: succeeded: A - B: noctower\\..\\Daft Punk\\Discovery\\03 - B.mp3", "[002] SongJob: succeeded: A - B: 03 - B.mp3", true},
+		{"[003] AlbumJob: downloading: A - X: bob\\Music\\A\\X", "[003] AlbumJob: downloading: A - X: X", true},
+		{"  Reason:    30000ms without peer transfer activity: bob\\x.mp3", "  Reason: the download failed", true},
+		{"[warn] Too many uploads queued by user bob", "", false},
+		{"[debug] anything", "", false},
+		{"Logged in as secretuser", "Logged in as ", true},
+		{"[001] ExtractJob: Input: slsk://bob/a b/", "[001] ExtractJob: Input: " + musicLink("bob", "a b/"), true},
 	}
 	for _, c := range cases {
 		got, keep := musicLogLine(c.in, "secretuser")
@@ -108,26 +111,36 @@ func TestMusicHits(t *testing.T) {
 	if len(hits) != 2 {
 		t.Fatalf("got %d hits", len(hits))
 	}
-	if h := hits[0]; h.Link != "music://u/m/A/B/01 X.MP3" || h.Format != "mp3" || !h.FreeSlot {
+	if h := hits[0]; h.Link != musicLink("u", "m/A/B/01 X.MP3") || h.Name != "01 X.MP3" || h.Format != "mp3" || h.SlowStart {
 		t.Errorf("song hit %+v", h)
 	}
-	if h := hits[1]; h.Link != "music://v/m/A/Album/" || h.Tracks != 2 || h.Bytes != 30 || h.Seconds != 150 || h.Bitrate != 320 || h.Format != "flac,mp3" {
+	if h := hits[1]; h.Link != musicLink("v", "m/A/Album/") || h.Name != "Album" || !h.SlowStart || h.Tracks != 2 || h.Bytes != 30 || h.Seconds != 150 || h.Bitrate != 320 || h.Format != "flac,mp3" {
 		t.Errorf("album hit %+v", h)
 	}
 }
 
 func TestMusicNameTranslation(t *testing.T) {
-	engine := "name-format = {slsk-foldername}/{slsk-filename}\nx = slsk://u/f/\n"
-	agent := "name-format = {remote-foldername}/{remote-filename}\nx = music://u/f/\n"
+	engine := "name-format = {slsk-foldername}/{slsk-filename}\n"
+	agent := "name-format = {original-foldername}/{original-filename}\n"
 	if got := fromEngineNames(engine); got != agent {
 		t.Errorf("fromEngineNames: %q", got)
 	}
 	if got := toEngineNames(agent); got != engine {
 		t.Errorf("toEngineNames: %q", got)
 	}
-	o, _ := parseOpts([]string{"--input-type", "link", "--name-format", "{remote-filename}"}, musicValueFlags, musicBoolFlags)
+	o, _ := parseOpts([]string{"--input-type", "link", "--name-format", "{original-filename}"}, musicValueFlags, musicBoolFlags)
 	got, err := musicEngineArgs(o)
 	if err != nil || !reflect.DeepEqual(got, []string{"--input-type", "soulseek", "--name-format", "{slsk-filename}"}) {
 		t.Errorf("got %q, %v", got, err)
+	}
+	link := musicLink("bob", "Music/A/X/")
+	if strings.Contains(link, "bob") || strings.Contains(link, "Music") {
+		t.Errorf("link shows its source: %s", link)
+	}
+	if got, err := decodeMusicLink(link); err != nil || got != "slsk://bob/Music/A/X/" {
+		t.Errorf("decodeMusicLink = %q, %v", got, err)
+	}
+	if _, err := decodeMusicLink("music:nonsense!"); err == nil {
+		t.Error("bad link accepted")
 	}
 }

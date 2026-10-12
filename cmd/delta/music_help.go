@@ -8,8 +8,7 @@ HOW IT WORKS
   "delta push" afterwards. Run "delta set-auth" first (see "delta help"):
   every run reads the music config from the command center.
 
-  Downloads come from other people's computers, so they can be slow, can
-  stall, and are sometimes the wrong file. Check what you got (the file
+  Downloads can be slow, can stall, and are sometimes the wrong file. Check what you got (the file
   names, and the track count of an album) before you tell the user it's
   done. A run prints a line as each item is searched, downloaded or given
   up on, and ends by listing every file it saved.
@@ -30,8 +29,7 @@ DOWNLOADING
                          artist, compilations included. This can be a lot;
                          -n limits how many albums.
   get <input> [options]  Anything else:
-                           music://user/path/file.mp3  one file from a search
-                           music://user/path/folder/   one album from a search
+                           music:... links from "search" (a song or album)
                            Spotify, YouTube, Bandcamp or MusicBrainz URLs
                              (playlist, album, track, artist, release)
                            a CSV file (columns like Artist, Title, Album)
@@ -48,9 +46,9 @@ DOWNLOADING
 CHOOSING BY HAND
   search "<artist> - <title>" [--album] [--limit 10] [--json]
                          Show what's available, best first, without
-                         downloading. Each result has a music:// link (a
-                         folder link with --album); pass it to "get" to
-                         download exactly that one. Use this when the
+                         downloading. Each result has a music:... link; pass
+                         it to "get" to download exactly that song (or
+                         album, with --album). Use this when the
                          automatic choice was wrong, or to compare versions.
 
 OPTIONS (song, album, artist, get, search)
@@ -70,12 +68,11 @@ OPTIONS (song, album, artist, get, search)
   --strict-album-quality     Every track of an album must meet --format etc.
   --cond "br>=320; format=mp3,ogg"  /  --pref "..."
                              Required / preferred conditions in one string.
-  --banned-users a,b         Never download from these users.
   --strict-conditions        Reject files whose bitrate etc. is unknown.
   --album-art largest|most   Fetch extra cover art for albums.
   --name-format FMT          File naming, e.g. "{artist} - {title}". Tags:
                              artist, albumartist, title, album, year, track,
-                             disc, filename, remote-foldername; "{a|b}" uses b
+                             disc, filename, original-foldername; "{a|b}" uses b
                              when a is missing; "( - )" adds text only if
                              tags are present.
   -n, --number N / --offset N / --reverse    Which playlist items.
@@ -98,7 +95,6 @@ OPTIONS (song, album, artist, get, search)
                              link|musicbrainz (normally detected).
   --spotify-id/--spotify-secret/--spotify-token/--spotify-refresh,
   --youtube-key              Credentials for those sources.
-  --verbose                  More detail in the log.
 
 WHEN IT GOES WRONG
   Wrong song: add --strict-title and --strict-artist, or "search" and pick.
