@@ -20,6 +20,7 @@ The agent is never told to clone this repository, since that would only clutter 
 
 - `cmd/delta-cc`: the command center, an HTTP server. `canvas.go` is the Canvas relay.
 - `cmd/delta`: the CLI. Its `delta help`, `delta canvas help`, `delta music help` and `delta books help` text is written for the agent. The `canvas*.go` files hold the Canvas commands, `music*.go` the music commands, `books*.go` the book commands, and `markdown.go` converts Markdown to HTML.
+- `scripts/install.sh`: the setup script published to the release as `install.sh`.
 - `scripts/fetch-music-engine.sh`: puts the music engine into `cmd/delta/music-engine/` for the CLI to embed (see [Music](#music)).
 - `.github/workflows/release.yml`: on every push to `master`, builds both programs and publishes them to the [`latest` release](https://github.com/thooton/delta/releases/tag/latest). It does not deploy anything.
 - `deploy/delta-cc.service`: the systemd unit for the VPS.
@@ -57,6 +58,12 @@ delta books <command> ...      download ebooks (see below)
 ```
 
 Agents download the CLI from `https://github.com/thooton/delta/releases/download/latest/delta-linux-amd64`. Builds for `linux-arm64`, `darwin-amd64`, and `darwin-arm64` are published alongside it.
+
+To install it on your own machine, use the setup script published with the release, which picks the right build and puts it on your PATH (`/usr/local/bin` as root, otherwise `~/.local/bin`, or `$DELTA_INSTALL_DIR`):
+
+```
+curl -fsSL https://github.com/thooton/delta/releases/download/latest/install.sh | sh
+```
 
 ## Command center API
 

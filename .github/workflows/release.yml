@@ -40,6 +40,8 @@ jobs:
             GOOS=${target%/*} GOARCH=${target#*/} \
               go build -trimpath -ldflags="-s -w" -o "dist/delta-cc-${target%/*}-${target#*/}" ./cmd/delta-cc
           done
+          # The setup script that downloads the right `delta` build and puts it on PATH.
+          cp scripts/install.sh dist/install.sh
       - name: Self-test delta-cc
         run: ./dist/delta-cc-linux-amd64 test
       - name: Publish to the "latest" release
@@ -48,7 +50,18 @@ jobs:
         run: |
           git tag -f latest
           git push -f origin latest
+          cat > notes.md <<'EOF'
+          Built automatically from master.
+
+          **Setup script:** `install.sh` downloads the `delta` CLI for your system (Linux or macOS, x86_64 or arm64) and puts it on your PATH:
+
+          ```
+          curl -fsSL https://github.com/thooton/delta/releases/download/latest/install.sh | sh
+          ```
+
+          Or download the `delta-<os>-<arch>` binary for your platform directly. Then run `delta help`.
+          EOF
           gh release view latest >/dev/null 2>&1 || \
-            gh release create latest --title "Delta (latest)" \
-              --notes "Built automatically from master. Agents download the \`delta\` CLI for their platform and run \`delta help\`."
+            gh release create latest --title "Delta (latest)" --notes-file notes.md
+          gh release edit latest --notes-file notes.md
           gh release upload latest dist/* --clobber
