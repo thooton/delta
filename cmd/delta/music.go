@@ -487,8 +487,8 @@ var (
 // minute.
 const musicLoginTries = 4
 
-var errMusicLogin = errors.New("could not log in to the music network (" + fmt.Sprint(musicLoginTries) +
-	" tries). It may be down, or limiting logins from this machine; try again in a few minutes")
+var errMusicLogin = errors.New("couldn't connect (" + fmt.Sprint(musicLoginTries) +
+	" tries). The service may be down or limiting this machine; try again in a few minutes")
 
 // isLoginFailure reports whether an engine log line says a login attempt
 // failed.
@@ -551,7 +551,7 @@ func startEngine(engine string, args []string, user string, onStdout func(string
 		case strings.HasPrefix(line, "[warn] [soulseek] Connection lost"):
 			failures++
 			if failures == 1 {
-				fmt.Fprintln(os.Stderr, "Logging in to the music network failed; retrying.")
+				fmt.Fprintln(os.Stderr, "Connecting failed; retrying.")
 			}
 			if failures >= musicLoginTries && !gaveUp {
 				gaveUp = true
