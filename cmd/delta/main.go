@@ -96,12 +96,21 @@ COMMANDS
                                      submissions, discussions, quizzes,
                                      grades, messages. Run "delta canvas help".
 
+  delta music <command> ...          Download songs, albums, playlists and
+                                     discographies for the user. Run
+                                     "delta music help".
+
   Aliases: "ls" for list, "rm" for delete, "get" for pull.
 
 CANVAS
   The user is a student who may not have a computer, so you are their way
   into Canvas. "delta canvas help" explains everything. Read it before
   doing anything with Canvas.
+
+MUSIC
+  When the user wants music, "delta music" finds and downloads it to this
+  machine; then "delta push" each file so it shows up on the phone. Read
+  "delta music help" first.
 
 UPDATING THE COMMAND CENTER
   The command center never updates on its own. To ship a fix to it:
@@ -124,6 +133,7 @@ UPDATING THE COMMAND CENTER
 
 FILES
   Config: $XDG_CONFIG_HOME/delta/config.json (usually ~/.config/delta/).
+  The music login is kept beside it, in music-login.json.
   You can set DELTA_SERVER and DELTA_TOKEN in the environment instead.
 `
 
@@ -174,6 +184,8 @@ func run(args []string) error {
 		return pull(args[0], dest)
 	case "canvas":
 		return runCanvas(args)
+	case "music":
+		return runMusic(args)
 	case "list", "ls":
 		if len(args) != 0 {
 			return errors.New("usage: delta list")

@@ -120,5 +120,46 @@ func selfTest() error {
 	if _, err := os.Stat(filepath.Join(dir, "escape")); err == nil {
 		return fmt.Errorf("path traversal wrote outside the files directory")
 	}
+	if err := musicSelfTest(expect, token); err != nil {
+		return err
+	}
 	return canvasSelfTest(dir)
+}
+
+// musicSelfTest checks that the music config starts as the default, can be
+// replaced and reset, and never stores a login.
+func musicSelfTest(expect func(desc string, want int, method, path, tok string, body []byte) ([]byte, error), token string) error {
+	if _, err := expect("music config requires the token", 401, "GET", "/music-config", "", nil); err != nil {
+		return err
+	}
+	data, err := expect("default music config", 200, "GET", "/music-config", token, nil)
+	if err != nil {
+		return err
+	}
+	if string(data) != defaultMusicConfig || checkMusicConfig(defaultMusicConfig) != nil {
+		return fmt.Errorf("default music config: got %q", data)
+	}
+	for _, bad := range []string{"username = someone\n", "[p]\nPassword=x\n", "l = a;b\n", "format\n", "format =\n"} {
+		if _, err := expect(fmt.Sprintf("music config %q is rejected", bad), 400, "PUT", "/music-config", token, []byte(bad)); err != nil {
+			return err
+		}
+	}
+	custom := "# lossless\npref-format = flac\n\n[albums]\nprofile-cond = album\n"
+	if _, err := expect("set music config", 200, "PUT", "/music-config", token, []byte(custom)); err != nil {
+		return err
+	}
+	if data, err := expect("read music config", 200, "GET", "/music-config", token, nil); err != nil {
+		return err
+	} else if string(data) != custom {
+		return fmt.Errorf("read music config: got %q, want %q", data, custom)
+	}
+	if _, err := expect("reset music config", 200, "DELETE", "/music-config", token, nil); err != nil {
+		return err
+	}
+	if data, err := expect("music config after reset", 200, "GET", "/music-config", token, nil); err != nil {
+		return err
+	} else if string(data) != defaultMusicConfig {
+		return fmt.Errorf("music config after reset: got %q", data)
+	}
+	return nil
 }

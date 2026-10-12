@@ -19,11 +19,12 @@ The agent is never told to clone this repository, since that would only clutter 
 ## Layout
 
 - `cmd/delta-cc`: the command center, an HTTP server. `canvas.go` is the Canvas relay.
-- `cmd/delta`: the CLI. Its `delta help` and `delta canvas help` text is written for the agent. The `canvas*.go` files hold the Canvas commands, and `markdown.go` converts Markdown to HTML.
+- `cmd/delta`: the CLI. Its `delta help`, `delta canvas help` and `delta music help` text is written for the agent. The `canvas*.go` files hold the Canvas commands, `music*.go` the music commands, and `markdown.go` converts Markdown to HTML.
+- `scripts/fetch-music-engine.sh`: puts the music engine into `cmd/delta/music-engine/` for the CLI to embed (see [Music](#music)).
 - `.github/workflows/release.yml`: on every push to `master`, builds both programs and publishes them to the [`latest` release](https://github.com/thooton/delta/releases/tag/latest). It does not deploy anything.
 - `deploy/delta-cc.service`: the systemd unit for the VPS.
 
-Both programs use only the Go standard library.
+Both programs use only the Go standard library. The CLI also embeds a prebuilt music engine (see [Music](#music)).
 
 ## Authentication
 
@@ -51,6 +52,7 @@ delta list                     list files
 delta delete <name>            delete a file
 delta update-cc <binary-url>   update the command center to a new binary
 delta canvas <command> ...     use the user's Canvas (see below)
+delta music <command> ...      download music (see below)
 ```
 
 Agents download the CLI from `https://github.com/thooton/delta/releases/download/latest/delta-linux-amd64`. Builds for `linux-arm64`, `darwin-amd64`, and `darwin-arm64` are published alongside it.
@@ -71,6 +73,9 @@ Every endpoint requires the bearer token.
 | GET | `/canvas-status` | Canvas base URL and the cookie service's health. |
 | any | `/canvas/{path}` | Relayed to `<canvas-url>/{path}` with the user's Canvas session. |
 | POST | `/canvas-upload/{path}` | Canvas file upload. The body is the file, `{path}` is the Canvas preflight endpoint, and the query carries `name`, `content_type` and any other preflight parameters. Responds with the Canvas file object. |
+| GET | `/music-config` | The music downloading configuration, as text. `X-Delta-Default: true` while it is the built-in default. |
+| PUT | `/music-config` | Replaces it with the request body. Rejects anything the engine can't parse and any login. |
+| DELETE | `/music-config` | Restores the default. |
 
 Running `delta-cc` with no arguments starts the server. By default it listens on `:8080`, stores data in `./data`, and accepts uploads up to 1 GiB; the `-addr`, `-data`, and `-max-upload` flags change these. The server speaks plain HTTP, so run it behind a reverse proxy that handles TLS (Caddy, for example). Otherwise the token travels unencrypted.
 
@@ -99,6 +104,18 @@ sudo systemctl restart delta-cc
 ```
 
 If the Canvas session expires (for example after a password change or an ASU logout), `delta canvas status` reports it as not ready. The cookie service then needs a fresh seed from a browser login; see the canvas-cookie README.
+
+## Music
+
+`delta music` lets the agent download songs, albums, an artist's albums, and Spotify, YouTube, Bandcamp and MusicBrainz playlists and releases from the Soulseek network. It can also search and let the agent pick a result by its `slsk://` link. `delta music help` documents it for the agent.
+
+**The engine.** The work is done by [sockseek](https://github.com/fiso64/sockseek), an unmodified release of which is embedded in the CLI. `scripts/fetch-music-engine.sh <goos> <goarch>` downloads the pinned release (version and SHA-256 checksums are at the top of the script) into `cmd/delta/music-engine/`, and the release workflow runs it before building each platform. A plain `go build` without it still works; `delta music` then says it isn't available. On first use the CLI unpacks the engine into the user cache directory (`~/.cache/delta/music-<hash>/`). sockseek only publishes 32-bit ARM builds for Linux, so the `linux-arm64` CLI has no music. sockseek is AGPL-3.0; its license is unpacked next to it, and its source is at the link above.
+
+The engine is white-labeled. The agent never runs it or sees its name: the CLI parses its own options and translates them, closes the engine's stdin (so nothing can wait on a prompt), and passes on its log with its name, its login and its stack traces removed. It ends each run by listing the files saved. Searches are re-rendered from the engine's JSON.
+
+**Configuration.** The engine's config (output directory, required and preferred formats and bitrates, file naming, and profiles such as album-only naming) is stored on the command center as `data/music.conf`, falling back to a built-in default. The CLI fetches it on every run, writes it to a private temporary file, and points the engine at it, so no local engine config is ever used. The agent can view and replace it with `delta music config`.
+
+**Logins.** Soulseek needs an account but registers any unknown username on first login. The config never holds one, so that agents on different machines never share an account (a second login kicks the first off). Instead each CLI instance makes up a random account on first use (16-character username, 24-character password) and keeps it in `~/.config/delta/music-login.json`. Making up a new account on every run gets the machine's IP throttled by the Soulseek server, which then never answers logins. Runs on the same machine take turns through a lock file (`music.lock`), since they share the account. If logins keep failing, a run gives up after about a minute instead of retrying forever as the engine would.
 
 ## Updating the command center
 
