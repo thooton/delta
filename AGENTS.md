@@ -47,7 +47,7 @@ Two things follow from the token travelling in the first message. It stays visib
 
 ```
 delta set-auth <url> <token>   verify and save credentials
-delta push <path> [name]       upload a file, replacing any file with the same name
+delta push <path> [name]       upload a file (refused if the name is taken)
 delta pull <name> [dest]       download a file (e.g. a photo sent from the phone)
 delta list                     list files
 delta delete <name>            delete a file
@@ -80,7 +80,7 @@ Every endpoint requires the bearer token.
 | GET | `/auth` | Checks the token. |
 | GET | `/files` | Lists files as JSON (`name`, `size`, `modified`), newest first. |
 | GET | `/files/{name}` | Downloads a file. |
-| PUT | `/files/{name}` | Uploads a file from the raw request body. Returns 201 for a new file and 200 for a replacement. |
+| PUT | `/files/{name}` | Uploads a file from the raw request body. Returns 201, or 409 if the name is taken: files are never overwritten. |
 | DELETE | `/files/{name}` | Deletes a file. |
 | GET | `/version` | Returns the running build's git commit. |
 | POST | `/update` | Takes `{"url": "..."}`, installs the binary at that URL, and restarts. |

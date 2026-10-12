@@ -286,7 +286,14 @@ func (s *server) putFile(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	// Write to a hidden temp file and rename, so readers never see a partial upload.
+	// Files are never overwritten, so a name always means one upload.
+	// Checking first refuses a taken name without reading the body.
+	if _, err := os.Lstat(path); err == nil {
+		writeExists(w, name)
+		return
+	}
+	// Write to a hidden temp file and link it into place, so readers never
+	// see a partial upload.
 	tmp, err := os.CreateTemp(s.filesDir, ".upload-*")
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
@@ -306,17 +313,19 @@ func (s *server) putFile(w http.ResponseWriter, r *http.Request) {
 		}
 		return
 	}
-	_, statErr := os.Stat(path)
-	replaced := statErr == nil
-	if err := os.Rename(tmp.Name(), path); err != nil {
+	// Unlike a rename, a link fails if another upload took the name meanwhile.
+	if err := os.Link(tmp.Name(), path); errors.Is(err, os.ErrExist) {
+		writeExists(w, name)
+		return
+	} else if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	status := http.StatusCreated
-	if replaced {
-		status = http.StatusOK
-	}
-	writeJSON(w, status, map[string]any{"name": name, "size": n, "replaced": replaced})
+	writeJSON(w, http.StatusCreated, map[string]any{"name": name, "size": n})
+}
+
+func writeExists(w http.ResponseWriter, name string) {
+	writeError(w, http.StatusConflict, fmt.Sprintf("%s already exists; upload it under a different name", name))
 }
 
 func (s *server) deleteFile(w http.ResponseWriter, r *http.Request) {

@@ -76,7 +76,7 @@ func selfTest() error {
 		{"auth check", 200, "GET", "/auth", token, nil},
 		{"version", 200, "GET", "/version", token, nil},
 		{"upload new file", 201, "PUT", "/files/test.apk", token, content},
-		{"replace file", 200, "PUT", "/files/test.apk", token, content},
+		{"existing file is not replaced", 409, "PUT", "/files/test.apk", token, []byte("other")},
 		{"oversized upload is rejected", 413, "PUT", "/files/big.bin", token, make([]byte, 1<<20+1)},
 		{"hidden name is rejected", 400, "PUT", "/files/.hidden", token, content},
 		{"path traversal is rejected", 400, "PUT", "/files/..%2Fescape", token, content},
