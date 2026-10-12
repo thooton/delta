@@ -1,27 +1,30 @@
 package main
 
-const musicHelp = `delta music: download music for the user
+const musicHelp = `delta music: download music for the user via Amazon Music
 
   delta music song "<artist> - <title>"
   delta music album "<artist> - <album>"
 
-  That is all there is: no other commands and no options. It finds the
-  best copy and downloads it into ~/Music on this machine, printing its
-  progress and then every file it saved. If nothing is found, it tries once
-  more with a broader search. A download can take a few minutes.
+  Downloads are sourced in DRM-free format directly from Amazon Music, and the cost
+  is automatically charged to the user's account.
 
-  "song" saves one file. "album" saves the whole album folder, cover art
-  included. For several songs or albums, run it once for each.
+  The command automatically locates the best available match and saves it to
+  ~/Music, displaying real-time progress followed by a summary of saved files.
+  If no exact match is found, a broader search is attempted automatically.
+  Downloads typically take a few minutes.
 
-  To get the music to the user, push each saved file with "delta push";
-  they get it from the Files tab. Run "delta set-auth" first (see "delta
-  help").
+  * Use "song" to download a single track.
+  * Use "album" to download an entire album folder, including cover art.
+  * To process multiple tracks or albums, run the command separately for each.
+
+  Once downloaded, send files to the user by running "delta push" for each file.
+  They will be able to access their music from the Files tab. Ensure authentication
+  is set up beforehand using "delta set-auth" (see "delta help").
 
 CHECKING
-  Look at what was saved before telling the user it's done: is it the
-  right song or album, and does an album have the right number of tracks?
-  If it's wrong, or nothing was found, run it again with the name written
-  differently: a shorter title, without "feat. ..." or remix and edition
-  names, or without the artist if it is "Various Artists". Something
-  already downloaded on this machine is not downloaded again.
+  Before confirming completion to the user, verify that the downloaded files are
+  correct and that albums contain the full tracklist. If a search fails or returns
+  incorrect results, retry with a simplified query—such as omitting featured artists,
+  remix/edition tags, or "Various Artists" tags. Previously downloaded files on this
+  machine will be skipped automatically.
 `
