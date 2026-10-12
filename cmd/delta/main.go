@@ -71,6 +71,7 @@ COMMANDS
   delta music ...                    Download a song or an album.
   delta books ...                    Find and download ebooks.
   delta docx                         How to make Word documents (.docx).
+  delta docx extract [dir]           Extract the scripts that guide uses.
 
   Read "delta canvas|music|books help" before using those, and
   "delta docx" before making or editing a Word document.

@@ -1,5 +1,12 @@
 # Creating Documents with `docx-js`
 
+The `scripts/` used below come bundled with this CLI. Extract them first, then run the commands from that directory:
+
+```bash
+delta docx extract [dir]   # writes scripts/ and its LICENSE into dir (default: the current directory)
+pip install defusedxml lxml   # needed by the scripts
+```
+
 To create documents, write a script using the `docx` package (`npm install docx` / `require('docx')`).
 
 ### Key Guidelines & Gotchas
@@ -60,3 +67,4 @@ Word splits text across multiple `<w:r>` runs (due to revision IDs, spell-check 
 * `pandoc`
 * LibreOffice (`soffice`)
 * `pdftoppm` (Poppler utilities)
+* Python with `defusedxml` and `lxml` (for the scripts)
