@@ -19,7 +19,7 @@ The agent is never told to clone this repository, since that would only clutter 
 ## Layout
 
 - `cmd/delta-cc`: the command center, an HTTP server. `canvas.go` is the Canvas relay, and `music_run.go` runs music downloads.
-- `cmd/delta`: the CLI. Its `delta help`, `delta canvas help`, `delta music help` and `delta books help` text is written for the agent. The `canvas*.go` files hold the Canvas commands, `music*.go` the music commands, `books*.go` the book commands, and `markdown.go` converts Markdown to HTML.
+- `cmd/delta`: the CLI. Its `delta help`, `delta canvas help`, `delta music help`, `delta books help` and `delta docx` text is written for the agent. The `canvas*.go` files hold the Canvas commands, `music*.go` the music commands, `books*.go` the book commands, `docx_help.md` (embedded by `docx.go`) the guide to making Word documents, and `markdown.go` converts Markdown to HTML.
 - `scripts/install.sh`: the setup script published to the release as `install.sh`.
 - `scripts/fetch-music-engine.sh`: puts the music engine into `cmd/delta-cc/music-engine/` for the command center to embed (see [Music](#music)).
 - `.github/workflows/release.yml`: on every push to `master`, builds both programs and publishes them to the [`latest` release](https://github.com/thooton/delta/releases/tag/latest). It does not deploy anything.
@@ -59,6 +59,7 @@ delta canvas <command> ...     use the user's Canvas (see below)
 delta music song|album <name>  download a song or an album (see below)
 delta music re-login           give the command center a new music account
 delta books <command> ...      download ebooks (see below)
+delta docx                     print a guide to making Word documents
 ```
 
 Agents download the CLI from `https://github.com/thooton/delta/releases/download/latest/delta-linux-amd64`. Builds for `linux-arm64`, `darwin-amd64`, and `darwin-arm64` are published alongside it.
