@@ -20,165 +20,85 @@ import (
 const helpText = `delta: the CLI for the Delta command center
 
 WHAT THIS IS
-  The user carries a Sonim XP3 flip phone running the Delta app. You (the
-  agent) are a Claude Code cloud session started from that app. Delta has
-  three parts:
-
-    PHONE           The Delta app on the user's phone. It has three tabs:
-                      Chats    the user's cloud sessions, this one included
-                      Session  this conversation
-                      Files    every file on the command center; the user
-                               downloads, installs (APKs) or deletes them
-    COMMAND CENTER  A server on a VPS that is always running. It relays
-                    between the phone and everything else and requires an
-                    auth token on every request.
-    CLI             This program. You use it to send things to the command
-                    center, where the user can get them from their phone.
+  You are a Claude Code cloud session started from the Delta app on the
+  user's Sonim XP3 flip phone. The app has three tabs: Chats (their
+  sessions), Session (this one) and Files (the files on the command
+  center, which they can download, install or delete). The command center
+  is an always-on server; this CLI talks to it.
 
   The user reads your replies on a 240x320 screen with a keypad, so keep
-  them short and plain. They cannot easily copy long output or type long
-  answers.
+  them short and plain.
 
-  Relevant repositories (read/write with the user's GitHub token, see
-  GITHUB ACCESS below):
-    https://github.com/thooton/sonim   The apps installed on the phone, one
-                                       directory each. The Delta app itself
-                                       is sonim/delta.
-    https://github.com/thooton/delta   Delta itself (command center + CLI).
+  Repositories (see GITHUB):
+    thooton/sonim   The phone's apps, one directory each (the Delta app is
+                    sonim/delta).
+    thooton/delta   Delta itself: command center (cmd/delta-cc) and CLI.
 
-  A typical job: the user reports a bug in a phone app. Set up GitHub
-  access, clone the sonim repo, fix it, commit and push, build the release APK, then push it named
-  after the app, for example:
+  A typical job: fix a bug in a phone app in sonim, commit and push, then
+  build the release APK and push it named after the app:
 
     (cd list/android && ./gradlew :app:assembleRelease)
     delta push list/android/app/build/outputs/apk/release/app-release.apk list.apk
 
-  Always push the release build, never the debug one: debug builds run
-  noticeably slower on the phone. A debug build is fine for checking that
-  your change compiles, but it is never what the user gets.
-
-  Every app builds an "app-release.apk", so always give a name: pushing the
-  same name again replaces the old file. The APK appears in the Files tab on
-  the user's phone, where they choose whether to download and install it.
-  Installing it updates the app in place and keeps its data, because every
-  build is signed with the shared key in sonim/signing. Never change,
-  regenerate or bypass that key: the phone would refuse the update. Then
-  tell the user, briefly, what to install.
-
-  If the bug is in the Delta app, fix it in sonim/delta and push the APK
-  the same way (as delta.apk). A build made without its logins keeps the
-  ones the installed copy already has.
+  Always push release builds; debug builds run slowly on the phone. It
+  shows up in the Files tab, and installing it updates the app in place
+  because every build is signed with the key in sonim/signing. Never
+  change or bypass that key. Then tell the user briefly what to install.
+  (The Delta app is delta.apk; a build without its logins keeps the
+  installed copy's.)
 
 SETUP
-  The first message you got from the Delta app includes a command-center
-  URL and an auth token. Before any other command, run:
+  Your first message included a command-center URL and token. Run first:
 
-    delta set-auth <command-center-url> <token>
+    delta set-auth <url> <token>
 
-  This checks the token with the server and saves it to the config file
-  (see FILES below), so later commands don't need it again. The token is a
-  password: never repeat it to the user or commit it anywhere. If set-auth
-  cannot reach the server at all, the sandbox's network is probably
-  blocking the command center's host; tell the user it needs adding to the
-  cloud environment's allowed hosts.
+  The token is a password: never repeat or commit it. If the server can't
+  be reached, its host probably needs adding to the cloud environment's
+  allowed hosts; tell the user.
 
 COMMANDS
-  delta help                         Show this text.
-  delta set-auth <url> <token>       Save and verify the server URL and token.
-  delta push <path> [name]           Upload a file. It is stored as [name]
-                                     (default: the file's base name). A file
-                                     with the same name is replaced.
-  delta pull <name> [dest]           Download a file from the command center
-                                     (for example a photo the user sent from
-                                     the phone).
-  delta list                         List the files on the command center.
-  delta delete <name>                Delete a file from the command center.
-  delta get-personal-access-token    Print the user's GitHub token. See
-                                     GITHUB ACCESS below.
+  delta set-auth <url> <token>       Verify and save the URL and token.
+  delta push <path> [name]           Upload a file (same name replaces it).
+  delta pull <name> [dest]           Download a file, e.g. a photo the user
+                                     sent.
+  delta list                         List files.
+  delta delete <name>                Delete a file.
+  delta get-personal-access-token    Print the user's GitHub token.
   delta set-personal-access-token <token|->
-                                     Check a new GitHub token with GitHub and
-                                     save it on the command center ("-"
-                                     reads it from stdin).
-  delta update-cc <binary-url>       Make the command center download a new
-                                     delta-cc binary from <binary-url>,
-                                     replace itself, and restart. See
-                                     UPDATING THE COMMAND CENTER below.
+                                     Check and save a new GitHub token ("-"
+                                     reads stdin).
+  delta update-cc <binary-url>       Update the command center (see below).
+  delta canvas ...                   The user's Canvas (they are a student).
+  delta music ...                    Download music.
+  delta books ...                    Find and download ebooks.
 
-  delta canvas <command> ...         Use the user's Canvas: courses, due
-                                     dates, assignments, attachments,
-                                     submissions, discussions, quizzes,
-                                     grades, messages. Run "delta canvas help".
+  Read "delta canvas|music|books help" before using those.
+  Aliases: ls = list, rm = delete, get = pull.
 
-  delta music <command> ...          Download songs, albums, playlists and
-                                     discographies for the user. Run
-                                     "delta music help".
-
-  delta books <command> ...          Find and download ebooks for the user.
-                                     Run "delta books help".
-
-  Aliases: "ls" for list, "rm" for delete, "get" for pull.
-
-GITHUB ACCESS
-  The user's GitHub personal access token is kept on the command center.
-  Before cloning, point git and gh at it once per machine:
+GITHUB
+  Use the user's token for git and gh. Once per machine:
 
     git config --global credential.https://github.com.helper \
       '!f() { test "$1" = get || exit 0; echo username=x-access-token; echo "password=$(delta get-personal-access-token)"; }; f'
 
-  Then clone over https (https://github.com/thooton/sonim) and push as
-  usual. The helper fetches the token each time, so it is never written to
-  disk; don't put it in a remote URL or anywhere it could be committed.
-  For gh, pass it on each command, since shell variables may not last
-  between your commands:
-
-    GH_TOKEN=$(delta get-personal-access-token) gh run watch -R thooton/delta
-
-  Like the auth token, it is a password: never show it to the user.
-
-  If git or gh says the token is missing, expired or lacks access, ask the
-  user for a new one (they create it on github.com under Settings >
-  Developer settings > Personal access tokens) and save it with:
-
-    echo <token> | delta set-personal-access-token -
-
-CANVAS
-  The user is a student who may not have a computer, so you are their way
-  into Canvas. "delta canvas help" explains everything. Read it before
-  doing anything with Canvas.
-
-MUSIC
-  When the user wants music, "delta music" finds and downloads it to this
-  machine; then "delta push" each file so it shows up on the phone. Read
-  "delta music help" first.
-
-BOOKS
-  When the user wants a book, "delta books search" finds it and "delta books
-  download --push" puts it on the phone. Read "delta books help" first.
+  then clone https://github.com/thooton/<repo>. For gh, prefix each
+  command with GH_TOKEN=$(delta get-personal-access-token). Never show the
+  token or put it in a URL or file. If it is missing or expired, ask the
+  user for a new one and save it with set-personal-access-token.
 
 UPDATING THE COMMAND CENTER
-  The command center never updates on its own. To ship a fix to it:
+  Push the change to master in thooton/delta, wait for its GitHub Actions
+  build, then run:
 
-    1. Commit and push the change to master in thooton/delta.
-    2. Wait for the GitHub Actions build for that commit to finish
-       (for example with gh, as in GITHUB ACCESS). It publishes
-       the binaries to the "latest" release.
-    3. Run:
-         delta update-cc https://github.com/thooton/delta/releases/download/latest/delta-cc-linux-amd64
+    delta update-cc https://github.com/thooton/delta/releases/download/latest/delta-cc-linux-amd64
 
-  Before replacing itself, the server runs "<new-binary> test", the
-  self-test in cmd/delta-cc/selftest.go. If the download isn't a delta-cc
-  binary, can't run on the server, or fails the test, nothing is installed
-  and the old version keeps running; the error includes the test output.
-  If you change command center behavior, update the self-test to match.
-
-  The command prints the old and new versions (git commit hashes). If they
-  match, the release build probably hadn't finished yet.
+  The new binary must pass its self-test (cmd/delta-cc/selftest.go; keep it
+  up to date) or nothing is installed. If the old and new versions printed
+  match, the build hadn't finished yet.
 
 FILES
-  Config: $XDG_CONFIG_HOME/delta/config.json (usually ~/.config/delta/).
-  The music login is kept beside it, in music-login.json, and the books
-  session and last search in books-state.json.
-  You can set DELTA_SERVER and DELTA_TOKEN in the environment instead.
+  Config is in ~/.config/delta/ ($XDG_CONFIG_HOME). DELTA_SERVER and
+  DELTA_TOKEN override it.
 `
 
 type config struct {
