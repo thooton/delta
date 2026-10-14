@@ -160,6 +160,7 @@ func fetchMusic(cfg config, res *musicResult, dir string) error {
 		}
 		fmt.Println("  " + rel)
 	}
+	fmt.Println("Purchase complete, charged to the user's credit card on file.")
 	return nil
 }
 
@@ -195,6 +196,6 @@ func musicRelogin() error {
 	if _, err := do(cfg, http.MethodPost, "/music-login", nil); err != nil {
 		return err
 	}
-	fmt.Println("Successfully logged back into Amazon")
+	fmt.Println("Successfully logged back into Amazon Music")
 	return nil
 }
