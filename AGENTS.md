@@ -18,8 +18,8 @@ The agent is never told to clone this repository, since that would only clutter 
 
 ## Layout
 
-- `cmd/delta-cc`: the command center, an HTTP server. `canvas.go` is the Canvas relay, and `music_run.go` runs music downloads.
-- `cmd/delta`: the CLI. Its `delta help`, `delta canvas help`, `delta music help`, `delta books help` and `delta docx` text is written for the agent. The `canvas*.go` files hold the Canvas commands, `music*.go` the music commands, `books*.go` the book commands, `docx_help.md` the guide to making Word documents and `docx/` the scripts it uses (both embedded by `docx.go`; `delta docx extract` writes out the scripts), and `markdown.go` converts Markdown to HTML.
+- `cmd/delta-cc`: the command center, an HTTP server. `canvas.go` is the Canvas relay, `music_run.go` runs music downloads, and `secret.go` stores single secrets (the GitHub token in `github.go`, the Google Maps key in `maps.go`).
+- `cmd/delta`: the CLI. Its `delta help`, `delta canvas help`, `delta music help`, `delta books help`, `delta maps help` and `delta docx` text is written for the agent. The `canvas*.go` files hold the Canvas commands, `music*.go` the music commands, `books*.go` the book commands, `maps*.go` the place search commands, `docx_help.md` the guide to making Word documents and `docx/` the scripts it uses (both embedded by `docx.go`; `delta docx extract` writes out the scripts), and `markdown.go` converts Markdown to HTML.
 - `scripts/install.sh`: the setup script published to the release as `install.sh`.
 - `scripts/fetch-music-engine.sh`: puts the music engine into `cmd/delta-cc/music-engine/` for the command center to embed (see [Music](#music)).
 - `.github/workflows/release.yml`: on every push to `master`, builds both programs and publishes them to the [`latest` release](https://github.com/thooton/delta/releases/tag/latest). It does not deploy anything.
@@ -59,6 +59,7 @@ delta canvas <command> ...     use the user's Canvas (see below)
 delta music song|album <name>  download a song or an album (see below)
 delta music re-login           give the command center a new music account
 delta books <command> ...      download ebooks (see below)
+delta maps <command> ...       find places and their hours (see below)
 delta docx                     print a guide to making Word documents
 delta docx extract [dir]       write out the scripts that guide uses
 ```
@@ -99,6 +100,8 @@ Every endpoint requires the bearer token.
 | DELETE | `/books-login` | Removes it. |
 | GET | `/personal-access-token` | The GitHub personal access token, as `{"token"}`. 404 while none is set. |
 | PUT | `/personal-access-token` | Replaces it with the raw request body. |
+| GET | `/maps-key` | The Google Maps API key, as `{"key"}`. 404 while none is set. |
+| PUT | `/maps-key` | Replaces it with the raw request body. |
 
 Running `delta-cc` with no arguments starts the server. By default it listens on `:8080`, stores data in `./data`, and accepts uploads up to 1 GiB; the `-addr`, `-data`, and `-max-upload` flags change these. The server speaks plain HTTP, so run it behind a reverse proxy that handles TLS (Caddy, for example). Otherwise the token travels unencrypted.
 
@@ -155,6 +158,16 @@ The agent reaches the user's repositories with a GitHub personal access token st
 It is white-labeled like music: nothing the agent sees names Z-Library or its hosts. Network errors lose their URLs, the anti-bot wall becomes "blocking requests from this machine", and any message from the source is scrubbed of the source's names before it is printed. Files are saved as `Author - Title.ext` (just `Title.ext` without an author), keeping accented letters and dropping only characters that some file systems refuse. A different book that would get the same name gets ` (2)`, ` (3)` and so on, while the same book (same name and size) is kept rather than downloaded twice.
 
 **The account.** The Z-Library email and password are stored on the command center as `data/books-login.json` (mode 0600) and set with `delta books login set <email> -` (password on stdin), which tries the login first and refuses to save one that is rejected. The CLI fetches the account only when it has to log in. Logins are rate-limited (about 10 an hour per IP), so it keeps the session cookies, with the last search and its results, in `~/.config/delta/books-state.json` and reuses them. When a call fails with a stored session, it logs in again once and retries. A session from before an account change keeps working on that machine until it expires.
+
+## Maps
+
+`delta maps` lets the agent find places with the [Places API (New)](https://developers.google.com/maps/documentation/places/web-service/op-overview), for requests like "pizza places in Denver", "a pharmacy near 85281" or "coffee next to Union Station". `delta maps help` documents it for the agent.
+
+**The key.** The Google Maps Platform API key is stored on the command center as `data/maps-key` (mode 0600) and set with `delta maps key set -` (key on stdin), which first runs an IDs-only search (a request Google doesn't bill) and refuses a key Google rejects. Like the GitHub token, the CLI fetches it on every run and keeps no copy; it calls Google itself, so the command center never talks to Google. To set it on the VPS directly, write the key to that file, readable only by the `delta` user.
+
+**Commands.** `delta maps search <query>` runs a Text Search and prints each place's type, rating, price level, address, whether it is open now and until when, and its id. Options: `--near <place|lat,lng>` (a place is looked up with one Text Search first, then results are biased toward it and show their distance), `--within <distance>` (a hard limit: a `locationRestriction` box around `--near`, then anything outside the circle is dropped), `--closest` (rank by distance), `--open-now`, `--min-rating`, `--limit` (at most 20) and `--json`. `delta maps place <id|name>` prints everything about one place: contact details and links, open-now status, hours for the next 7 days and special hours (happy hour, drive-through, ...), price range, amenities, payment, parking, accessibility, fuel prices, Google's summaries and up to 5 reviews. Times are shown in the place's own time zone (from `utcOffsetMinutes`), with a "Local time there" line, because the agent's sandbox runs in UTC. No separate geocoder is needed: Text Search resolves cities, zip codes, addresses and businesses alike.
+
+**Billing.** Field masks decide which SKU Google bills. Search asks for nothing past the Enterprise tier (ratings and opening hours need it); only `place` asks for reviews and other Atmosphere fields. Resolving `--near` asks only for Pro fields.
 
 ## Updating the command center
 
