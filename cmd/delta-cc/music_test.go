@@ -141,30 +141,47 @@ func TestMusicRunRejects(t *testing.T) {
 
 func TestMusicLogLine(t *testing.T) {
 	cases := []struct {
-		in, want string
-		keep     bool
+		in   string
+		want []string
+		keep bool
 	}{
-		{"[cli] Starting CLI session in local mode", "", false},
-		{"[soulseek] Logging in as abc..", "", false},
-		{"[warn] [soulseek] Connection lost. Retrying in 1s...", "", false},
-		{"   at Soulseek.SoulseekClient.ConnectInternalAsync()", "", false},
-		{"[cli] Completed: 1 succeeded, 0 failed.", "Completed: 1 succeeded, 0 failed.", true},
-		{"[error] [cli] Input error: Unknown argument: --x", "error: Unknown argument: --x", true},
-		{"\x1b[32m[002] SongJob: succeeded: A - B\x1b[0m", "[002] SongJob: succeeded: A - B", true},
-		{"    Error: No Soulseek file results found.", "    Error: No file results found.", true},
-		{"[002] SongJob: succeeded: A - B: noctower\\..\\Daft Punk\\Discovery\\03 - B.mp3", "[002] SongJob: succeeded: A - B: 03 - B.mp3", true},
-		{"[003] AlbumJob: downloading: A - X: bob\\Music\\A\\X", "[003] AlbumJob: downloading: A - X: X", true},
-		{"  Reason:    30000ms without peer transfer activity: bob\\x.mp3", "  Reason: the download failed", true},
-		{"[warn] Too many uploads queued by user bob", "", false},
-		{"[debug] anything", "", false},
-		{"Logged in as secretuser", "Logged in as ", true},
-		{"[001] ExtractJob: Input: slsk://bob/Music/a b/", "[001] ExtractJob: Input: a b", true},
-		{"[001] ExtractJob: Input: slsk://bob/Music/a/b.mp3", "[001] ExtractJob: Input: b.mp3", true},
+		{"[cli] Starting CLI session in local mode", nil, false},
+		{"[soulseek] Logging in as abc..", nil, false},
+		{"[warn] [soulseek] Connection lost. Retrying in 1s...", nil, false},
+		{"   at Soulseek.SoulseekClient.ConnectInternalAsync()", nil, false},
+		{"[cli] Completed: 1 succeeded, 0 failed.", []string{"Done: 1 downloaded, 0 failed."}, true},
+		{"[error] [cli] Input error: Unknown argument: --x", []string{"error: Unknown argument: --x"}, true},
+		{"\x1b[32m[002] SongJob: succeeded: A - B\x1b[0m", []string{`Downloaded "A - B".`}, true},
+		{"    Error: No Soulseek file results found.", []string{"    Error: No match found on Amazon Music."}, true},
+		{"[002] SongJob: succeeded: A - B: noctower\\..\\Daft Punk\\Discovery\\03 - B.mp3", []string{`Downloaded "03 - B.mp3".`}, true},
+		{"[003] AlbumJob: downloading: A - X: bob\\Music\\A\\X", []string{`Purchasing album "X"...`, `Downloading "X"...`}, true},
+		{"[002] SongJob: downloading: A - B: bob\\Music\\03 - B.mp3", []string{`Purchasing "03 - B"...`, `Downloading "03 - B.mp3"...`}, true},
+		{"[002] SongJob: searching: A - B", []string{`Searching Amazon Music for "A - B"...`}, true},
+		{"[003] AlbumJob: searching: A - X", []string{`Searching Amazon Music for album "A - X"...`}, true},
+		{"[002] SongJob: downloading: A - B (3 peers)", []string{`Purchasing "A - B (3 results)"...`, `Downloading "A - B (3 results)"...`}, true},
+		{"[003] AlbumJob: queued (r): A - X", []string{`Waiting for "A - X"...`}, true},
+		{"[002] SongJob: failed [No search results]: A - B", []string{`No match found for "A - B" on Amazon Music.`}, true},
+		{"[003] AlbumJob: failed: A - X", []string{`No match found for album "A - X" on Amazon Music.`}, true},
+		{"[002] SongJob: browsing: A - B", []string{`Working on "A - B"...`}, true},
+		{"[005] SearchJob: searching: A - B", nil, false},
+		{"[001] ExtractJob: String: Input: Artist - Title", nil, false},
+		{"  Reason:    30000ms without peer transfer activity: bob\\x.mp3", []string{"  Reason: the download failed"}, true},
+		{"[warn] Too many uploads queued by user bob", nil, false},
+		{"[debug] anything", nil, false},
+		{"Logged in as secretuser", []string{"Logged in as "}, true},
+		{"[001] ExtractJob: Input: slsk://bob/Music/a b/", nil, false},
+		{"[001] ExtractJob: Input: slsk://bob/Music/a/b.mp3", nil, false},
 	}
 	for _, c := range cases {
 		got, keep := musicLogLine(c.in, "secretuser")
-		if got != c.want || keep != c.keep {
+		if keep != c.keep || len(got) != len(c.want) {
 			t.Errorf("musicLogLine(%q) = %q, %v; want %q, %v", c.in, got, keep, c.want, c.keep)
+			continue
+		}
+		for i := range got {
+			if got[i] != c.want[i] {
+				t.Errorf("musicLogLine(%q)[%d] = %q; want %q", c.in, i, got[i], c.want[i])
+			}
 		}
 	}
 }
