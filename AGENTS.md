@@ -6,7 +6,7 @@ This repository holds the Delta command center and the Delta CLI.
 
 Delta runs in three places:
 
-1. **Phone (Sonim XP3).** The user carries a Sonim XP3 flip phone running the Delta app, which lives in [thooton/sonim](https://github.com/thooton/sonim) under `delta/`. It has three tabs: **Chats** lists the user's Claude Code cloud sessions, **Session** is the conversation with one of them, and **Files** shows everything on the command center, where the user can download it, install it (APKs), move it into a folder on the phone such as Music, or delete it.
+1. **Phone (Sonim XP3).** The user carries a Sonim XP3 flip phone running the Delta app, which lives in [thooton/sonim](https://github.com/thooton/sonim) under `delta/`. It has three tabs: **Chats** lists the user's Claude Code cloud sessions, **Session** is the conversation with one of them, and **Files** shows everything on the command center, where the user can download it, install it (APKs), move it into a folder on the phone such as Music, or delete it. The user can also upload a file from the phone and send it to the agent: the app puts it on the command center and ends the message with a `<delta-files>` block naming it, which the agent fetches with `delta pull`.
 2. **Command center (VPS).** A server that runs around the clock. It handles authentication and relays between the phone and everything else, including external services such as Canvas. It updates itself only when an agent tells it to.
 3. **CLI (agent).** The tool an agent uses to send things to the command center.
 
