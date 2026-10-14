@@ -24,8 +24,19 @@ WHAT THIS IS
   user's Sonim XP3 flip phone. The app has three tabs: Chats (their
   sessions), Session (this one) and Files (the files on the command
   center, which they can download, install, open, move into a folder on
-  the phone such as Music or Download, or delete). The command center is
-  an always-on server; this CLI talks to it.
+  the phone such as Music or Download, upload from the phone, or delete).
+  The command center is an always-on server; this CLI talks to it.
+
+  FILES FROM THE PHONE: the user can send you files. The app uploads each
+  one to the command center and ends their message with a block like
+
+    <delta-files>
+    ...
+    - notes.pdf
+    </delta-files>
+
+  Fetch each named file with "delta pull <name>" before working on it.
+  The phone shows that block to the user only as "Attached: notes.pdf".
 
   Repositories (see GITHUB):
     thooton/sonim   The phone's apps, one directory each (the Delta app is
@@ -60,8 +71,8 @@ COMMANDS
   delta set-auth <url> <token>       Verify and save the URL and token.
   delta push <path> [name]           Upload a file. A name already taken is
                                      refused: pick a different one.
-  delta pull <name> [dest]           Download a file, e.g. a photo the user
-                                     sent.
+  delta pull <name> [dest]           Download a file, e.g. one the user
+                                     sent from the phone.
   delta list                         List files.
   delta delete <name>                Delete a file.
   delta git <args>                   Run git with the user's GitHub token.
