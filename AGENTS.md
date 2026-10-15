@@ -54,10 +54,9 @@ delta push <path> [name]       upload a file (refused if the name is taken)
 delta pull <name> [dest]       download a file (e.g. a photo sent from the phone)
 delta list                     list files
 delta delete <name>            delete a file
-delta git <args> / delta gh <args>       run git or gh with the user's GitHub token
-delta get-personal-access-token          print the user's GitHub token
-delta set-personal-access-token <tok|->  check and save a new GitHub token
-delta update-cc <binary-url>   update the command center to a new binary
+delta git <args> / delta gh <args>       run git or gh through the GitHub relay
+delta set-personal-access-token <tok|->  check and save a new GitHub token (write-only)
+delta update-cc                update the command center to its latest official build
 delta backup-key set <key|->   save the API key backup sessions use
 delta canvas <command> ...     use the user's Canvas (see below)
 delta music song|album <name>  download a song or an album (see below)
@@ -89,7 +88,7 @@ Every endpoint requires the bearer token.
 | PUT | `/files/{name}` | Uploads a file from the raw request body. Returns 201, or 409 if the name is taken: files are never overwritten. |
 | DELETE | `/files/{name}` | Deletes a file. |
 | GET | `/version` | Returns the running build's git commit. |
-| POST | `/update` | Takes `{"url": "..."}`, installs the binary at that URL, and restarts. |
+| POST | `/update` | Installs the latest official build (`https://github.com/thooton/delta/releases/download/latest/delta-cc-<os>-<arch>`) and restarts. It takes no URL; a body is ignored. |
 | GET | `/canvas-status` | Canvas base URL and the cookie service's health. |
 | any | `/canvas/{path}` | Relayed to `<canvas-url>/{path}` with the user's Canvas session. |
 | POST | `/canvas-upload/{path}` | Canvas file upload. The body is the file, `{path}` is the Canvas preflight endpoint, and the query carries `name`, `content_type` and any other preflight parameters. Responds with the Canvas file object. |
@@ -103,8 +102,7 @@ Every endpoint requires the bearer token.
 | GET | `/books-login` | The book account, as `{"email", "password"}`. 404 while none is set. |
 | PUT | `/books-login` | Replaces it. Needs an email address and a password. |
 | DELETE | `/books-login` | Removes it. |
-| GET | `/personal-access-token` | The GitHub personal access token, as `{"token"}`. 404 while none is set. |
-| PUT | `/personal-access-token` | Replaces it with the raw request body. |
+| PUT | `/personal-access-token` | Replaces the GitHub personal access token with the raw request body. There is no `GET`: it can't be read back. |
 | GET | `/maps-key` | The Google Maps API key, as `{"key"}`. 404 while none is set. |
 | PUT | `/maps-key` | Replaces it with the raw request body. |
 | GET | `/gmail-login` | The Gmail login, as `{"client_id", "client_secret", "refresh_token", "email"}`. 404 while none is set. |
@@ -117,7 +115,7 @@ Every endpoint requires the bearer token.
 | POST | `/agent-sessions/{id}/interrupt` | Stops the turn under way. |
 | DELETE | `/agent-sessions/{id}` | Deletes the session: its agent, its container, its token and its files. |
 | GET | `/agent-sessions/{id}/events` | The session's stream as server-sent events, replayed after `?from_sequence_num=` or `Last-Event-ID`. |
-| PUT | `/agent-key` | Replaces the backup sessions' API key with the raw request body. (`GET` returns it, to the delta token only.) |
+| PUT | `/agent-key` | Replaces the backup sessions' API key with the raw request body. There is no `GET`. |
 
 The `/agent-sessions` routes and `/agent-key` are on the public listener only. A backup session's token can't use them.
 
@@ -165,7 +163,14 @@ The engine is white-labeled. The agent never runs it or sees its name: the comma
 
 ## GitHub access
 
-The agent reaches the user's repositories with a GitHub personal access token stored on the command center as `data/personal-access-token`. (Backup sessions reach them through a relay instead, without the token; see [Backup sessions](#backup-sessions).) The agent runs `delta git ...` and `delta gh ...` instead of `git` and `gh`. Each fetches the token and hands it to that one process through its environment: to git as an `http.https://github.com/.extraheader` basic-auth header via `GIT_CONFIG_COUNT`/`GIT_CONFIG_KEY_n`/`GIT_CONFIG_VALUE_n` (as actions/checkout does), to gh as `GH_TOKEN`. So no git config, remote URL or clone ever holds it. (An earlier version had the agent install a global git credential helper, which Claude Code's auto-mode classifier blocks as unauthorized persistence.) `delta set-personal-access-token` checks a new token against `api.github.com/user` (refusing one GitHub rejects, saving it with a warning if GitHub can't be reached) before storing it. To set it on the VPS directly, write the token to that file, readable only by the `delta` user.
+The agent reaches the user's repositories with a GitHub personal access token stored on the command center as `data/personal-access-token`, which no session ever sees: there is no route that returns it. The agent runs `delta git ...` and `delta gh ...` instead of `git` and `gh`, and the CLI runs a small proxy for the length of the command:
+
+- git reaches it through a `url.http://127.0.0.1:<port>/github.com/.insteadOf=https://github.com/` setting passed in its environment (`GIT_CONFIG_COUNT`/`GIT_CONFIG_KEY_n`/`GIT_CONFIG_VALUE_n`), which rewrites every GitHub URL it fetches from or pushes to. So no git config, remote URL or clone ever holds a proxy address or a token.
+- gh reaches it through `http_unix_socket` in a temporary `GH_CONFIG_DIR`, which makes gh send every request as plain HTTP over a unix socket, with a placeholder `GH_TOKEN` so it doesn't ask to log in.
+
+The proxy sends GitHub requests (to `github.com`, `api.github.com`, `uploads.github.com`, `codeload.github.com`) to the command center's `/github/{host}/...` relay with the session's delta token, and the relay adds the GitHub token on the way out and strips cookies and credentials on the way back. Anything off GitHub (signed download links for release assets and artifacts) the proxy fetches directly, with no credentials. Redirects are passed back to git or gh, not followed, so the token is never sent to a host a redirect names.
+
+So someone who copies the delta token out of a transcript can use GitHub only through the command center, for as long as that token is valid: rotating it (`delta-cc gen-token`) cuts them off, with no need to revoke the GitHub token. (Earlier versions handed the token to git and gh through their environment, and before that had the agent install a global git credential helper, which Claude Code's auto-mode classifier blocks as unauthorized persistence.) `delta set-personal-access-token` checks a new token against `api.github.com/user` (refusing one GitHub rejects, saving it with a warning if GitHub can't be reached) before storing it. To set it on the VPS directly, write the token to that file, readable only by the `delta` user.
 
 ## Backup sessions
 
@@ -177,9 +182,9 @@ Backup sessions (▲ in the app) are agent sessions the command center runs itse
 
 **Idle sessions.** After `-agent-idle` (default 15 minutes) with nothing happening, a session's pi is stopped and its container stopped (not removed). The next message starts both again, with the container's files as they were.
 
-**What a backup session can reach.** Containers are made with no `--privileged`, no host network and no runtime socket, and with `-agent-memory` (4g), `-agent-cpus` (2) and `-agent-pids` (4096) limits. They reach the command center only through the agent socket, whose directory is mounted at `/run/delta`. The agent signs in there with its session's token (`delta set-auth unix:///run/delta/delta.sock <token>`). The command center accepts that token only on the socket, never on the public listener, and accepts the delta token only on the public listener. On the socket the token may use the files, music, `GET` of the book login and the maps key, `/auth`, `/version`, the GitHub relay, and `/update` with official release URLs only (`https://github.com/thooton/delta/releases/download/...`). Canvas, Gmail, the GitHub token itself, the settings and the backup sessions API all answer 403. The book login and the maps key stay readable, because `delta books` and `delta maps` need them.
+**What a backup session can reach.** Containers are made with no `--privileged`, no host network and no runtime socket, and with `-agent-memory` (4g), `-agent-cpus` (2) and `-agent-pids` (4096) limits. They reach the command center only through the agent socket, whose directory is mounted at `/run/delta`. The agent signs in there with its session's token (`delta set-auth unix:///run/delta/delta.sock <token>`). The command center accepts that token only on the socket, never on the public listener, and accepts the delta token only on the public listener. On the socket the token may use the files, music, `GET` of the book login and the maps key, `/auth`, `/version`, the GitHub relay, and `/update`. Canvas, Gmail, changing the GitHub token, the settings and the backup sessions API all answer 403. The book login and the maps key stay readable, because `delta books` and `delta maps` need them.
 
-**GitHub without the token.** In a backup session, `delta git` and `delta gh` never hold the user's GitHub token. The CLI runs a small proxy for the length of the command. git reaches it through a `url.http://127.0.0.1:<port>/github.com/.insteadOf=https://github.com/` setting in its environment. gh reaches it through `http_unix_socket` in a temporary `GH_CONFIG_DIR`, with a placeholder `GH_TOKEN`. The proxy sends GitHub requests to the command center's `/github/{host}/...` relay, which adds the token, and fetches anything off GitHub (signed download links) directly, with no credentials. `delta get-personal-access-token` answers 403.
+`delta git` and `delta gh` work as in any session, through the relay (see [GitHub access](#github-access)).
 
 **The API key.** OpenCode Zen's key is kept as `data/agent-key` (mode 0600) and set from a regular session with `delta backup-key set -`, or by writing the file on the VPS. Model errors reach the phone as generic messages ("The API key for backup sessions was rejected", "out of credit", "Too many requests", ...), because the app never names the provider. pi's own error text goes to the command center's log.
 
@@ -232,12 +237,12 @@ The command center never updates on its own. To ship a change to it:
 3. Run:
 
    ```
-   delta update-cc https://github.com/thooton/delta/releases/download/latest/delta-cc-linux-amd64
+   delta update-cc
    ```
 
-The command center downloads the binary and runs `<new-binary> test`, a self-test that exercises the real request handler against a temporary data directory (see `cmd/delta-cc/selftest.go`). Only if the test passes does it replace its own executable and restart in place, keeping its arguments and process ID. If the download fails, the file isn't a delta-cc binary, or the test fails, nothing changes and the error is returned to the CLI. The CLI then waits for the restarted server to report the new version.
+It takes no link. The command center always installs the latest official build of itself, from `https://github.com/thooton/delta/releases/download/latest/delta-cc-<os>-<arch>`, and nothing else. It downloads the binary and runs `<new-binary> test`, a self-test that exercises the real request handler against a temporary data directory (see `cmd/delta-cc/selftest.go`). Only if the test passes does it replace its own executable and restart in place, keeping its arguments and process ID. If the download fails, the file isn't a delta-cc binary, or the test fails, nothing changes and the error is returned to the CLI. The CLI then waits for the restarted server to report the new version.
 
-Anyone holding the token can make the command center run any binary they like, so treat the token like a shell login to the VPS (as the `delta` user).
+So the only code the command center ever runs is what was built from `master` by GitHub Actions. Someone holding the delta token can't make it run a binary of their own, and getting the GitHub token out would take a commit to `master`, which shows in its history. To run a build that isn't released, install it on the VPS by hand.
 
 ## Setting up the VPS
 

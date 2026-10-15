@@ -1,6 +1,7 @@
 # On every push to master: build the CLI and the command center and publish
 # them to the "latest" release. Nothing is deployed from here; the command
-# center is updated only when an agent runs `delta update-cc <binary-url>`.
+# center is updated only when an agent runs `delta update-cc`, which installs
+# the latest of these.
 name: build
 
 on:

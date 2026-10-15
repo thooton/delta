@@ -85,7 +85,6 @@ func selfTest() error {
 		{"oversized upload is rejected", 413, "PUT", "/files/big.bin", token, make([]byte, 1<<20+1)},
 		{"hidden name is rejected", 400, "PUT", "/files/.hidden", token, content},
 		{"path traversal is rejected", 400, "PUT", "/files/..%2Fescape", token, content},
-		{"update without a URL is rejected", 400, "POST", "/update", token, []byte("{}")},
 		{"missing file download", 404, "GET", "/files/missing", token, nil},
 		{"canvas relay requires the token", 401, "GET", "/canvas/api/v1/users/self", "", nil},
 		{"unconfigured canvas relay says so", 503, "GET", "/canvas/api/v1/users/self", token, nil},
@@ -339,14 +338,17 @@ func gmailSelfTest(expect func(desc string, want int, method, path, tok string, 
 	return err
 }
 
-// secretSelfTest checks that a secretStore's secret can be set, read back
-// and replaced, and that malformed values are rejected.
+// secretSelfTest checks that a secretStore's secret can be set and replaced,
+// that malformed values are rejected, and that it reads back, unless it is
+// write-only, in which case no request can read it.
 func secretSelfTest(expect func(desc string, want int, method, path, tok string, body []byte) ([]byte, error), token string, s *secretStore, values ...string) error {
-	if _, err := expect(s.route+" requires the token", 401, "GET", s.route, "", nil); err != nil {
+	if _, err := expect(s.route+" requires the token", 401, "PUT", s.route, "", []byte(values[0])); err != nil {
 		return err
 	}
-	if _, err := expect(s.route+" is unset", 404, "GET", s.route, token, nil); err != nil {
-		return err
+	if !s.writeOnly {
+		if _, err := expect(s.route+" is unset", 404, "GET", s.route, token, nil); err != nil {
+			return err
+		}
 	}
 	for _, bad := range []string{"", " \n", "two words", "a\x00b"} {
 		if _, err := expect(fmt.Sprintf("%s %q is rejected", s.route, bad), 400, "PUT", s.route, token, []byte(bad)); err != nil {
@@ -359,6 +361,22 @@ func secretSelfTest(expect func(desc string, want int, method, path, tok string,
 	for _, v := range values {
 		if _, err := expect("set "+s.route, 200, "PUT", s.route, token, []byte(v+"\n")); err != nil {
 			return err
+		}
+		if s.writeOnly {
+			// 405 or 404, depending on what else is on the route.
+			data, err := expect(s.route+" can't be read back", 405, "GET", s.route, token, nil)
+			if err != nil {
+				data, err = expect(s.route+" can't be read back", 404, "GET", s.route, token, nil)
+			}
+			if err != nil {
+				return err
+			} else if strings.Contains(string(data), v) {
+				return fmt.Errorf("%s: GET showed the secret", s.route)
+			}
+			if saved, err := os.ReadFile(s.path); err != nil || strings.TrimSpace(string(saved)) != v {
+				return fmt.Errorf("%s: saved %q (%v), want %q", s.route, saved, err, v)
+			}
+			continue
 		}
 		data, err := expect("read "+s.route, 200, "GET", s.route, token, nil)
 		if err != nil {

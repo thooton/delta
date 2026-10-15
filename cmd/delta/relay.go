@@ -1,7 +1,6 @@
 package main
 
 import (
-	"encoding/json"
 	"errors"
 	"fmt"
 	"net"
@@ -13,9 +12,9 @@ import (
 	"strings"
 )
 
-// In a backup session the token can't read the user's GitHub token, so
-// `delta git` and `delta gh` never hold it. Instead the CLI runs a small
-// proxy for the length of the command, and points git and gh at it:
+// The user's GitHub token stays on the command center, so `delta git` and
+// `delta gh` never hold it. Instead the CLI runs a small proxy for the
+// length of the command, and points git and gh at it:
 //
 //   - git, through url.<proxy>/github.com/.insteadOf=https://github.com/,
 //     which rewrites every GitHub URL it fetches from or pushes to;
@@ -34,19 +33,6 @@ var githubHosts = map[string]bool{
 	"api.github.com":      true,
 	"uploads.github.com":  true,
 	"codeload.github.com": true,
-}
-
-// isAgentScope reports whether cfg's token is a backup session's.
-func isAgentScope(cfg config) (bool, error) {
-	data, err := do(cfg, http.MethodGet, "/auth", nil)
-	if err != nil {
-		return false, err
-	}
-	var res struct {
-		Scope string `json:"scope"`
-	}
-	json.Unmarshal(data, &res)
-	return res.Scope == "agent", nil
 }
 
 type githubProxy struct {
