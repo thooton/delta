@@ -15,6 +15,8 @@ import (
 // it on one route:
 //
 //	GET <route>   {<field>: ...}; 404 with the missing message while none is set.
+//	              Not offered for a write-only secret, which only the command
+//	              center itself uses.
 //	PUT <route>   Replace it with the secret as the raw body.
 const maxSecret = 1 << 10
 
@@ -24,10 +26,14 @@ type secretStore struct {
 	field   string // JSON field GET returns it in
 	what    string // what it is, for messages
 	missing string // the 404 message while none is set
+	// writeOnly secrets can be replaced but never read back.
+	writeOnly bool
 }
 
 func (s *secretStore) register(mux *http.ServeMux) {
-	mux.HandleFunc("GET "+s.route, s.get)
+	if !s.writeOnly {
+		mux.HandleFunc("GET "+s.route, s.get)
+	}
 	mux.HandleFunc("PUT "+s.route, s.put)
 }
 

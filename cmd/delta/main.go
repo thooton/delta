@@ -81,11 +81,10 @@ COMMANDS
   delta delete <name>                Delete a file.
   delta git <args>                   Run git with the user's GitHub token.
   delta gh <args>                    Run gh with the user's GitHub token.
-  delta get-personal-access-token    Print the user's GitHub token.
   delta set-personal-access-token <token|->
                                      Check and save a new GitHub token ("-"
                                      reads stdin).
-  delta update-cc <binary-url>       Update the command center (see below).
+  delta update-cc                    Update the command center (see below).
   delta backup-key set <key|->       Save the API key backup sessions use
                                      (see BACKUP SESSIONS).
   delta canvas ...                   The user's Canvas (they are a student).
@@ -103,18 +102,19 @@ COMMANDS
   Aliases: ls = list, rm = delete, get = pull.
 
 GITHUB
-  The user has given you a GitHub personal access token for their
-  repositories, kept on the command center. Use "delta git" and "delta gh"
-  in place of git and gh for anything that talks to GitHub; they pass the
-  token to that one command and store it nowhere:
+  The user has given you access to their repositories through a GitHub
+  personal access token kept on the command center. You never see it: use
+  "delta git" and "delta gh" in place of git and gh for anything that
+  talks to GitHub, and the command center adds the token to their requests
+  on the way:
 
     delta git clone https://github.com/thooton/sonim
     delta git push
     delta gh run watch -R thooton/delta
 
-  Never show the token or put it in a URL or file. If it is missing or
+  gh may need installing first. If GitHub says the token is missing or
   expired, ask the user for a new one and save it with
-  set-personal-access-token.
+  set-personal-access-token (it can't be read back afterwards).
 
 BACKUP SESSIONS
   The Chats tab lists two kinds of session: regular ones (marked ●, like
@@ -126,12 +126,9 @@ BACKUP SESSIONS
   - You are root in a fresh Debian container. Install what you need with
     apt-get (gh is "apt-get install -y gh"). The container keeps its files
     until the user deletes the session, but stops while it is idle.
-  - Canvas, Gmail and the GitHub token itself are out of reach. For Canvas
-    or Gmail, tell the user to start a regular (●) session. "delta git"
-    and "delta gh" still work: they go through the command center, which
-    adds the token for you.
-  - You can update the command center only to an official build from the
-    thooton/delta releases.
+  - Canvas and Gmail are out of reach: for those, tell the user to start
+    a regular (●) session. "delta git" and "delta gh" work as anywhere
+    else.
 
   From a regular session, "delta backup-key set -" saves the API key
   backup sessions use (the user gives it to you; read it from stdin).
@@ -140,9 +137,11 @@ UPDATING THE COMMAND CENTER
   Push the change to master in thooton/delta, wait for its GitHub Actions
   build, then run:
 
-    delta update-cc https://github.com/thooton/delta/releases/download/latest/delta-cc-linux-amd64
+    delta update-cc
 
-  The new binary must pass its self-test (cmd/delta-cc/selftest.go; keep it
+  It takes no link: the command center always installs the latest
+  official build of itself from the thooton/delta releases, and nothing
+  else. The new binary must pass its self-test (cmd/delta-cc/selftest.go; keep it
   up to date) or nothing is installed. If the old and new versions printed
   match, the build hadn't finished yet.
 
@@ -219,10 +218,7 @@ func run(args []string) error {
 		}
 		return del(args[0])
 	case "get-personal-access-token":
-		if len(args) != 0 {
-			return errors.New("usage: delta get-personal-access-token")
-		}
-		return getAccessToken()
+		return errors.New("the GitHub token can't be read back from the command center; use `delta git` and `delta gh`, which add it for you")
 	case "set-personal-access-token":
 		if len(args) != 1 {
 			return errors.New("usage: delta set-personal-access-token <token|->")
@@ -233,10 +229,10 @@ func run(args []string) error {
 	case "backup-key":
 		return runBackupKey(args)
 	case "update-cc":
-		if len(args) != 1 {
-			return errors.New("usage: delta update-cc <binary-url>")
+		if len(args) != 0 {
+			return errors.New("usage: delta update-cc (it takes no link: the command center always installs the latest official build)")
 		}
-		return updateCC(args[0])
+		return updateCC()
 	default:
 		return fmt.Errorf("unknown command %q (run `delta help`)", cmd)
 	}
@@ -441,12 +437,15 @@ func del(name string) error {
 	return nil
 }
 
-func updateCC(binaryURL string) error {
+// updateCC has the command center install the latest official build of
+// itself. It picks the build; the URL sent along is only for command
+// centers older than that, which required one.
+func updateCC() error {
 	c, err := loadConfig()
 	if err != nil {
 		return err
 	}
-	req, _ := json.Marshal(map[string]string{"url": binaryURL})
+	req, _ := json.Marshal(map[string]string{"url": "https://github.com/thooton/delta/releases/download/latest/delta-cc-linux-amd64"})
 	body, err := do(c, http.MethodPost, "/update", bytes.NewReader(req))
 	if err != nil {
 		return err

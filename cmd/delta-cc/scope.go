@@ -18,9 +18,8 @@ import (
 // travels in its first message. It is accepted only on the agent socket,
 // which is reachable from inside the session containers and nowhere else, so
 // a copy that leaks out of a transcript is useless. Even there it is limited
-// to what a backup agent needs (agentAllowed): the user's Canvas, Gmail and
-// GitHub token stay out of its reach, and it can only update the command
-// center to an official release.
+// to what a backup agent needs (agentAllowed): the user's Canvas and Gmail
+// stay out of its reach, and it can't change the command center's settings.
 
 type scope string
 
@@ -83,10 +82,8 @@ func agentAllowed(r *http.Request) string {
 	p, m := r.URL.Path, r.Method
 	first, _, _ := strings.Cut(strings.TrimPrefix(p, "/"), "/")
 	switch first {
-	case "auth", "version", "files", "music", "music-jobs", "github":
+	case "auth", "version", "files", "music", "music-jobs", "github", "update":
 		return ""
-	case "update":
-		return "" // limited to official releases by the updater
 	case "music-login":
 		return ""
 	case "music-config", "books-login", "maps-key":
@@ -99,7 +96,7 @@ func agentAllowed(r *http.Request) string {
 	case "gmail-login":
 		return "Gmail isn't available in this session; the user needs a regular (●) session for Gmail"
 	case "personal-access-token":
-		return "this session can't read or change the GitHub token; use `delta git` and `delta gh`, which go through the command center"
+		return "this session can't change the GitHub token; ask the user to save a new one from a regular (●) session"
 	}
 	return "this session's token can't use " + p
 }

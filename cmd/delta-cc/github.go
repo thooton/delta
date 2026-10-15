@@ -12,15 +12,15 @@ import (
 )
 
 // The GitHub personal access token the agent uses for git and gh on the
-// user's repositories. `delta get-personal-access-token` fetches it and
-// `delta set-personal-access-token` replaces it.
-//
-// Backup sessions never see it. Their `delta git` and `delta gh` send
-// everything through the relay instead, which adds it on the way out.
+// user's repositories. No session ever sees it: it can be replaced
+// (`delta set-personal-access-token`) but not read back, and `delta git` and
+// `delta gh` send everything through the relay, which adds it on the way
+// out. So someone who copies the delta token out of a transcript can use
+// GitHub only through the command center, and rotating the delta token cuts
+// them off.
 //
 // Routes (all behind the delta bearer token):
 //
-//	GET /personal-access-token   {"token": ...}; 404 while none is set.
 //	PUT /personal-access-token   Replace it with the token as the raw body.
 //	ANY /github/{host}/{path...} Relayed to https://{host}/{path} with the
 //	                             token, for the GitHub hosts git and gh use.
@@ -28,11 +28,12 @@ const accessTokenFile = "personal-access-token"
 
 func accessTokenStore(dataDir string) *secretStore {
 	return &secretStore{
-		path:    filepath.Join(dataDir, accessTokenFile),
-		route:   "/personal-access-token",
-		field:   "token",
-		what:    "token",
-		missing: "no personal access token is set; ask the user for one and run `delta set-personal-access-token -`",
+		path:      filepath.Join(dataDir, accessTokenFile),
+		route:     "/personal-access-token",
+		field:     "token",
+		what:      "token",
+		missing:   "no personal access token is set; ask the user for one and run `delta set-personal-access-token -`",
+		writeOnly: true,
 	}
 }
 
@@ -86,7 +87,7 @@ func (g *githubRelay) relay(w http.ResponseWriter, r *http.Request) {
 	}
 	data, err := os.ReadFile(g.tokenFile)
 	if errors.Is(err, os.ErrNotExist) {
-		writeError(w, http.StatusServiceUnavailable, "no personal access token is set on the command center; ask the user to set one from a regular (●) session")
+		writeError(w, http.StatusServiceUnavailable, "no GitHub token is set on the command center; ask the user for one and save it with `delta set-personal-access-token -` (from a regular (●) session)")
 		return
 	} else if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())

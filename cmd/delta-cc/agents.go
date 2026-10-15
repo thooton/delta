@@ -51,7 +51,7 @@ import (
 //	DELETE /agent-sessions/{id}             Delete the session and its container.
 //	GET    /agent-sessions/{id}/events      Server-sent events, replayed after
 //	                                        ?from_sequence_num= (or Last-Event-ID).
-//	GET    /agent-key, PUT /agent-key       The model provider's API key.
+//	PUT    /agent-key                       The model provider's API key (never read back).
 const (
 	agentIDPrefix    = "session_delta_"
 	agentKeyFile     = "agent-key"
@@ -182,11 +182,12 @@ func disabledAgentService(dataDir, why string) *agentService {
 
 func agentKeyStore(dataDir string) *secretStore {
 	return &secretStore{
-		path:    filepath.Join(dataDir, agentKeyFile),
-		route:   "/agent-key",
-		field:   "key",
-		what:    "key",
-		missing: "no API key is set for backup sessions; run `delta backup-key set -` from a regular session",
+		path:      filepath.Join(dataDir, agentKeyFile),
+		route:     "/agent-key",
+		field:     "key",
+		what:      "key",
+		missing:   "no API key is set for backup sessions; run `delta backup-key set -` from a regular session",
+		writeOnly: true,
 	}
 }
 
