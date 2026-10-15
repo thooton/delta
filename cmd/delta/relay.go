@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 )
@@ -124,12 +125,7 @@ func runThroughRelay(cfg config, prog string, args []string) error {
 	cmd := exec.Command(prog, args...)
 	cmd.Stdin, cmd.Stdout, cmd.Stderr = os.Stdin, os.Stdout, os.Stderr
 	// git, and the git gh runs for clones, go through the TCP proxy.
-	n, _ := strconv.Atoi(os.Getenv("GIT_CONFIG_COUNT"))
-	cmd.Env = append(os.Environ(),
-		fmt.Sprintf("GIT_CONFIG_COUNT=%d", n+1),
-		fmt.Sprintf("GIT_CONFIG_KEY_%d=url.http://127.0.0.1:%d/github.com/.insteadOf", n, port),
-		fmt.Sprintf("GIT_CONFIG_VALUE_%d=https://github.com/", n),
-	)
+	cmd.Env = gitEnv(os.Environ(), fmt.Sprintf("http://127.0.0.1:%d/github.com/", port))
 	if prog == "gh" {
 		dir, err := os.MkdirTemp("", "delta-gh-*")
 		if err != nil {
@@ -159,4 +155,54 @@ func runThroughRelay(cfg config, prog string, args []string) error {
 		return errors.New("gh isn't installed here; install it with `apt-get install -y gh`")
 	}
 	return err
+}
+
+// githubURLPrefixes are the ways a GitHub remote can be written. Each is
+// rewritten to the proxy.
+var githubURLPrefixes = []string{"https://github.com/", "http://github.com/", "git@github.com:", "ssh://git@github.com/"}
+
+// gitEnv returns env with git told, through GIT_CONFIG_COUNT and its
+// GIT_CONFIG_KEY_n/GIT_CONFIG_VALUE_n pairs, to rewrite every GitHub remote
+// to proxy.
+//
+// git applies one rewrite per URL (the longest matching prefix, the first
+// defined on a tie), and never rewrites the result again. Claude Code cloud
+// sessions already pass rewrites the same way (git@github.com: to
+// https://github.com/, defined before ours), so on their own ours would lose
+// for SSH-style remotes and git would reach GitHub directly. So the
+// environment's own rewrites of GitHub prefixes are dropped, and everything
+// else it sets is kept, in order.
+func gitEnv(env []string, proxy string) []string {
+	get := map[string]string{}
+	var out []string
+	for _, kv := range env {
+		k, v, _ := strings.Cut(kv, "=")
+		if k == "GIT_CONFIG_COUNT" || strings.HasPrefix(k, "GIT_CONFIG_KEY_") || strings.HasPrefix(k, "GIT_CONFIG_VALUE_") {
+			get[k] = v
+			continue
+		}
+		out = append(out, kv)
+	}
+	n := 0
+	add := func(k, v string) {
+		out = append(out, fmt.Sprintf("GIT_CONFIG_KEY_%d=%s", n, k), fmt.Sprintf("GIT_CONFIG_VALUE_%d=%s", n, v))
+		n++
+	}
+	count, _ := strconv.Atoi(get["GIT_CONFIG_COUNT"])
+	for i := 0; i < count; i++ {
+		k, ok := get[fmt.Sprintf("GIT_CONFIG_KEY_%d", i)]
+		if !ok {
+			continue
+		}
+		v := get[fmt.Sprintf("GIT_CONFIG_VALUE_%d", i)]
+		lk := strings.ToLower(k)
+		if strings.HasPrefix(lk, "url.") && (strings.HasSuffix(lk, ".insteadof") || strings.HasSuffix(lk, ".pushinsteadof")) && slices.Contains(githubURLPrefixes, v) {
+			continue
+		}
+		add(k, v)
+	}
+	for _, prefix := range githubURLPrefixes {
+		add("url."+proxy+".insteadOf", prefix)
+	}
+	return append(out, fmt.Sprintf("GIT_CONFIG_COUNT=%d", n))
 }
