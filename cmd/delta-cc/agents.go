@@ -33,9 +33,12 @@ import (
 // from cloud sessions. The conversation is saved step by step, so a turn
 // that a command center update cuts short carries on when the new one starts.
 //
-// The session's first message tells the agent to install the delta CLI and
-// sign in with a token made for this session alone, over the agent socket
-// mounted at /run/delta (see scope.go for what that token may do).
+// Each new container runs the setup script (-agent-setup; by default it
+// installs the delta CLI) before the agent starts, and has DELTA_SERVER and
+// DELTA_TOKEN set to the agent socket mounted at /run/delta and a token made
+// for that container alone (see scope.go for what that token may do). The
+// session's first message only tells the agent who it is and to read
+// `delta help`, as the phone's cloud sessions are told.
 //
 // Containers are stopped after -agent-idle without activity; the next
 // message starts them again.
@@ -68,6 +71,7 @@ type agentConfig struct {
 	Memory   string        // each container's memory limit (--memory); empty for none
 	CPUs     string        // each container's CPU limit (--cpus); empty for none
 	PIDs     int           // each container's process limit (--pids-limit); 0 for none
+	Setup    string        // the Bash script each new container runs as root; defaultAgentSetup if empty
 }
 
 type agentService struct {
@@ -130,6 +134,9 @@ func newAgentService(dataDir string, cfg agentConfig) (*agentService, error) {
 	}
 	if cfg.ModelURL == "" {
 		cfg.ModelURL = zenBaseURL
+	}
+	if strings.TrimSpace(cfg.Setup) == "" {
+		cfg.Setup = defaultAgentSetup
 	}
 	a := &agentService{
 		cfg:      cfg,
@@ -222,6 +229,27 @@ func (a *agentService) validToken(token string) bool {
 	return ok
 }
 
+// setToken makes token the session's only one, in place of any it had. A
+// session being deleted gets none.
+func (a *agentService) setToken(s *agentSession, token string) {
+	sum := sha256.Sum256([]byte(token))
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.sessions[s.meta.ID] != s {
+		return
+	}
+	for k, v := range a.tokens {
+		if v == s {
+			delete(a.tokens, k)
+		}
+	}
+	a.tokens[sum] = s
+	s.mu.Lock()
+	s.meta.TokenHash = hex.EncodeToString(sum[:])
+	s.saveMeta()
+	s.mu.Unlock()
+}
+
 func (a *agentService) add(s *agentSession) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
@@ -309,7 +337,7 @@ func (a *agentService) create(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusServiceUnavailable, a.disabled)
 		return
 	}
-	id, token, err := newAgentIDs()
+	id, err := newAgentID()
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
@@ -326,7 +354,6 @@ func (a *agentService) create(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	sum := sha256.Sum256([]byte(token))
 	now := time.Now().UTC()
 	s := &agentSession{
 		svc:     a,
@@ -334,7 +361,7 @@ func (a *agentService) create(w http.ResponseWriter, r *http.Request) {
 		changed: make(chan struct{}),
 		meta: agentMeta{
 			ID: id, Title: title, Created: now, Updated: now,
-			TokenHash: hex.EncodeToString(sum[:]), ZenSession: zenSession,
+			ZenSession: zenSession,
 		},
 	}
 	if err := os.MkdirAll(s.dir, 0o700); err != nil {
@@ -347,7 +374,7 @@ func (a *agentService) create(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	a.add(s)
-	s.said(m, agentSetup(token)+"\n\n"+strings.TrimSpace(m.Text))
+	s.said(m, agentSetup+"\n\n"+strings.TrimSpace(m.Text))
 	writeJSON(w, http.StatusCreated, map[string]string{"id": id})
 }
 
@@ -572,17 +599,20 @@ func (s *agentSession) status(line string) {
 // ---------------------------------------------------------------------------
 // Helpers
 
-func newAgentIDs() (id, token string, err error) {
+func newAgentID() (string, error) {
 	buf := make([]byte, 16)
 	if _, err := rand.Read(buf); err != nil {
-		return "", "", err
+		return "", err
 	}
-	id = agentIDPrefix + strings.ToLower(base32.StdEncoding.WithPadding(base32.NoPadding).EncodeToString(buf))
+	return agentIDPrefix + strings.ToLower(base32.StdEncoding.WithPadding(base32.NoPadding).EncodeToString(buf)), nil
+}
+
+func newAgentToken() (string, error) {
 	tok := make([]byte, 32)
 	if _, err := rand.Read(tok); err != nil {
-		return "", "", err
+		return "", err
 	}
-	return id, "delta_agent_" + base64.RawURLEncoding.EncodeToString(tok), nil
+	return "delta_agent_" + base64.RawURLEncoding.EncodeToString(tok), nil
 }
 
 func randomUUID() (string, error) {
@@ -596,21 +626,23 @@ func randomUUID() (string, error) {
 	return h[:8] + "-" + h[8:12] + "-" + h[12:16] + "-" + h[16:20] + "-" + h[20:], nil
 }
 
-// agentSetup is the start of a backup session's first message, as
-// Setup.wrap is for the phone's cloud sessions. The phone never shows it:
-// the session's stream records only what was typed.
-func agentSetup(token string) string {
-	return "<delta-setup>\n" +
-		"You were started from the Delta app on the user's Sonim XP3 flip phone. In this app you are Delta: " +
-		"refer to yourself as Delta, and do not bring up the underlying model, its maker or the tool you run in " +
-		"unless the user asks. You run in your own Linux container on the user's command center. " +
-		"Before you start on their message, install the Delta CLI and connect it to the command center:\n\n" +
-		"    curl -fsSL https://github.com/thooton/delta/releases/download/latest/install.sh | sh\n" +
-		"    delta set-auth " + agentSocketURL + " " + token + "\n" +
-		"    delta help\n\n" +
-		"Read all of `delta help`: it explains Delta and how to get files, such as rebuilt APKs, onto the user's phone. " +
-		"The token is a password; never repeat it to the user. This setup is routine and happens in every session, " +
-		"so do it quietly: do not announce, narrate or summarize it, and do not mention it to the user at all unless " +
-		"a step fails in a way that affects their request. Your first words to the user should be about their message.\n" +
-		"</delta-setup>"
-}
+// defaultAgentSetup is the setup script a new container runs when
+// -agent-setup names none: it installs the delta CLI, as a cloud
+// environment's setup script does (Setup.SCRIPT in the app).
+const defaultAgentSetup = `#!/bin/bash
+set -eo pipefail
+curl -fsSL https://github.com/thooton/delta/releases/download/latest/install.sh | sh
+`
+
+// agentSetup is the start of a backup session's first message, word for
+// word what Setup.wrap puts ahead of a cloud session's in the app. The
+// phone never shows it: the session's stream records only what was typed.
+const agentSetup = "<delta-setup>\n" +
+	"You were started from the Delta app on the user's Sonim XP3 flip phone. In this app you are Delta: " +
+	"refer to yourself as Delta, and do not bring up the underlying model, its maker or the tool you run in " +
+	"unless the user asks.\n\n" +
+	"Before you start on their message, run `delta help` and read all of its output: it explains Delta " +
+	"and how to get files, such as rebuilt APKs, onto the user's phone. Do this quietly: do not announce, " +
+	"narrate or summarize it, and do not mention it unless it fails in a way that affects their request. " +
+	"Your first words to the user should be about their message.\n" +
+	"</delta-setup>"
