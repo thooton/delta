@@ -1,9 +1,9 @@
 package main
 
 import (
+	"context"
 	"crypto/rand"
 	"crypto/sha256"
-	_ "embed"
 	"encoding/base32"
 	"encoding/base64"
 	"encoding/hex"
@@ -26,20 +26,19 @@ import (
 // the phone's usual (cloud) sessions aren't available.
 //
 // Each session gets its own container, a plain Linux box made from
-// -agent-image, and its own pi process (https://pi.dev) on this machine.
-// pi talks to the model (agents_model.go); agent-extension.ts makes its tools (read, write,
-// edit and bash) run in the container. pi is started detached, reading
-// commands from a FIFO and appending its events to a file, so it carries on
-// through a command center update; the command center tails that file and
-// turns pi's events into the same stream-json frames the phone already reads
-// from cloud sessions (agents_pi.go).
+// -agent-image. The command center runs the agent itself (agents_loop.go):
+// it talks to the model (agents_model.go) and gives it four tools, read,
+// write, edit and bash, which run in the container (agents_tools.go). What
+// happens is recorded as the same stream-json frames the phone already reads
+// from cloud sessions. The conversation is saved step by step, so a turn
+// that a command center update cuts short carries on when the new one starts.
 //
 // The session's first message tells the agent to install the delta CLI and
 // sign in with a token made for this session alone, over the agent socket
 // mounted at /run/delta (see scope.go for what that token may do).
 //
-// Containers are stopped, and pi exits, after -agent-idle without activity;
-// the next message starts both again, and pi resumes from its session file.
+// Containers are stopped after -agent-idle without activity; the next
+// message starts them again.
 // Deleting a session removes its container, its token and its files.
 //
 // Routes (all behind the delta token, on the public listener only):
@@ -60,18 +59,15 @@ const (
 	agentSocketURL   = "unix://" + agentSocketMount + "/delta.sock"
 )
 
-//go:embed agent-extension.ts
-var agentExtension []byte
-
 type agentConfig struct {
-	Runtime string        // container runtime CLI: podman or docker
-	Image   string        // the image every session's container starts from
-	Pi      string        // pi executable; empty installs the pinned version
-	Socket  string        // the agent socket on this machine
-	Idle    time.Duration // stop a session's container after this long idle
-	Memory  string        // each container's memory limit (--memory); empty for none
-	CPUs    string        // each container's CPU limit (--cpus); empty for none
-	PIDs    int           // each container's process limit (--pids-limit); 0 for none
+	Runtime  string        // container runtime CLI: podman or docker
+	Image    string        // the image every session's container starts from
+	ModelURL string        // the model's API; zenBaseURL unless testing
+	Socket   string        // the agent socket on this machine
+	Idle     time.Duration // stop a session's container after this long idle
+	Memory   string        // each container's memory limit (--memory); empty for none
+	CPUs     string        // each container's CPU limit (--cpus); empty for none
+	PIDs     int           // each container's process limit (--pids-limit); 0 for none
 }
 
 type agentService struct {
@@ -83,8 +79,6 @@ type agentService struct {
 	mu       sync.Mutex
 	sessions map[string]*agentSession
 	tokens   map[[sha256.Size]byte]*agentSession
-
-	installMu sync.Mutex // one pi install at a time
 }
 
 // agentMeta is a session's session.json.
@@ -94,13 +88,14 @@ type agentMeta struct {
 	Created    time.Time `json:"created"`
 	Updated    time.Time `json:"updated"`
 	TokenHash  string    `json:"token_sha256"`
-	PiSession  string    `json:"pi_session"`  // pi's session id
-	ZenSession string    `json:"zen_session"` // the OpenCode session id pi's requests carry (agents_model.go)
-	Working    bool      `json:"working"`     // a turn is under way
-	PID        int       `json:"pid,omitempty"`
-	PIDStart   string    `json:"pid_start,omitempty"` // when that process started, so a reused pid isn't taken for it
+	ZenSession string    `json:"zen_session"`         // the OpenCode session id its model requests carry (agents_model.go)
+	Working    bool      `json:"working"`             // a turn is under way
 	Container  bool      `json:"container,omitempty"` // its container has been made
-	Offset     int64     `json:"offset"`              // how much of pi.out has been read
+
+	// The pi process an older command center ran the session with, and
+	// when it started (see stopLegacyPi).
+	PID      int    `json:"pid,omitempty"`
+	PIDStart string `json:"pid_start,omitempty"`
 }
 
 // agentEvent is one frame of a session's stream, as kept in events.jsonl.
@@ -114,24 +109,27 @@ type agentSession struct {
 	svc *agentService
 	dir string
 
-	op sync.Mutex // held while starting pi or sending to it
+	op sync.Mutex // held while a turn runs, or while parking or deleting it
 
 	mu         sync.Mutex // guards everything below
 	meta       agentMeta
 	events     []agentEvent
 	changed    chan struct{} // closed, and replaced, on every new event
+	inbox      []agentQueued // messages the model hasn't seen yet
+	running    bool          // the loop is running (agents_loop.go)
+	cancel     context.CancelFunc
 	deleted    bool
-	parked     bool   // its pi and container were stopped for being idle
-	tailPID    int    // the pi whose output is being followed
-	lastError  string // the latest failed model reply in this turn
+	parked     bool // its container was stopped for being idle
 	lastActive time.Time
 }
 
 func newAgentService(dataDir string, cfg agentConfig) (*agentService, error) {
-	// pi runs in a directory of its own, so every path it is given is absolute.
 	dataDir, err := filepath.Abs(dataDir)
 	if err != nil {
 		return nil, err
+	}
+	if cfg.ModelURL == "" {
+		cfg.ModelURL = zenBaseURL
 	}
 	a := &agentService{
 		cfg:      cfg,
@@ -143,11 +141,14 @@ func newAgentService(dataDir string, cfg agentConfig) (*agentService, error) {
 	if err := os.MkdirAll(a.dir, 0o700); err != nil {
 		return nil, err
 	}
-	if err := os.WriteFile(a.extensionPath(), agentExtension, 0o600); err != nil {
-		return nil, err
+	// What an older command center kept for pi.
+	for _, name := range []string{"extension.ts", "pi-agent"} {
+		os.RemoveAll(filepath.Join(a.dir, name))
 	}
-	if err := a.writeModelsJSON(); err != nil {
-		return nil, err
+	if old, _ := filepath.Glob(filepath.Join(a.dir, "pi-*")); old != nil {
+		for _, dir := range old {
+			os.RemoveAll(dir)
+		}
 	}
 	entries, err := os.ReadDir(a.dir)
 	if err != nil {
@@ -178,11 +179,8 @@ func disabledAgentService(dataDir, why string) *agentService {
 	}
 }
 
-func (a *agentService) extensionPath() string { return filepath.Join(a.dir, "extension.ts") }
-
-// start picks up where the last run left off: sessions whose pi is still
-// running are followed again, and any other turn that was under way is
-// ended. Then it starts the idle sweep.
+// start picks up where the last run left off: turns that were under way
+// carry on from their last step. Then it starts the idle sweep.
 func (a *agentService) start() {
 	a.mu.Lock()
 	sessions := make([]*agentSession, 0, len(a.sessions))
@@ -191,14 +189,14 @@ func (a *agentService) start() {
 	}
 	a.mu.Unlock()
 	for _, s := range sessions {
+		s.stopLegacyPi()
 		s.mu.Lock()
-		pid, working := s.meta.PID, s.meta.Working
-		s.mu.Unlock()
-		if s.piAlive(pid) {
-			s.follow(pid)
-		} else if working {
-			s.fail("The turn was cut short when the command center restarted. Send a message to carry on.")
+		if s.meta.Working || len(s.inbox) > 0 {
+			s.meta.Working = true
+			s.saveMeta()
+			s.startTurn()
 		}
+		s.mu.Unlock()
 	}
 	go a.sweep()
 }
@@ -323,11 +321,6 @@ func (a *agentService) create(w http.ResponseWriter, r *http.Request) {
 	if len([]rune(title)) > agentMaxTitle {
 		title = string([]rune(title)[:agentMaxTitle])
 	}
-	piSession, err := randomUUID()
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
-		return
-	}
 	zenSession, err := zenSessionID()
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
@@ -341,7 +334,7 @@ func (a *agentService) create(w http.ResponseWriter, r *http.Request) {
 		changed: make(chan struct{}),
 		meta: agentMeta{
 			ID: id, Title: title, Created: now, Updated: now,
-			TokenHash: hex.EncodeToString(sum[:]), PiSession: piSession, ZenSession: zenSession,
+			TokenHash: hex.EncodeToString(sum[:]), ZenSession: zenSession,
 		},
 	}
 	if err := os.MkdirAll(s.dir, 0o700); err != nil {
@@ -354,8 +347,7 @@ func (a *agentService) create(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	a.add(s)
-	s.said(m)
-	go s.deliver(agentSetup(token)+"\n\n"+strings.TrimSpace(m.Text), m.Images)
+	s.said(m, agentSetup(token)+"\n\n"+strings.TrimSpace(m.Text))
 	writeJSON(w, http.StatusCreated, map[string]string{"id": id})
 }
 
@@ -368,8 +360,7 @@ func (a *agentService) message(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	s.said(m)
-	go s.deliver(strings.TrimSpace(m.Text), m.Images)
+	s.said(m, strings.TrimSpace(m.Text))
 	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 }
 
@@ -398,14 +389,13 @@ func (a *agentService) remove(w http.ResponseWriter, r *http.Request) {
 	s.mu.Lock()
 	s.deleted = true
 	close(s.changed)
-	pid := s.meta.PID
+	if s.cancel != nil {
+		s.cancel()
+	}
 	s.mu.Unlock()
-	// Wait for anything starting pi or sending to it.
+	// Wait for the turn under way to stop.
 	s.op.Lock()
 	defer s.op.Unlock()
-	if pid != 0 {
-		s.stopPi(pid)
-	}
 	if err := a.removeContainer(s.meta.ID); err != nil {
 		log.Printf("backup session %s: removing its container: %v", s.meta.ID, err)
 	}
@@ -477,6 +467,9 @@ func (a *agentService) load(dir string) (*agentSession, error) {
 	if s.meta.ID != filepath.Base(dir) {
 		return nil, errors.New("session.json names another session")
 	}
+	if raw, err := os.ReadFile(filepath.Join(dir, "inbox.json")); err == nil {
+		json.Unmarshal(raw, &s.inbox)
+	}
 	if raw, err := os.ReadFile(filepath.Join(dir, "events.jsonl")); err == nil {
 		for _, line := range strings.Split(string(raw), "\n") {
 			var e agentEvent
@@ -499,12 +492,17 @@ func (s *agentSession) saveMeta() error {
 
 // record appends a frame to the session's stream and wakes its readers.
 func (s *agentSession) record(source string, payload any) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.recordLocked(source, payload)
+}
+
+// recordLocked is record for callers holding s.mu.
+func (s *agentSession) recordLocked(source string, payload any) {
 	data, err := json.Marshal(payload)
 	if err != nil {
 		return
 	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
 	if s.deleted {
 		return
 	}
@@ -535,9 +533,10 @@ func (s *agentSession) since(seq int64) ([]agentEvent, <-chan struct{}, bool) {
 	return append([]agentEvent(nil), s.events[i:]...), s.changed, s.deleted
 }
 
-// said records a message from the phone. Pictures are kept as markers only:
-// the phone counts them, and the JPEGs themselves go to pi.
-func (s *agentSession) said(m agentMessage) {
+// said records a message from the phone, and hands text (what was typed,
+// or more) to the model along with its pictures. The stream keeps the
+// pictures as markers only: the phone counts them.
+func (s *agentSession) said(m agentMessage, text string) {
 	var content any = strings.TrimSpace(m.Text)
 	if len(m.Images) > 0 {
 		blocks := []any{}
@@ -549,8 +548,10 @@ func (s *agentSession) said(m agentMessage) {
 		}
 		content = blocks
 	}
-	s.setWorking(true)
-	s.record("client", map[string]any{
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.meta.Working = true
+	s.recordLocked("client", map[string]any{
 		"type": "user",
 		"uuid": m.UUID,
 		"message": map[string]any{
@@ -558,25 +559,14 @@ func (s *agentSession) said(m agentMessage) {
 			"content": content,
 		},
 	})
+	s.inbox = append(s.inbox, agentQueued{Text: text, Images: m.Images})
+	s.saveInbox()
+	s.startTurn()
 }
 
 // status shows a line on the phone while a turn is getting going.
 func (s *agentSession) status(line string) {
 	s.record("worker", map[string]any{"type": "env_manager_log", "data": map[string]string{"content": line}})
-}
-
-// fail ends the turn under way with an error the phone shows as a note.
-func (s *agentSession) fail(msg string) {
-	s.setWorking(false)
-	s.record("worker", map[string]any{"type": "result", "subtype": "error", "is_error": true, "result": msg})
-}
-
-func (s *agentSession) setWorking(working bool) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.meta.Working = working
-	s.lastError = ""
-	s.saveMeta()
 }
 
 // ---------------------------------------------------------------------------

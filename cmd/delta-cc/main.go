@@ -78,7 +78,6 @@ Backup sessions (see agents.go):
   -agent-runtime CMD         container runtime CLI (default podman)
   -agent-image IMAGE         image for each session's container
                              (default docker.io/library/buildpack-deps:trixie-scm)
-  -agent-pi PATH             pi executable (default: install pi `+piVersion+` with npm)
   -agent-socket PATH         the socket containers reach the command center on
                              (default DATA/agent-socket/delta.sock)
   -agent-idle DURATION       stop idle sessions' containers after this (default 15m)
@@ -130,7 +129,8 @@ func serve(args []string) {
 	var agentCfg agentConfig
 	fs.StringVar(&agentCfg.Runtime, "agent-runtime", "podman", "container runtime CLI for backup sessions")
 	fs.StringVar(&agentCfg.Image, "agent-image", "docker.io/library/buildpack-deps:trixie-scm", "image for backup sessions' containers")
-	fs.StringVar(&agentCfg.Pi, "agent-pi", "", "pi executable (default: install the pinned version with npm)")
+	// No longer used, but an update keeps the command line it was started with.
+	fs.String("agent-pi", "", "ignored")
 	fs.StringVar(&agentCfg.Socket, "agent-socket", "", "socket backup sessions reach the command center on")
 	fs.DurationVar(&agentCfg.Idle, "agent-idle", 15*time.Minute, "stop idle backup sessions after this long")
 	fs.StringVar(&agentCfg.Memory, "agent-memory", "4g", "memory limit for each backup session's container; empty for none")
