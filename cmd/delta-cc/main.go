@@ -13,7 +13,6 @@ import (
 	"context"
 	"crypto/rand"
 	"crypto/sha256"
-	"crypto/subtle"
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
@@ -22,6 +21,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"net"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -74,6 +74,19 @@ Usage:
 
 Defaults: -data ./data  -addr :8080  -max-upload 1073741824 (1 GiB)
 
+Backup sessions (see agents.go):
+  -agent-runtime CMD         container runtime CLI (default podman)
+  -agent-image IMAGE         image for each session's container
+                             (default docker.io/library/buildpack-deps:trixie-scm)
+  -agent-model MODEL         pi provider/model (default opencode/muse-spark-1.3)
+  -agent-pi PATH             pi executable (default: install pi `+piVersion+` with npm)
+  -agent-socket PATH         the socket containers reach the command center on
+                             (default DATA/agent-socket/delta.sock)
+  -agent-idle DURATION       stop idle sessions' containers after this (default 15m)
+  -agent-memory SIZE         each container's memory limit (default 4g; empty: none)
+  -agent-cpus N              each container's CPU limit (default 2; empty: none)
+  -agent-pids N              each container's process limit (default 4096; 0: none)
+
 Canvas relay (see canvas.go):
   -canvas-url URL            Canvas origin (default https://canvas.asu.edu;
                              empty disables the relay)
@@ -115,7 +128,23 @@ func serve(args []string) {
 	canvasURL := fs.String("canvas-url", "https://canvas.asu.edu", "Canvas origin; empty disables the Canvas relay")
 	cookieService := fs.String("canvas-cookie-service", "http://127.0.0.1:4782", "canvas-cookie service URL")
 	cookieToken := fs.String("canvas-cookie-token", "/etc/canvas-cookie/api-token", "canvas-cookie service API token file")
+	var agentCfg agentConfig
+	fs.StringVar(&agentCfg.Runtime, "agent-runtime", "podman", "container runtime CLI for backup sessions")
+	fs.StringVar(&agentCfg.Image, "agent-image", "docker.io/library/buildpack-deps:trixie-scm", "image for backup sessions' containers")
+	fs.StringVar(&agentCfg.Model, "agent-model", "opencode/muse-spark-1.3", "pi provider/model for backup sessions")
+	fs.StringVar(&agentCfg.Pi, "agent-pi", "", "pi executable (default: install the pinned version with npm)")
+	fs.StringVar(&agentCfg.Socket, "agent-socket", "", "socket backup sessions reach the command center on")
+	fs.DurationVar(&agentCfg.Idle, "agent-idle", 15*time.Minute, "stop idle backup sessions after this long")
+	fs.StringVar(&agentCfg.Memory, "agent-memory", "4g", "memory limit for each backup session's container; empty for none")
+	fs.StringVar(&agentCfg.CPUs, "agent-cpus", "2", "CPU limit for each backup session's container; empty for none")
+	fs.IntVar(&agentCfg.PIDs, "agent-pids", 4096, "process limit for each backup session's container; 0 for none")
 	fs.Parse(args)
+	if agentCfg.Socket == "" {
+		agentCfg.Socket = filepath.Join(*dataDir, "agent-socket", "delta.sock")
+	}
+	if abs, err := filepath.Abs(agentCfg.Socket); err == nil {
+		agentCfg.Socket = abs
+	}
 
 	canvas, err := newCanvasProxy(*canvasURL, *cookieService, *cookieToken, *maxUpload)
 	if err != nil {
@@ -136,15 +165,36 @@ func serve(args []string) {
 		log.Fatal(err)
 	}
 
+	// Backup sessions failing to set up must never keep the rest of the
+	// command center from starting: it would then be out of reach for the
+	// fix too.
+	agents, err := newAgentService(*dataDir, agentCfg)
+	var agentListener net.Listener
+	if err == nil {
+		agentListener, err = listenAgentSocket(agentCfg.Socket)
+	}
+	if err != nil {
+		log.Printf("backup sessions are off: %v", err)
+		agents = disabledAgentService(*dataDir, fmt.Sprintf("backup sessions are off on the command center: %v", err))
+	}
+
 	u := &updater{restart: make(chan struct{}, 1)}
+	public, agent := newHandler(tokenHash, filesDir, *maxUpload, u, canvas, agents)
 	srv := &http.Server{
 		Addr:              *addr,
-		Handler:           logRequests(newHandler(tokenHash, filesDir, *maxUpload, u, canvas)),
+		Handler:           logRequests(public),
 		ReadHeaderTimeout: 10 * time.Second,
 	}
-	errc := make(chan error, 1)
+	agentSrv := &http.Server{Handler: logRequests(agent), ReadHeaderTimeout: 10 * time.Second}
+	errc := make(chan error, 2)
 	go func() { errc <- srv.ListenAndServe() }()
-	log.Printf("command center %s listening on %s (data: %s)", version(), *addr, *dataDir)
+	listening := *addr
+	if agentListener != nil {
+		go func() { errc <- agentSrv.Serve(agentListener) }()
+		agents.start()
+		listening += " and " + agentCfg.Socket
+	}
+	log.Printf("command center %s listening on %s (data: %s)", version(), listening, *dataDir)
 
 	select {
 	case err := <-errc:
@@ -154,18 +204,48 @@ func serve(args []string) {
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
 		srv.Shutdown(ctx)
+		agentSrv.Shutdown(ctx)
 		log.Print("restarting into updated binary")
 		log.Fatal(reexec())
 	}
 }
 
-// newHandler builds the authenticated API. It is shared by serve and selfTest.
-// A nil canvas disables the Canvas relay.
-func newHandler(tokenHash []byte, filesDir string, maxUpload int64, u *updater, canvas *canvasProxy) http.Handler {
+// listenAgentSocket listens on the socket mounted into backup sessions'
+// containers. The directory is bind-mounted, not the socket, so a restarted
+// command center's new socket shows up in containers that are already
+// running. Anyone in a container may connect; the token decides the rest.
+func listenAgentSocket(path string) (net.Listener, error) {
+	// sun_path holds 108 bytes, with its terminating NUL.
+	if len(path) > 107 {
+		return nil, fmt.Errorf("the agent socket's path %s is too long; pick a shorter one with -agent-socket", path)
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return nil, err
+	}
+	if err := os.Chmod(filepath.Dir(path), 0o755); err != nil {
+		return nil, err
+	}
+	os.Remove(path)
+	l, err := net.Listen("unix", path)
+	if err != nil {
+		return nil, err
+	}
+	if err := os.Chmod(path, 0o666); err != nil {
+		l.Close()
+		return nil, err
+	}
+	return l, nil
+}
+
+// newHandler builds the authenticated API: the public handler, for the delta
+// token, and the agent handler, for backup sessions' tokens on the agent
+// socket (see scope.go). It is shared by serve and selfTest. A nil canvas
+// disables the Canvas relay.
+func newHandler(tokenHash []byte, filesDir string, maxUpload int64, u *updater, canvas *canvasProxy, agents *agentService) (public, agent http.Handler) {
 	s := &server{filesDir: filesDir, maxUpload: maxUpload}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /auth", func(w http.ResponseWriter, r *http.Request) {
-		writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "scope": scopeOf(r)})
 	})
 	mux.HandleFunc("GET /version", func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]string{"version": version()})
@@ -189,20 +269,12 @@ func newHandler(tokenHash []byte, filesDir string, maxUpload int64, u *updater, 
 	} else {
 		registerCanvasDisabled(mux)
 	}
-	return requireAuth(tokenHash, mux)
-}
-
-// requireAuth rejects any request without a valid "Authorization: Bearer <token>" header.
-func requireAuth(tokenHash []byte, next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		token, ok := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer ")
-		sum := sha256.Sum256([]byte(token))
-		if !ok || subtle.ConstantTimeCompare(sum[:], tokenHash) != 1 {
-			writeError(w, http.StatusUnauthorized, "invalid or missing auth token")
-			return
-		}
-		next.ServeHTTP(w, r)
-	})
+	// Backup sessions are run from the public side only, so the agent
+	// handler never reaches these routes (agentAllowed refuses them too).
+	publicMux := http.NewServeMux()
+	publicMux.Handle("/", mux)
+	agents.register(publicMux)
+	return requireAuth(tokenHash, publicMux), requireAgentToken(agents.validToken, mux)
 }
 
 func logRequests(next http.Handler) http.Handler {
