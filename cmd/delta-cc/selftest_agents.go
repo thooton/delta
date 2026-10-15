@@ -6,6 +6,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -16,29 +17,115 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
-// Backup sessions are tested with stand-ins for pi and the container
-// runtime, so the self-test needs neither Node nor containers.
+// Backup sessions are tested with stand-ins for the model and the container
+// runtime, so the self-test needs neither the network nor containers.
 
-// fakePi answers every prompt with one reply and one tool call, as pi's RPC
-// mode would.
-const fakePi = `#!/bin/sh
-case "$DELTA_ZEN_SESSION" in ses_??????????????????????????) ;; *) echo "no OpenCode session id" >&2; exit 1 ;; esac
-[ -z "$OPENCODE_API_KEY" ] || { echo "an API key reached pi" >&2; exit 1; }
-while IFS= read -r line; do
-  case "$line" in
-  *'"type":"prompt"'*)
-    echo '{"type":"response","command":"prompt","success":true}'
-    echo '{"type":"agent_start"}'
-    echo '{"type":"message_end","message":{"role":"assistant","content":[{"type":"thinking","thinking":"hm"},{"type":"text","text":"pong"},{"type":"toolCall","id":"t1","name":"write","arguments":{"path":"/root/a.txt","content":"secret file contents"}}],"stopReason":"toolUse"}}'
-    echo '{"type":"message_end","message":{"role":"toolResult","content":[{"type":"text","text":"ok"}]}}'
-    echo '{"type":"agent_settled","aborted":false}'
-    ;;
-  esac
-done
-`
+// fakeModel answers as the model would: a user's message gets a reply that
+// writes a file, and a tool's result gets a closing reply. It checks each
+// request is one the free tier would take, and keeps what it was sent.
+type fakeModel struct {
+	*httptest.Server
+	mu       sync.Mutex
+	problems []string
+	outputs  map[string]string // tool results, by call id
+}
+
+var testModel *fakeModel
+
+func newFakeModel() *fakeModel {
+	m := &fakeModel{outputs: map[string]string{}}
+	m.Server = httptest.NewServer(http.HandlerFunc(m.serve))
+	return m
+}
+
+func (m *fakeModel) problem(format string, args ...any) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.problems = append(m.problems, fmt.Sprintf(format, args...))
+}
+
+func (m *fakeModel) serve(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Model   string            `json:"model"`
+		Store   *bool             `json:"store"`
+		Include []string          `json:"include"`
+		Input   []json.RawMessage `json:"input"`
+		Tools   []struct {
+			Name       string `json:"name"`
+			Parameters struct {
+				Properties map[string]any `json:"properties"`
+			} `json:"parameters"`
+		} `json:"tools"`
+	}
+	body, _ := io.ReadAll(r.Body)
+	if err := json.Unmarshal(body, &req); err != nil || r.URL.Path != "/responses" {
+		m.problem("model request to %s: %v", r.URL.Path, err)
+		http.Error(w, "bad request", 400)
+		return
+	}
+	ses := r.Header.Get("x-opencode-session")
+	switch {
+	case r.Header.Get("Authorization") != "Bearer public":
+		m.problem("model request has Authorization %q", r.Header.Get("Authorization"))
+	case !strings.Contains(r.Header.Get("User-Agent"), "opencode/1."):
+		m.problem("model request has User-Agent %q", r.Header.Get("User-Agent"))
+	case !regexp.MustCompile(`^ses_[0-9a-f]{12}[0-9A-Za-z]{14}$`).MatchString(ses) || r.Header.Get("x-opencode-session-id") != ses:
+		m.problem("model request has OpenCode session %q / %q", ses, r.Header.Get("x-opencode-session-id"))
+	case req.Model != agentModelID || !strings.HasSuffix(req.Model, "-free"):
+		m.problem("model request asks for %q", req.Model)
+	case req.Store == nil || *req.Store || len(req.Include) != 1:
+		m.problem("model request should be stateless and ask for encrypted reasoning: %s", body[:min(len(body), 300)])
+	}
+	readOK := false
+	for _, t := range req.Tools {
+		readOK = readOK || (t.Name == "read" && len(t.Parameters.Properties) > 0)
+	}
+	if !readOK {
+		m.problem("model request has no read tool with parameters")
+	}
+	if len(req.Input) < 2 || head(req.Input[0]).Role != "developer" {
+		m.problem("model request doesn't start with the system prompt")
+		http.Error(w, "bad request", 400)
+		return
+	}
+	last := head(req.Input[len(req.Input)-1])
+	var items []string
+	switch {
+	case last.Type == "message" && last.Role == "user":
+		items = []string{
+			`{"id":"rs_1","type":"reasoning","encrypted_content":"enc-thinking","summary":[{"type":"summary_text","text":"thinking it over"}]}`,
+			`{"id":"msg_1","type":"message","role":"assistant","status":"completed","content":[{"type":"output_text","text":"pong","annotations":[]}]}`,
+			`{"id":"fc_1","type":"function_call","status":"completed","name":"write","call_id":"call_w","arguments":"{\"path\":\"/root/a.txt\",\"content\":\"secret file contents\"}"}`,
+		}
+	case last.Type == "function_call_output":
+		var out struct {
+			Output string `json:"output"`
+		}
+		json.Unmarshal(req.Input[len(req.Input)-1], &out)
+		m.mu.Lock()
+		m.outputs[last.CallID] = out.Output
+		m.mu.Unlock()
+		if last.CallID == "call_w" && !bytes.Contains(body, []byte(`"encrypted_content":"enc-thinking"`)) {
+			m.problem("the reasoning didn't come back with the tool's result")
+		}
+		items = []string{`{"id":"msg_2","type":"message","role":"assistant","status":"completed","content":[{"type":"output_text","text":"done","annotations":[]}]}`}
+	default:
+		m.problem("model request ends with %s", req.Input[len(req.Input)-1])
+		http.Error(w, "bad request", 400)
+		return
+	}
+	w.Header().Set("Content-Type", "text/event-stream")
+	fmt.Fprint(w, "event: response.created\ndata: {\"type\":\"response.created\"}\n\n")
+	// Out of order, as output_index allows.
+	for i := len(items) - 1; i >= 0; i-- {
+		fmt.Fprintf(w, "event: response.output_item.done\ndata: {\"type\":\"response.output_item.done\",\"output_index\":%d,\"item\":%s}\n\n", i, items[i])
+	}
+	fmt.Fprint(w, "event: response.completed\ndata: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\"}}\n\n")
+}
 
 // fakeRuntime keeps each container's state in a file next to it, and logs
 // every command.
@@ -46,6 +133,9 @@ const fakeRuntime = `#!/bin/sh
 dir=$(dirname "$0")
 echo "$*" >> "$dir/runtime.log"
 case "$1" in
+exec)
+  # Keep what a command was given on stdin, so the test can see it.
+  cat >> "$dir/exec-stdin" ;;
 container)
   name=$5
   [ -f "$dir/c-$name" ] || { echo "Error: no such container $name" >&2; exit 1; }
@@ -65,18 +155,16 @@ func newTestAgents(dir string) (*agentService, error) {
 	if err := os.MkdirAll(bin, 0o700); err != nil {
 		return nil, err
 	}
-	if err := os.WriteFile(filepath.Join(bin, "pi"), []byte(fakePi), 0o700); err != nil {
-		return nil, err
-	}
 	if err := os.WriteFile(filepath.Join(bin, "runtime"), []byte(fakeRuntime), 0o700); err != nil {
 		return nil, err
 	}
+	testModel = newFakeModel()
 	return newAgentService(dir, agentConfig{
-		Runtime: filepath.Join(bin, "runtime"),
-		Image:   "example/image",
-		Pi:      filepath.Join(bin, "pi"),
-		Socket:  filepath.Join(dir, "agent-socket", "delta.sock"),
-		Idle:    time.Hour,
+		Runtime:  filepath.Join(bin, "runtime"),
+		Image:    "example/image",
+		ModelURL: testModel.URL,
+		Socket:   filepath.Join(dir, "agent-socket", "delta.sock"),
+		Idle:     time.Hour,
 	})
 }
 
@@ -85,16 +173,7 @@ type expectFunc func(desc string, want int, method, path, tok string, body []byt
 // agentsSelfTest runs a backup session through its life (create, a reply,
 // a second message, delete) and checks what its token can reach.
 func agentsSelfTest(expect expectFunc, token, dir string, agents *agentService, agentHandler http.Handler, publicURL string) error {
-	defer func() {
-		// Never leave a stand-in pi running.
-		agents.mu.Lock()
-		defer agents.mu.Unlock()
-		for _, s := range agents.sessions {
-			if s.meta.PID != 0 {
-				s.stopPi(s.meta.PID)
-			}
-		}
-	}()
+	defer testModel.Close()
 	msg := func(text string) []byte {
 		b, _ := json.Marshal(agentMessage{Title: "Fix the list app", UUID: "u-" + text, Text: text})
 		return b
@@ -105,7 +184,7 @@ func agentsSelfTest(expect expectFunc, token, dir string, agents *agentService, 
 	if _, err := expect("empty backup session message is refused", 400, "POST", "/agent-sessions", token, []byte(`{"text":" "}`)); err != nil {
 		return err
 	}
-	if err := checkModelsJSON(agents); err != nil {
+	if err := checkZenSessionID(); err != nil {
 		return err
 	}
 	data, err := expect("create a backup session", 201, "POST", "/agent-sessions", token, msg("ping"))
@@ -127,6 +206,15 @@ func agentsSelfTest(expect expectFunc, token, dir string, agents *agentService, 
 	if err := checkTurn(frames, "u-ping"); err != nil {
 		return fmt.Errorf("backup session's first turn: %w", err)
 	}
+	if err := testModel.check(); err != nil {
+		return fmt.Errorf("backup session's first turn: %w", err)
+	}
+	if out := testModel.outputs["call_w"]; !strings.Contains(out, "Successfully wrote 20 bytes to /root/a.txt") {
+		return fmt.Errorf("backup session's write tool returned %q", out)
+	}
+	if got := readFileString(filepath.Join(dir, "agent-bin", "exec-stdin")); !strings.Contains(got, "secret file contents") {
+		return fmt.Errorf("backup session's write tool didn't pass the file to the container: %q", got)
+	}
 	if bytes.Contains(frames, []byte("secret file contents")) || bytes.Contains(frames, []byte("delta-setup")) || bytes.Contains(frames, []byte("\"thinking\"")) {
 		return fmt.Errorf("backup session's stream shows file contents, thinking or the setup block: %s", frames)
 	}
@@ -139,8 +227,8 @@ func agentsSelfTest(expect expectFunc, token, dir string, agents *agentService, 
 		return fmt.Errorf("list backup sessions: got %s", data)
 	}
 
-	// A second message goes to the same pi, and the stream resumes after
-	// the first turn.
+	// A second message carries on the same conversation, and the stream
+	// resumes after the first turn.
 	last := lastSeq(frames)
 	if _, err := expect("second message", 200, "POST", "/agent-sessions/"+id+"/messages", token, msg("again")); err != nil {
 		return err
@@ -151,6 +239,40 @@ func agentsSelfTest(expect expectFunc, token, dir string, agents *agentService, 
 	}
 	if err := checkTurn(frames, "u-again"); err != nil {
 		return fmt.Errorf("backup session's second turn: %w", err)
+	}
+	if err := checkTranscript(filepath.Join(dir, "agents", id, "transcript.jsonl")); err != nil {
+		return err
+	}
+
+	// A turn an update cut short in the middle of a tool call carries on
+	// when the command center starts again, as start does.
+	agents.mu.Lock()
+	s := agents.sessions[id]
+	agents.mu.Unlock()
+	lost := `{"type":"function_call","call_id":"call_lost","name":"bash","arguments":"{\"command\":\"delta update-cc\"}"}` + "\n"
+	f, err := os.OpenFile(filepath.Join(s.dir, "transcript.jsonl"), os.O_APPEND|os.O_WRONLY, 0)
+	if err != nil {
+		return err
+	}
+	f.WriteString(lost)
+	f.Close()
+	last = lastSeq(frames)
+	s.mu.Lock()
+	s.meta.Working = true
+	s.startTurn()
+	s.mu.Unlock()
+	frames, err = readAgentStream(publicURL, token, id, last, 1)
+	if err != nil {
+		return fmt.Errorf("backup session resumed after a restart: %w", err)
+	}
+	if !bytes.Contains(frames, []byte(`"text":"done"`)) || !bytes.Contains(frames, []byte(`"subtype":"success"`)) {
+		return fmt.Errorf("backup session resumed after a restart: %s", frames)
+	}
+	if out := testModel.outputs["call_lost"]; out != lostOutput {
+		return fmt.Errorf("backup session resumed after a restart: the lost call's result was %q", out)
+	}
+	if err := testModel.check(); err != nil {
+		return err
 	}
 	if n := strings.Count(readFileString(filepath.Join(dir, "agent-bin", "runtime.log")), "run -d"); n != 1 {
 		return fmt.Errorf("backup session made %d containers, want 1", n)
@@ -260,9 +382,11 @@ func readAgentStream(base, token, id string, after int64, results int) ([]byte, 
 }
 
 // checkTurn checks that a turn's frames are the user's message, the reply
-// with its tool call cut down to the file's path, and a success.
+// with its tool call cut down to the file's path, the closing reply, and a
+// success.
 func checkTurn(frames []byte, uuid string) error {
 	var types []string
+	replies := 0
 	for _, line := range strings.Split(strings.TrimSpace(string(frames)), "\n") {
 		var f struct {
 			Seq     int64           `json:"sequence_num"`
@@ -285,6 +409,10 @@ func checkTurn(frames []byte, uuid string) error {
 			}
 		case "assistant":
 			want := `[{"text":"pong","type":"text"},{"input":{"file_path":"/root/a.txt"},"name":"write","type":"tool_use"}]`
+			if replies > 0 {
+				want = `[{"text":"done","type":"text"}]`
+			}
+			replies++
 			var m struct {
 				Message struct {
 					Content json.RawMessage `json:"content"`
@@ -303,7 +431,7 @@ func checkTurn(frames []byte, uuid string) error {
 			types = append(types, p.Type)
 		}
 	}
-	if got := strings.Join(types, ","); got != "user,assistant,result" {
+	if got := strings.Join(types, ","); got != "user,assistant,assistant,result" {
 		return fmt.Errorf("frames %s: %s", got, frames)
 	}
 	return nil
@@ -352,40 +480,37 @@ func agentSocketSelfTest(dir string, handler http.Handler) error {
 	return nil
 }
 
-// checkModelsJSON checks that pi is given the free model and nothing else,
-// with no API key but "public", and that session ids come out as the
-// OpenCode CLI makes them (agents_model.go).
-func checkModelsJSON(agents *agentService) error {
-	data, err := os.ReadFile(filepath.Join(agents.piAgentDir(), "models.json"))
-	if err != nil {
-		return fmt.Errorf("pi's models.json: %w", err)
+func (m *fakeModel) check() error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if len(m.problems) > 0 {
+		return errors.New(strings.Join(m.problems, "; "))
 	}
-	var cfg struct {
-		Providers map[string]struct {
-			BaseURL string            `json:"baseUrl"`
-			APIKey  string            `json:"apiKey"`
-			Headers map[string]string `json:"headers"`
-			Models  []struct {
-				ID string `json:"id"`
-			} `json:"models"`
-		} `json:"providers"`
+	return nil
+}
+
+// checkTranscript checks that the conversation was kept as the model's
+// input items: two turns of the user's message, the reply with its
+// reasoning, the tool's result and the closing reply.
+func checkTranscript(path string) error {
+	var types []string
+	for _, line := range strings.Split(strings.TrimSpace(readFileString(path)), "\n") {
+		h := head(json.RawMessage(line))
+		types = append(types, h.Type+":"+h.Role)
 	}
-	if err := json.Unmarshal(data, &cfg); err != nil {
-		return fmt.Errorf("pi's models.json: %w", err)
+	turn := "message:user,reasoning:,message:assistant,function_call:,function_call_output:,message:assistant"
+	if got := strings.Join(types, ","); got != turn+","+turn {
+		return fmt.Errorf("backup session's transcript: %s", got)
 	}
-	p, ok := cfg.Providers[agentProvider]
-	if len(cfg.Providers) != 1 || !ok || len(p.Models) != 1 || p.Models[0].ID != agentModelID ||
-		!strings.HasSuffix(agentModelID, "-free") {
-		return fmt.Errorf("pi's models.json should offer only %s: %s", agentModel, data)
+	if !strings.Contains(readFileString(path), "delta-setup") {
+		return fmt.Errorf("backup session's first message lacks the setup block")
 	}
-	if p.APIKey != "public" || p.BaseURL != zenBaseURL {
-		return fmt.Errorf("pi's models.json: want apiKey public at %s, got %q at %q", zenBaseURL, p.APIKey, p.BaseURL)
-	}
-	for _, h := range []string{"x-opencode-session", "x-opencode-session-id"} {
-		if p.Headers[h] != "${DELTA_ZEN_SESSION}" {
-			return fmt.Errorf("pi's models.json: header %s is %q", h, p.Headers[h])
-		}
-	}
+	return nil
+}
+
+// checkZenSessionID checks that session ids come out as the OpenCode CLI
+// makes them (agents_model.go).
+func checkZenSessionID() error {
 	id, err := zenSessionID()
 	if err != nil {
 		return err
