@@ -98,8 +98,6 @@ COMMANDS
                                      Check and save a new GitHub token ("-"
                                      reads stdin).
   delta update-cc                    Update the command center (see below).
-  delta backup-key set <key|->       Save the API key backup sessions use
-                                     (see BACKUP SESSIONS).
   delta canvas ...                   The user's Canvas (they are a student).
   delta music ...                    Purchase and download a song or an album.
   delta books ...                    Find and download ebooks.
@@ -149,9 +147,6 @@ BACKUP SESSIONS
   - Canvas and Gmail are out of reach: for those, tell the user to start
     a regular (●) session. "delta git" and "delta gh" work as anywhere
     else.
-
-  From a regular session, "delta backup-key set -" saves the API key
-  backup sessions use (the user gives it to you; read it from stdin).
 
 UPDATING THE COMMAND CENTER
   Push the change to master in thooton/delta, wait for its GitHub Actions
@@ -250,8 +245,6 @@ func run(args []string) error {
 		return setAccessToken(args[0])
 	case "git", "gh":
 		return runWithAccessToken(cmd, args)
-	case "backup-key":
-		return runBackupKey(args)
 	case "update-cc":
 		if len(args) != 0 {
 			return errors.New("usage: delta update-cc (it takes no link: the command center always installs the latest official build)")

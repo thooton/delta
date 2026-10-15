@@ -13,6 +13,8 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"regexp"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -23,7 +25,8 @@ import (
 // fakePi answers every prompt with one reply and one tool call, as pi's RPC
 // mode would.
 const fakePi = `#!/bin/sh
-[ -n "$OPENCODE_API_KEY" ] || { echo "no API key" >&2; exit 1; }
+case "$DELTA_ZEN_SESSION" in ses_??????????????????????????) ;; *) echo "no OpenCode session id" >&2; exit 1 ;; esac
+[ -z "$OPENCODE_API_KEY" ] || { echo "an API key reached pi" >&2; exit 1; }
 while IFS= read -r line; do
   case "$line" in
   *'"type":"prompt"'*)
@@ -71,7 +74,6 @@ func newTestAgents(dir string) (*agentService, error) {
 	return newAgentService(dir, agentConfig{
 		Runtime: filepath.Join(bin, "runtime"),
 		Image:   "example/image",
-		Model:   "opencode/test",
 		Pi:      filepath.Join(bin, "pi"),
 		Socket:  filepath.Join(dir, "agent-socket", "delta.sock"),
 		Idle:    time.Hour,
@@ -100,13 +102,10 @@ func agentsSelfTest(expect expectFunc, token, dir string, agents *agentService, 
 	if _, err := expect("backup sessions require the token", 401, "GET", "/agent-sessions", "", nil); err != nil {
 		return err
 	}
-	if _, err := expect("backup session without a key is refused", 503, "POST", "/agent-sessions", token, msg("hi")); err != nil {
-		return err
-	}
 	if _, err := expect("empty backup session message is refused", 400, "POST", "/agent-sessions", token, []byte(`{"text":" "}`)); err != nil {
 		return err
 	}
-	if err := secretSelfTest(expect, token, agentKeyStore(dir), "sk-first", "sk-second"); err != nil {
+	if err := checkModelsJSON(agents); err != nil {
 		return err
 	}
 	data, err := expect("create a backup session", 201, "POST", "/agent-sessions", token, msg("ping"))
@@ -196,7 +195,6 @@ func agentsSelfTest(expect expectFunc, token, dir string, agents *agentService, 
 		{"session token can't use Canvas", 403, "GET", "/canvas/api/v1/users/self", agentToken, ""},
 		{"session token can't replace the GitHub token", 403, "PUT", "/personal-access-token", agentToken, "ghp_x"},
 		{"session token can't change the maps key", 403, "PUT", "/maps-key", agentToken, "x"},
-		{"session token can't read the model key", 403, "GET", "/agent-key", agentToken, ""},
 		{"session token can't run backup sessions", 403, "GET", "/agent-sessions", agentToken, ""},
 		{"session token can't list the Claude accounts", 403, "GET", "/cloud-accounts", agentToken, ""},
 		{"session token can't take a Claude account's token", 403, "POST", "/cloud-accounts/11111111-aaaa/token", agentToken, ""},
@@ -350,6 +348,56 @@ func agentSocketSelfTest(dir string, handler http.Handler) error {
 	resp.Body.Close()
 	if resp.StatusCode != http.StatusUnauthorized {
 		return fmt.Errorf("agent socket without a token: got HTTP %d, want 401", resp.StatusCode)
+	}
+	return nil
+}
+
+// checkModelsJSON checks that pi is given the free model and nothing else,
+// with no API key but "public", and that session ids come out as the
+// OpenCode CLI makes them (agents_model.go).
+func checkModelsJSON(agents *agentService) error {
+	data, err := os.ReadFile(filepath.Join(agents.piAgentDir(), "models.json"))
+	if err != nil {
+		return fmt.Errorf("pi's models.json: %w", err)
+	}
+	var cfg struct {
+		Providers map[string]struct {
+			BaseURL string            `json:"baseUrl"`
+			APIKey  string            `json:"apiKey"`
+			Headers map[string]string `json:"headers"`
+			Models  []struct {
+				ID string `json:"id"`
+			} `json:"models"`
+		} `json:"providers"`
+	}
+	if err := json.Unmarshal(data, &cfg); err != nil {
+		return fmt.Errorf("pi's models.json: %w", err)
+	}
+	p, ok := cfg.Providers[agentProvider]
+	if len(cfg.Providers) != 1 || !ok || len(p.Models) != 1 || p.Models[0].ID != agentModelID ||
+		!strings.HasSuffix(agentModelID, "-free") {
+		return fmt.Errorf("pi's models.json should offer only %s: %s", agentModel, data)
+	}
+	if p.APIKey != "public" || p.BaseURL != zenBaseURL {
+		return fmt.Errorf("pi's models.json: want apiKey public at %s, got %q at %q", zenBaseURL, p.APIKey, p.BaseURL)
+	}
+	for _, h := range []string{"x-opencode-session", "x-opencode-session-id"} {
+		if p.Headers[h] != "${DELTA_ZEN_SESSION}" {
+			return fmt.Errorf("pi's models.json: header %s is %q", h, p.Headers[h])
+		}
+	}
+	id, err := zenSessionID()
+	if err != nil {
+		return err
+	}
+	if !regexp.MustCompile(`^ses_[0-9a-f]{12}[0-9A-Za-z]{14}$`).MatchString(id) {
+		return fmt.Errorf("zenSessionID: malformed %q", id)
+	}
+	// Descending: the hex is the bit-inverted (ms * 0x1000 + 1), low 48 bits.
+	v, _ := strconv.ParseUint(id[4:16], 16, 64)
+	ms := int64(^v&(1<<48-1)) >> 12
+	if want := time.Now().UnixMilli() & (1<<36 - 1); ms < want-60_000 || ms > want+1000 {
+		return fmt.Errorf("zenSessionID: %q holds time %d, want about %d", id, ms, want)
 	}
 	return nil
 }

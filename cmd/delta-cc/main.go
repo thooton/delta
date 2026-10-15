@@ -78,7 +78,6 @@ Backup sessions (see agents.go):
   -agent-runtime CMD         container runtime CLI (default podman)
   -agent-image IMAGE         image for each session's container
                              (default docker.io/library/buildpack-deps:trixie-scm)
-  -agent-model MODEL         pi provider/model (default opencode/muse-spark-1.3)
   -agent-pi PATH             pi executable (default: install pi `+piVersion+` with npm)
   -agent-socket PATH         the socket containers reach the command center on
                              (default DATA/agent-socket/delta.sock)
@@ -131,7 +130,6 @@ func serve(args []string) {
 	var agentCfg agentConfig
 	fs.StringVar(&agentCfg.Runtime, "agent-runtime", "podman", "container runtime CLI for backup sessions")
 	fs.StringVar(&agentCfg.Image, "agent-image", "docker.io/library/buildpack-deps:trixie-scm", "image for backup sessions' containers")
-	fs.StringVar(&agentCfg.Model, "agent-model", "opencode/muse-spark-1.3", "pi provider/model for backup sessions")
 	fs.StringVar(&agentCfg.Pi, "agent-pi", "", "pi executable (default: install the pinned version with npm)")
 	fs.StringVar(&agentCfg.Socket, "agent-socket", "", "socket backup sessions reach the command center on")
 	fs.DurationVar(&agentCfg.Idle, "agent-idle", 15*time.Minute, "stop idle backup sessions after this long")

@@ -143,11 +143,25 @@ const bashOps: BashOperations = {
 	},
 };
 
+/**
+ * pi's tools resolve paths, and run commands, in the session's directory
+ * (ctx.cwd) ahead of the one they were made with, and the session's
+ * directory is pi's own, on the command center, which doesn't exist in the
+ * container. So each tool sees the container's home as the session's.
+ */
+function inContainer<T extends { execute: (...args: any[]) => any }>(tool: T): T {
+	return {
+		...tool,
+		execute: (id: string, params: unknown, signal: unknown, onUpdate: unknown, ctx: object | undefined) =>
+			tool.execute(id, params, signal, onUpdate, ctx && Object.create(ctx, { cwd: { value: HOME } })),
+	};
+}
+
 export default function (pi: ExtensionAPI) {
-	pi.registerTool(createReadToolDefinition(HOME, { operations: readOps }));
-	pi.registerTool(createWriteToolDefinition(HOME, { operations: writeOps }));
-	pi.registerTool(createEditToolDefinition(HOME, { operations: editOps }));
-	pi.registerTool(createBashToolDefinition(HOME, { operations: bashOps }));
+	pi.registerTool(inContainer(createReadToolDefinition(HOME, { operations: readOps })));
+	pi.registerTool(inContainer(createWriteToolDefinition(HOME, { operations: writeOps })));
+	pi.registerTool(inContainer(createEditToolDefinition(HOME, { operations: editOps })));
+	pi.registerTool(inContainer(createBashToolDefinition(HOME, { operations: bashOps })));
 
 	pi.on("user_bash", async () => ({ operations: bashOps }));
 

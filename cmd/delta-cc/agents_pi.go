@@ -154,10 +154,6 @@ func (s *agentSession) launch(pi string) (int, error) {
 	if err := os.MkdirAll(cwd, 0o700); err != nil {
 		return 0, err
 	}
-	key, err := s.svc.modelKey()
-	if err != nil {
-		return 0, err
-	}
 	// A fresh pi starts a fresh pi.out.
 	if err := os.WriteFile(filepath.Join(s.dir, "pi.out"), nil, 0o600); err != nil {
 		return 0, err
@@ -165,6 +161,17 @@ func (s *agentSession) launch(pi string) (int, error) {
 	s.mu.Lock()
 	s.meta.Offset = 0
 	piSession := s.meta.PiSession
+	if s.meta.ZenSession == "" {
+		// Made before sessions had one.
+		id, err := zenSessionID()
+		if err != nil {
+			s.mu.Unlock()
+			return 0, err
+		}
+		s.meta.ZenSession = id
+	}
+	zenSession := s.meta.ZenSession
+	s.saveMeta()
 	s.mu.Unlock()
 
 	cfg := s.svc.cfg
@@ -172,7 +179,7 @@ func (s *agentSession) launch(pi string) (int, error) {
 		"--mode", "rpc",
 		"--session-dir", filepath.Join(s.dir, "pi"),
 		"--session-id", piSession,
-		"--model", cfg.Model,
+		"--model", agentModel,
 		"--thinking", "medium",
 		"--no-extensions", "-e", s.svc.extensionPath(),
 		"--no-skills", "--no-prompt-templates", "--no-themes", "--no-context-files", "--no-mcp", "--no-approve",
@@ -187,9 +194,9 @@ func (s *agentSession) launch(pi string) (int, error) {
 		"PATH=" + os.Getenv("PATH"),
 		"HOME=" + os.Getenv("HOME"),
 		"LANG=C.UTF-8",
-		"PI_CODING_AGENT_DIR=" + filepath.Join(s.svc.dir, "pi-agent"),
+		"PI_CODING_AGENT_DIR=" + s.svc.piAgentDir(),
 		"PI_OFFLINE=1",
-		"OPENCODE_API_KEY=" + key,
+		"DELTA_ZEN_SESSION=" + zenSession,
 		"DELTA_AGENT_RUNTIME=" + cfg.Runtime,
 		"DELTA_AGENT_CONTAINER=" + containerName(s.meta.ID),
 		"DELTA_PI_IN=" + in,
@@ -505,10 +512,9 @@ func modelError(msg string) string {
 	}
 	lower := strings.ToLower(msg)
 	switch {
-	case code == 401 || code == 403:
-		return "The API key for backup sessions was rejected. Set a new one from a regular (●) session with `delta backup-key set -`."
-	case code == 402 || strings.Contains(lower, "insufficient") || strings.Contains(lower, "credit") || strings.Contains(lower, "balance"):
-		return "The account for backup sessions is out of credit."
+	case code == 401 || code == 403 || code == 426:
+		// The free tier stopped taking pi's requests as the CLI's (agents_model.go).
+		return fmt.Sprintf("The model turned backup sessions away (HTTP %d). The command center needs an update; until then, use a regular (●) session.", code)
 	case code == 429:
 		return "Too many requests right now. Try again in a minute."
 	case code >= 500:
