@@ -27,7 +27,7 @@ import (
 //
 // Each session gets its own container, a plain Linux box made from
 // -agent-image, and its own pi process (https://pi.dev) on this machine.
-// pi talks to the model; agent-extension.ts makes its tools (read, write,
+// pi talks to the model (agents_model.go); agent-extension.ts makes its tools (read, write,
 // edit and bash) run in the container. pi is started detached, reading
 // commands from a FIFO and appending its events to a file, so it carries on
 // through a command center update; the command center tails that file and
@@ -51,10 +51,8 @@ import (
 //	DELETE /agent-sessions/{id}             Delete the session and its container.
 //	GET    /agent-sessions/{id}/events      Server-sent events, replayed after
 //	                                        ?from_sequence_num= (or Last-Event-ID).
-//	PUT    /agent-key                       The model provider's API key (never read back).
 const (
 	agentIDPrefix    = "session_delta_"
-	agentKeyFile     = "agent-key"
 	agentMaxBody     = 48 << 20
 	agentMaxImages   = 10
 	agentMaxTitle    = 200
@@ -68,7 +66,6 @@ var agentExtension []byte
 type agentConfig struct {
 	Runtime string        // container runtime CLI: podman or docker
 	Image   string        // the image every session's container starts from
-	Model   string        // pi's provider/model
 	Pi      string        // pi executable; empty installs the pinned version
 	Socket  string        // the agent socket on this machine
 	Idle    time.Duration // stop a session's container after this long idle
@@ -82,7 +79,6 @@ type agentService struct {
 	disabled string // why backup sessions can't run, if they can't
 	dir      string // data/agents
 	dataDir  string
-	key      *secretStore
 
 	mu       sync.Mutex
 	sessions map[string]*agentSession
@@ -93,17 +89,18 @@ type agentService struct {
 
 // agentMeta is a session's session.json.
 type agentMeta struct {
-	ID        string    `json:"id"`
-	Title     string    `json:"title"`
-	Created   time.Time `json:"created"`
-	Updated   time.Time `json:"updated"`
-	TokenHash string    `json:"token_sha256"`
-	PiSession string    `json:"pi_session"` // pi's session id
-	Working   bool      `json:"working"`    // a turn is under way
-	PID       int       `json:"pid,omitempty"`
-	PIDStart  string    `json:"pid_start,omitempty"` // when that process started, so a reused pid isn't taken for it
-	Container bool      `json:"container,omitempty"` // its container has been made
-	Offset    int64     `json:"offset"`              // how much of pi.out has been read
+	ID         string    `json:"id"`
+	Title      string    `json:"title"`
+	Created    time.Time `json:"created"`
+	Updated    time.Time `json:"updated"`
+	TokenHash  string    `json:"token_sha256"`
+	PiSession  string    `json:"pi_session"`  // pi's session id
+	ZenSession string    `json:"zen_session"` // the OpenCode session id pi's requests carry (agents_model.go)
+	Working    bool      `json:"working"`     // a turn is under way
+	PID        int       `json:"pid,omitempty"`
+	PIDStart   string    `json:"pid_start,omitempty"` // when that process started, so a reused pid isn't taken for it
+	Container  bool      `json:"container,omitempty"` // its container has been made
+	Offset     int64     `json:"offset"`              // how much of pi.out has been read
 }
 
 // agentEvent is one frame of a session's stream, as kept in events.jsonl.
@@ -140,7 +137,6 @@ func newAgentService(dataDir string, cfg agentConfig) (*agentService, error) {
 		cfg:      cfg,
 		dir:      filepath.Join(dataDir, "agents"),
 		dataDir:  dataDir,
-		key:      agentKeyStore(dataDir),
 		sessions: map[string]*agentSession{},
 		tokens:   map[[sha256.Size]byte]*agentSession{},
 	}
@@ -148,6 +144,9 @@ func newAgentService(dataDir string, cfg agentConfig) (*agentService, error) {
 		return nil, err
 	}
 	if err := os.WriteFile(a.extensionPath(), agentExtension, 0o600); err != nil {
+		return nil, err
+	}
+	if err := a.writeModelsJSON(); err != nil {
 		return nil, err
 	}
 	entries, err := os.ReadDir(a.dir)
@@ -174,20 +173,8 @@ func disabledAgentService(dataDir, why string) *agentService {
 		disabled: why,
 		dir:      filepath.Join(dataDir, "agents"),
 		dataDir:  dataDir,
-		key:      agentKeyStore(dataDir),
 		sessions: map[string]*agentSession{},
 		tokens:   map[[sha256.Size]byte]*agentSession{},
-	}
-}
-
-func agentKeyStore(dataDir string) *secretStore {
-	return &secretStore{
-		path:      filepath.Join(dataDir, agentKeyFile),
-		route:     "/agent-key",
-		field:     "key",
-		what:      "key",
-		missing:   "no API key is set for backup sessions; run `delta backup-key set -` from a regular session",
-		writeOnly: true,
 	}
 }
 
@@ -223,7 +210,6 @@ func (a *agentService) register(mux *http.ServeMux) {
 	mux.HandleFunc("POST /agent-sessions/{id}/interrupt", a.interrupt)
 	mux.HandleFunc("DELETE /agent-sessions/{id}", a.remove)
 	mux.HandleFunc("GET /agent-sessions/{id}/events", a.stream)
-	a.key.register(mux)
 }
 
 // validToken reports whether token belongs to a live backup session.
@@ -325,10 +311,6 @@ func (a *agentService) create(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusServiceUnavailable, a.disabled)
 		return
 	}
-	if _, err := a.modelKey(); err != nil {
-		writeError(w, http.StatusServiceUnavailable, err.Error())
-		return
-	}
 	id, token, err := newAgentIDs()
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
@@ -346,6 +328,11 @@ func (a *agentService) create(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
+	zenSession, err := zenSessionID()
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
 	sum := sha256.Sum256([]byte(token))
 	now := time.Now().UTC()
 	s := &agentSession{
@@ -354,7 +341,7 @@ func (a *agentService) create(w http.ResponseWriter, r *http.Request) {
 		changed: make(chan struct{}),
 		meta: agentMeta{
 			ID: id, Title: title, Created: now, Updated: now,
-			TokenHash: hex.EncodeToString(sum[:]), PiSession: piSession,
+			TokenHash: hex.EncodeToString(sum[:]), PiSession: piSession, ZenSession: zenSession,
 		},
 	}
 	if err := os.MkdirAll(s.dir, 0o700); err != nil {
@@ -617,16 +604,6 @@ func randomUUID() (string, error) {
 	b[8] = b[8]&0x3f | 0x80
 	h := hex.EncodeToString(b)
 	return h[:8] + "-" + h[8:12] + "-" + h[12:16] + "-" + h[16:20] + "-" + h[20:], nil
-}
-
-func (a *agentService) modelKey() (string, error) {
-	data, err := os.ReadFile(a.key.path)
-	if errors.Is(err, os.ErrNotExist) {
-		return "", errors.New(a.key.missing)
-	} else if err != nil {
-		return "", err
-	}
-	return strings.TrimSpace(string(data)), nil
 }
 
 // agentSetup is the start of a backup session's first message, as
