@@ -61,8 +61,13 @@ func (u *updater) handle(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "expected JSON body {\"url\": \"...\"}")
 		return
 	}
-	if parsed, err := url.Parse(req.URL); err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") {
+	parsed, err := url.Parse(req.URL)
+	if err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") {
 		writeError(w, http.StatusBadRequest, "url must be http(s)")
+		return
+	}
+	if scopeOf(r) == scopeAgent && !officialRelease(parsed) {
+		writeError(w, http.StatusForbidden, "this session can only update the command center to an official build, from https://github.com/thooton/delta/releases/download/")
 		return
 	}
 	if !u.mu.TryLock() {
@@ -81,6 +86,14 @@ func (u *updater) handle(w http.ResponseWriter, r *http.Request) {
 	case u.restart <- struct{}{}:
 	default:
 	}
+}
+
+// officialRelease reports whether u is a release asset of thooton/delta,
+// which only its GitHub Actions build publishes.
+func officialRelease(u *url.URL) bool {
+	return u.Scheme == "https" && u.Host == "github.com" && u.User == nil &&
+		strings.HasPrefix(u.Path, "/thooton/delta/releases/download/") &&
+		!strings.Contains(u.Path, "..") && !strings.Contains(u.RawPath, "%")
 }
 
 // install downloads the binary at url, checks that it runs and is a delta-cc
