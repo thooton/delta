@@ -32,6 +32,12 @@ func selfTest() error {
 
 	const token = "delta_selftest"
 	hash := sha256.Sum256([]byte(token))
+	// The cloud accounts renew their logins against a fake of the provider.
+	fake := newFakeCloud()
+	defer fake.Close()
+	upstream := cloudUpstream
+	cloudUpstream.tokenURL, cloudUpstream.apiURL = fake.URL+"/v1/oauth/token", fake.URL
+	defer func() { cloudUpstream = upstream }()
 	u := &updater{restart: make(chan struct{}, 1)}
 	agents, err := newTestAgents(dir)
 	if err != nil {
@@ -134,6 +140,12 @@ func selfTest() error {
 		return err
 	}
 	if err := gmailSelfTest(expect, token, dir); err != nil {
+		return err
+	}
+	if err := cloudSelfTest(expect, token, dir, fake); err != nil {
+		return err
+	}
+	if err := conversationsSelfTest(expect, token); err != nil {
 		return err
 	}
 	if err := secretSelfTest(expect, token, accessTokenStore(dir), "ghp_first", "github_pat_second"); err != nil {
