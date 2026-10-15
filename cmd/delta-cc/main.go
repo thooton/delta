@@ -182,6 +182,7 @@ func newHandler(tokenHash []byte, filesDir string, maxUpload int64, u *updater, 
 	(&booksLoginStore{path: filepath.Join(dataDir, booksLoginFile)}).register(mux)
 	(&gmailLoginStore{path: filepath.Join(dataDir, gmailLoginFile)}).register(mux)
 	accessTokenStore(dataDir).register(mux)
+	newGitHubRelay(dataDir).register(mux)
 	mapsKeyStore(dataDir).register(mux)
 	if canvas != nil {
 		canvas.register(mux)

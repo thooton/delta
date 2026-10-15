@@ -2,14 +2,13 @@ package main
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
-	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"runtime/debug"
 	"strings"
 	"sync"
@@ -46,32 +45,30 @@ func version() string {
 	return rev + dirty
 }
 
-// updater replaces the running binary with one downloaded from a URL, then
+// updater replaces the running binary with the latest official build, then
 // signals restart so serve can shut down cleanly and re-exec itself.
 type updater struct {
 	mu      sync.Mutex
 	restart chan struct{}
 }
 
+// releaseURL is where the official build of this command center for this
+// machine is published. It is the only binary an update ever installs: no
+// session can point the command center at one of its own.
+func releaseURL() string {
+	return "https://github.com/thooton/delta/releases/download/latest/delta-cc-" + runtime.GOOS + "-" + runtime.GOARCH
+}
+
+// handle installs the latest official build. Any request body is ignored
+// (older CLIs send a URL; it is not used).
 func (u *updater) handle(w http.ResponseWriter, r *http.Request) {
-	var req struct {
-		URL string `json:"url"`
-	}
-	if err := json.NewDecoder(io.LimitReader(r.Body, 1<<16)).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, "expected JSON body {\"url\": \"...\"}")
-		return
-	}
-	if parsed, err := url.Parse(req.URL); err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") {
-		writeError(w, http.StatusBadRequest, "url must be http(s)")
-		return
-	}
 	if !u.mu.TryLock() {
 		writeError(w, http.StatusConflict, "an update is already in progress")
 		return
 	}
 	defer u.mu.Unlock()
 
-	newVersion, err := install(r.Context(), req.URL)
+	newVersion, err := install(r.Context(), releaseURL())
 	if err != nil {
 		writeError(w, http.StatusBadGateway, err.Error())
 		return

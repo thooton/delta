@@ -18,8 +18,8 @@ The agent is never told to clone this repository, since that would only clutter 
 
 ## Layout
 
-- `cmd/delta-cc`: the command center, an HTTP server. `canvas.go` is the Canvas relay, `music_run.go` runs music downloads, `secret.go` stores single secrets (the GitHub token in `github.go`, the Google Maps key in `maps.go`), and `books.go` and `gmail.go` store the book and Gmail logins.
-- `cmd/delta`: the CLI. Its `delta help`, `delta canvas help`, `delta music help`, `delta books help`, `delta maps help`, `delta gmail help` and `delta docx` text is written for the agent. The `canvas*.go` files hold the Canvas commands, `music*.go` the music commands, `books*.go` the book commands, `maps*.go` the place search commands, `gmail*.go` the Gmail commands, `docx_help.md` the guide to making Word documents and `docx/` the scripts it uses (both embedded by `docx.go`; `delta docx extract` writes out the scripts), and `markdown.go` converts Markdown to HTML.
+- `cmd/delta-cc`: the command center, an HTTP server. `canvas.go` is the Canvas relay, `music_run.go` runs music downloads, `secret.go` stores single secrets (the GitHub token in `github.go`, which also has the GitHub relay, the Google Maps key in `maps.go`), and `books.go` and `gmail.go` store the book and Gmail logins.
+- `cmd/delta`: the CLI. Its `delta help`, `delta canvas help`, `delta music help`, `delta books help`, `delta maps help`, `delta gmail help` and `delta docx` text is written for the agent. The `canvas*.go` files hold the Canvas commands, `music*.go` the music commands, `books*.go` the book commands, `maps*.go` the place search commands, `gmail*.go` the Gmail commands, `relay.go` the local end of the GitHub relay, `docx_help.md` the guide to making Word documents and `docx/` the scripts it uses (both embedded by `docx.go`; `delta docx extract` writes out the scripts), and `markdown.go` converts Markdown to HTML.
 - `scripts/install.sh`: the setup script published to the release as `install.sh`.
 - `scripts/fetch-music-engine.sh`: puts the music engine into `cmd/delta-cc/music-engine/` for the command center to embed (see [Music](#music)).
 - `.github/workflows/release.yml`: on every push to `master`, builds both programs and publishes them to the [`latest` release](https://github.com/thooton/delta/releases/tag/latest). It does not deploy anything.
@@ -51,10 +51,9 @@ delta push <path> [name]       upload a file (refused if the name is taken)
 delta pull <name> [dest]       download a file (e.g. a photo sent from the phone)
 delta list                     list files
 delta delete <name>            delete a file
-delta git <args> / delta gh <args>       run git or gh with the user's GitHub token
-delta get-personal-access-token          print the user's GitHub token
-delta set-personal-access-token <tok|->  check and save a new GitHub token
-delta update-cc <binary-url>   update the command center to a new binary
+delta git <args> / delta gh <args>       run git or gh through the GitHub relay
+delta set-personal-access-token <tok|->  check and save a new GitHub token (write-only)
+delta update-cc                update the command center to its latest official build
 delta canvas <command> ...     use the user's Canvas (see below)
 delta music song|album <name>  download a song or an album (see below)
 delta music re-login           give the command center a new music account
@@ -85,7 +84,7 @@ Every endpoint requires the bearer token.
 | PUT | `/files/{name}` | Uploads a file from the raw request body. Returns 201, or 409 if the name is taken: files are never overwritten. |
 | DELETE | `/files/{name}` | Deletes a file. |
 | GET | `/version` | Returns the running build's git commit. |
-| POST | `/update` | Takes `{"url": "..."}`, installs the binary at that URL, and restarts. |
+| POST | `/update` | Installs the latest official build (`https://github.com/thooton/delta/releases/download/latest/delta-cc-<os>-<arch>`) and restarts. It takes no URL; a body is ignored. |
 | GET | `/canvas-status` | Canvas base URL and the cookie service's health. |
 | any | `/canvas/{path}` | Relayed to `<canvas-url>/{path}` with the user's Canvas session. |
 | POST | `/canvas-upload/{path}` | Canvas file upload. The body is the file, `{path}` is the Canvas preflight endpoint, and the query carries `name`, `content_type` and any other preflight parameters. Responds with the Canvas file object. |
@@ -99,13 +98,13 @@ Every endpoint requires the bearer token.
 | GET | `/books-login` | The book account, as `{"email", "password"}`. 404 while none is set. |
 | PUT | `/books-login` | Replaces it. Needs an email address and a password. |
 | DELETE | `/books-login` | Removes it. |
-| GET | `/personal-access-token` | The GitHub personal access token, as `{"token"}`. 404 while none is set. |
-| PUT | `/personal-access-token` | Replaces it with the raw request body. |
+| PUT | `/personal-access-token` | Replaces the GitHub personal access token with the raw request body. There is no `GET`: it can't be read back. |
 | GET | `/maps-key` | The Google Maps API key, as `{"key"}`. 404 while none is set. |
 | PUT | `/maps-key` | Replaces it with the raw request body. |
 | GET | `/gmail-login` | The Gmail login, as `{"client_id", "client_secret", "refresh_token", "email"}`. 404 while none is set. |
 | PUT | `/gmail-login` | Replaces it. Needs all four fields. |
 | DELETE | `/gmail-login` | Removes it. |
+| any | `/github/{host}/{path}` | Relayed to `https://{host}/{path}` with the GitHub token, for `github.com`, `api.github.com`, `uploads.github.com` and `codeload.github.com`. Redirects are passed back, not followed. |
 
 Running `delta-cc` with no arguments starts the server. By default it listens on `:8080`, stores data in `./data`, and accepts uploads up to 1 GiB; the `-addr`, `-data`, and `-max-upload` flags change these. The server speaks plain HTTP, so run it behind a reverse proxy that handles TLS (Caddy, for example). Otherwise the token travels unencrypted.
 
@@ -151,7 +150,14 @@ The engine is white-labeled. The agent never runs it or sees its name: the comma
 
 ## GitHub access
 
-The agent reaches the user's repositories with a GitHub personal access token stored on the command center as `data/personal-access-token`. The agent runs `delta git ...` and `delta gh ...` instead of `git` and `gh`. Each fetches the token and hands it to that one process through its environment: to git as an `http.https://github.com/.extraheader` basic-auth header via `GIT_CONFIG_COUNT`/`GIT_CONFIG_KEY_n`/`GIT_CONFIG_VALUE_n` (as actions/checkout does), to gh as `GH_TOKEN`. So no git config, remote URL or clone ever holds it. (An earlier version had the agent install a global git credential helper, which Claude Code's auto-mode classifier blocks as unauthorized persistence.) `delta set-personal-access-token` checks a new token against `api.github.com/user` (refusing one GitHub rejects, saving it with a warning if GitHub can't be reached) before storing it. To set it on the VPS directly, write the token to that file, readable only by the `delta` user.
+The agent reaches the user's repositories with a GitHub personal access token stored on the command center as `data/personal-access-token`, which no session ever sees: there is no route that returns it. The agent runs `delta git ...` and `delta gh ...` instead of `git` and `gh`, and the CLI runs a small proxy for the length of the command:
+
+- git reaches it through a `url.http://127.0.0.1:<port>/github.com/.insteadOf=https://github.com/` setting passed in its environment (`GIT_CONFIG_COUNT`/`GIT_CONFIG_KEY_n`/`GIT_CONFIG_VALUE_n`), which rewrites every GitHub URL it fetches from or pushes to (`https://`, `git@github.com:` and `ssh://git@github.com/` forms alike). So no git config, remote URL or clone ever holds a proxy address or a token. git applies only one rewrite per URL, and on a tie the first defined, and Claude Code cloud sessions pass their own `git@github.com:` → `https://github.com/` rewrite the same way. So the CLI drops the environment's rewrites of GitHub prefixes and keeps everything else it sets; otherwise SSH-style remotes would go straight to GitHub.
+- gh reaches it through `http_unix_socket` in a temporary `GH_CONFIG_DIR`, which makes gh send every request as plain HTTP over a unix socket, with a placeholder `GH_TOKEN` so it doesn't ask to log in.
+
+The proxy sends GitHub requests (to `github.com`, `api.github.com`, `uploads.github.com`, `codeload.github.com`) to the command center's `/github/{host}/...` relay with the session's delta token, and the relay adds the GitHub token on the way out and strips cookies and credentials on the way back. Anything off GitHub (signed download links for release assets and artifacts) the proxy fetches directly, with no credentials. Redirects are passed back to git or gh, not followed, so the token is never sent to a host a redirect names.
+
+So someone who copies the delta token out of a transcript can use GitHub only through the command center, for as long as that token is valid: rotating it (`delta-cc gen-token`) cuts them off, with no need to revoke the GitHub token. (Earlier versions handed the token to git and gh through their environment, and before that had the agent install a global git credential helper, which Claude Code's auto-mode classifier blocks as unauthorized persistence.) `delta set-personal-access-token` checks a new token against `api.github.com/user` (refusing one GitHub rejects, saving it with a warning if GitHub can't be reached) before storing it. To set it on the VPS directly, write the token to that file, readable only by the `delta` user.
 
 ## Books
 
@@ -167,7 +173,7 @@ It is white-labeled like music: nothing the agent sees names Z-Library or its ho
 
 `delta maps` lets the agent find places with the [Places API (New)](https://developers.google.com/maps/documentation/places/web-service/op-overview), for requests like "pizza places in Denver", "a pharmacy near 85281" or "coffee next to Union Station". `delta maps help` documents it for the agent.
 
-**The key.** The Google Maps Platform API key is stored on the command center as `data/maps-key` (mode 0600) and set with `delta maps key set -` (key on stdin), which first runs an IDs-only search (a request Google doesn't bill) and refuses a key Google rejects. Like the GitHub token, the CLI fetches it on every run and keeps no copy; it calls Google itself, so the command center never talks to Google. To set it on the VPS directly, write the key to that file, readable only by the `delta` user.
+**The key.** The Google Maps Platform API key is stored on the command center as `data/maps-key` (mode 0600) and set with `delta maps key set -` (key on stdin), which first runs an IDs-only search (a request Google doesn't bill) and refuses a key Google rejects. The CLI fetches it on every run and keeps no copy; it calls Google itself, so the command center never talks to Google. To set it on the VPS directly, write the key to that file, readable only by the `delta` user.
 
 **Commands.** `delta maps search <query>` runs a Text Search and prints each place's type, rating, price level, address, whether it is open now and until when, and its id. Options: `--near <place|lat,lng>` (a place is looked up with one Text Search first, then results are biased toward it and show their distance), `--within <distance>` (a hard limit: a `locationRestriction` box around `--near`, then anything outside the circle is dropped), `--closest` (rank by distance), `--open-now`, `--min-rating`, `--limit` (at most 20) and `--json`. `delta maps place <id|name>` prints everything about one place: contact details and links, open-now status, hours for the next 7 days and special hours (happy hour, drive-through, ...), price range, amenities, payment, parking, accessibility, fuel prices, Google's summaries and up to 5 reviews. Times are shown in the place's own time zone (from `utcOffsetMinutes`), with a "Local time there" line, because the agent's sandbox runs in UTC. No separate geocoder is needed: Text Search resolves cities, zip codes, addresses and businesses alike.
 
@@ -198,12 +204,12 @@ The command center never updates on its own. To ship a change to it:
 3. Run:
 
    ```
-   delta update-cc https://github.com/thooton/delta/releases/download/latest/delta-cc-linux-amd64
+   delta update-cc
    ```
 
-The command center downloads the binary and runs `<new-binary> test`, a self-test that exercises the real request handler against a temporary data directory (see `cmd/delta-cc/selftest.go`). Only if the test passes does it replace its own executable and restart in place, keeping its arguments and process ID. If the download fails, the file isn't a delta-cc binary, or the test fails, nothing changes and the error is returned to the CLI. The CLI then waits for the restarted server to report the new version.
+It takes no link. The command center always installs the latest official build of itself, from `https://github.com/thooton/delta/releases/download/latest/delta-cc-<os>-<arch>`, and nothing else. It downloads the binary and runs `<new-binary> test`, a self-test that exercises the real request handler against a temporary data directory (see `cmd/delta-cc/selftest.go`). Only if the test passes does it replace its own executable and restart in place, keeping its arguments and process ID. If the download fails, the file isn't a delta-cc binary, or the test fails, nothing changes and the error is returned to the CLI. The CLI then waits for the restarted server to report the new version.
 
-Anyone holding the token can make the command center run any binary they like, so treat the token like a shell login to the VPS (as the `delta` user).
+So the only code the command center ever runs is what was built from `master` by GitHub Actions. Someone holding the delta token can't make it run a binary of their own, and getting the GitHub token out would take a commit to `master`, which shows in its history. To run a build that isn't released, install it on the VPS by hand.
 
 ## Setting up the VPS
 
