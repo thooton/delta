@@ -7,7 +7,6 @@ import (
 	"io"
 	"net/http"
 	"os"
-	"path/filepath"
 	"strings"
 )
 
@@ -72,20 +71,7 @@ func (b *booksLoginStore) put(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	out, _ := json.Marshal(l)
-	tmp, err := os.CreateTemp(filepath.Dir(b.path), ".books-login-*")
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
-		return
-	}
-	defer os.Remove(tmp.Name())
-	_, err = tmp.Write(append(out, '\n'))
-	if cerr := tmp.Close(); err == nil {
-		err = cerr
-	}
-	if err == nil {
-		err = os.Rename(tmp.Name(), b.path)
-	}
-	if err != nil {
+	if err := writePrivateFile(b.path, append(out, '\n')); err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}

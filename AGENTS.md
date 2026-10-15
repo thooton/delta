@@ -18,8 +18,8 @@ The agent is never told to clone this repository, since that would only clutter 
 
 ## Layout
 
-- `cmd/delta-cc`: the command center, an HTTP server. `canvas.go` is the Canvas relay, `music_run.go` runs music downloads, and `secret.go` stores single secrets (the GitHub token in `github.go`, the Google Maps key in `maps.go`).
-- `cmd/delta`: the CLI. Its `delta help`, `delta canvas help`, `delta music help`, `delta books help`, `delta maps help` and `delta docx` text is written for the agent. The `canvas*.go` files hold the Canvas commands, `music*.go` the music commands, `books*.go` the book commands, `maps*.go` the place search commands, `docx_help.md` the guide to making Word documents and `docx/` the scripts it uses (both embedded by `docx.go`; `delta docx extract` writes out the scripts), and `markdown.go` converts Markdown to HTML.
+- `cmd/delta-cc`: the command center, an HTTP server. `canvas.go` is the Canvas relay, `music_run.go` runs music downloads, `secret.go` stores single secrets (the GitHub token in `github.go`, the Google Maps key in `maps.go`), and `books.go` and `gmail.go` store the book and Gmail logins.
+- `cmd/delta`: the CLI. Its `delta help`, `delta canvas help`, `delta music help`, `delta books help`, `delta maps help`, `delta gmail help` and `delta docx` text is written for the agent. The `canvas*.go` files hold the Canvas commands, `music*.go` the music commands, `books*.go` the book commands, `maps*.go` the place search commands, `gmail*.go` the Gmail commands, `docx_help.md` the guide to making Word documents and `docx/` the scripts it uses (both embedded by `docx.go`; `delta docx extract` writes out the scripts), and `markdown.go` converts Markdown to HTML.
 - `scripts/install.sh`: the setup script published to the release as `install.sh`.
 - `scripts/fetch-music-engine.sh`: puts the music engine into `cmd/delta-cc/music-engine/` for the command center to embed (see [Music](#music)).
 - `.github/workflows/release.yml`: on every push to `master`, builds both programs and publishes them to the [`latest` release](https://github.com/thooton/delta/releases/tag/latest). It does not deploy anything.
@@ -60,6 +60,7 @@ delta music song|album <name>  download a song or an album (see below)
 delta music re-login           give the command center a new music account
 delta books <command> ...      download ebooks (see below)
 delta maps <command> ...       find places and their hours (see below)
+delta gmail <command> ...      read and send the user's Gmail (see below)
 delta docx                     print a guide to making Word documents
 delta docx extract [dir]       write out the scripts that guide uses
 ```
@@ -102,6 +103,9 @@ Every endpoint requires the bearer token.
 | PUT | `/personal-access-token` | Replaces it with the raw request body. |
 | GET | `/maps-key` | The Google Maps API key, as `{"key"}`. 404 while none is set. |
 | PUT | `/maps-key` | Replaces it with the raw request body. |
+| GET | `/gmail-login` | The Gmail login, as `{"client_id", "client_secret", "refresh_token", "email"}`. 404 while none is set. |
+| PUT | `/gmail-login` | Replaces it. Needs all four fields. |
+| DELETE | `/gmail-login` | Removes it. |
 
 Running `delta-cc` with no arguments starts the server. By default it listens on `:8080`, stores data in `./data`, and accepts uploads up to 1 GiB; the `-addr`, `-data`, and `-max-upload` flags change these. The server speaks plain HTTP, so run it behind a reverse proxy that handles TLS (Caddy, for example). Otherwise the token travels unencrypted.
 
@@ -168,6 +172,22 @@ It is white-labeled like music: nothing the agent sees names Z-Library or its ho
 **Commands.** `delta maps search <query>` runs a Text Search and prints each place's type, rating, price level, address, whether it is open now and until when, and its id. Options: `--near <place|lat,lng>` (a place is looked up with one Text Search first, then results are biased toward it and show their distance), `--within <distance>` (a hard limit: a `locationRestriction` box around `--near`, then anything outside the circle is dropped), `--closest` (rank by distance), `--open-now`, `--min-rating`, `--limit` (at most 20) and `--json`. `delta maps place <id|name>` prints everything about one place: contact details and links, open-now status, hours for the next 7 days and special hours (happy hour, drive-through, ...), price range, amenities, payment, parking, accessibility, fuel prices, Google's summaries and up to 5 reviews. Times are shown in the place's own time zone (from `utcOffsetMinutes`), with a "Local time there" line, because the agent's sandbox runs in UTC. No separate geocoder is needed: Text Search resolves cities, zip codes, addresses and businesses alike.
 
 **Billing.** Field masks decide which SKU Google bills. Search asks for nothing past the Enterprise tier (ratings and opening hours need it); only `place` asks for reviews and other Atmosphere fields. Resolving `--near` asks only for Pro fields.
+
+## Gmail
+
+`delta gmail` gives the agent the user's Gmail: `search` (Gmail's search syntax, conversations newest first), `read` (a whole conversation, HTML shown as Markdown, quoted text hidden), `attachment` (save, optionally `--push` to the Files tab), `send`, `reply` (`--all`), `forward` (with the original's attachments and HTML), `--draft` on those three and `send-draft`, `archive`/`unarchive`, `trash`/`untrash`, `mark` (read, unread, starred, important, spam and their opposites), `label`/`unlabel`, `labels` and `account`. `delta gmail help` documents it for the agent. Every id the agent sees is a message id: search shows each conversation by its latest message, and the organizing commands act on the message's whole conversation, as the Gmail app does.
+
+**The login.** Gmail has no API keys, only OAuth, so the command center stores `data/gmail-login.json` (mode 0600): the user's own OAuth client (ID and secret), the refresh token they granted it, and the account's address. Like the maps key, the CLI fetches it on every run, trades the refresh token for an hour-long access token at `oauth2.googleapis.com/token`, calls `gmail.googleapis.com` itself and keeps nothing. The command center never talks to Google. The scope is `gmail.modify`: read, send, drafts, labels and trash, but not permanent deletion. Mail goes up through the multipart upload endpoints, which take messages up to 35 MB.
+
+**Setting it up (once, on a computer with a browser).**
+
+1. In the [Google Cloud console](https://console.cloud.google.com/), create a project (or pick one) and enable the **Gmail API** (APIs & Services → Library).
+2. Under **Google Auth Platform** (APIs & Services → OAuth consent screen), configure it as **External**, with the user's address as the support and developer contact. Under **Data Access**, add the scope `https://www.googleapis.com/auth/gmail.modify`.
+3. Under **Audience**, click **Publish app** so it is "In production". While an app is in "Testing", Google expires its Gmail refresh tokens after 7 days. A personal app doesn't need verification. Google just shows a "Google hasn't verified this app" screen at login, which **Advanced → Go to ... (unsafe)** passes.
+4. Under **Clients**, create an OAuth client of type **Desktop app** and download its JSON.
+5. Run `delta gmail login <that file>` (after `delta set-auth`). It prints an address and opens it in the browser. Sign in, allow access, and the browser returns to a listener on `127.0.0.1`. If the browser is on another device, its last page won't load; paste that page's address into the terminal instead. The login checks that Gmail answers before saving anything on the command center.
+
+`delta gmail logout` revokes the login and removes it. The refresh token stops working if the user revokes Delta at [myaccount.google.com/permissions](https://myaccount.google.com/permissions), changes their Google password, or leaves it unused for 6 months; the CLI then tells the agent to ask for a new `delta gmail login`.
 
 ## Updating the command center
 
