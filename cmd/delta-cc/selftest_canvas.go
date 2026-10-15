@@ -135,7 +135,12 @@ func canvasSelfTest(dir string) error {
 	}
 	const token = "delta_selftest"
 	hash := sha256.Sum256([]byte(token))
-	ts := httptest.NewServer(newHandler(hash[:], filepath.Join(dir, "files"), 1<<20, &updater{restart: make(chan struct{}, 1)}, proxy))
+	agents, err := newTestAgents(dir)
+	if err != nil {
+		return err
+	}
+	public, _ := newHandler(hash[:], filepath.Join(dir, "files"), 1<<20, &updater{restart: make(chan struct{}, 1)}, proxy, agents)
+	ts := httptest.NewServer(public)
 	defer ts.Close()
 
 	call := func(desc string, want int, method, path string, body []byte) (*http.Response, []byte, error) {

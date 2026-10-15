@@ -33,7 +33,12 @@ func selfTest() error {
 	const token = "delta_selftest"
 	hash := sha256.Sum256([]byte(token))
 	u := &updater{restart: make(chan struct{}, 1)}
-	ts := httptest.NewServer(newHandler(hash[:], filesDir, 1<<20, u, nil))
+	agents, err := newTestAgents(dir)
+	if err != nil {
+		return err
+	}
+	public, agentHandler := newHandler(hash[:], filesDir, 1<<20, u, nil, agents)
+	ts := httptest.NewServer(public)
 	defer ts.Close()
 
 	call := func(method, path, tok string, body []byte) (int, []byte, error) {
@@ -139,6 +144,12 @@ func selfTest() error {
 		return err
 	}
 	if err := secretSelfTest(expect, token, mapsKeyStore(dir), "AIzaFirst", "AIzaSecond"); err != nil {
+		return err
+	}
+	if err := agentsSelfTest(expect, token, dir, agents, agentHandler, ts.URL); err != nil {
+		return err
+	}
+	if err := agentSocketSelfTest(dir, agentHandler); err != nil {
 		return err
 	}
 	return canvasSelfTest(dir)
