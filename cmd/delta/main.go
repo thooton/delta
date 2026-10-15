@@ -25,10 +25,12 @@ const helpText = `delta: the CLI for the Delta command center
 WHAT THIS IS
   You are an agent session started from the Delta app on the user's Sonim
   XP3 flip phone: a Claude Code cloud session, or a backup session (see
-  BACKUP SESSIONS). The app has three tabs: Chats (their
-  sessions), Session (this one) and Files (the files on the command
-  center, which they can download, install, open, move into a folder on
-  the phone such as Music or Download, upload from the phone, or delete).
+  BACKUP SESSIONS). The app has four tabs: Chats (their sessions),
+  Session (this one), Files (the files on the command center, which they
+  can download, install, open, move into a folder on the phone such as
+  Music or Download, upload from the phone, or delete) and Accounts
+  (their Claude accounts and how much of each one's 5-hour and weekly
+  limits is used; see "delta accounts help").
   The command center is an always-on server; this CLI talks to it.
 
   FILES FROM THE PHONE: the user can send you files. The app uploads each
@@ -41,6 +43,16 @@ WHAT THIS IS
 
   Fetch each named file with "delta pull <name>" before working on it.
   The phone shows that block to the user only as "Attached: notes.pdf".
+
+  CONTINUED CONVERSATIONS: when the account a session runs on reaches its
+  usage limit, the user can move the conversation to a new session on
+  another account. Its first message then opens with a <delta-continued>
+  block naming a conversation id. Run "delta resume <id> conversation.md":
+  it saves the whole conversation so far (every message, every tool call
+  and every tool result, in full) to that file. Read ALL of it, from the
+  first line to the last, in parts if need be, before doing anything else.
+  Then pick up exactly where it left off. The old session's sandbox is
+  gone, so clone again and redo anything that wasn't pushed.
 
   Repositories (see GITHUB):
     thooton/sonim   The phone's apps, one directory each (the Delta app is
@@ -59,8 +71,9 @@ WHAT THIS IS
   shows up in the Files tab, and installing it updates the app in place
   because every build is signed with the key in sonim/signing. Never
   change or bypass that key. Then tell the user what to install.
-  (The Delta app is delta.apk; a build without its logins keeps the
-  installed copy's.)
+  (The Delta app is delta.apk; a build without its command center login
+  keeps the installed copy's. Its Claude logins are on the command center;
+  see "delta accounts help".)
 
 SETUP
   Your first message included a command-center URL and token. Run first:
@@ -96,8 +109,15 @@ COMMANDS
                                      reply, forward, archive, trash, label.
   delta docx                         How to make Word documents (.docx).
   delta docx extract [dir]           Extract the scripts that guide uses.
+  delta accounts ...                 The Claude accounts the phone's
+                                     sessions run on: list them with their
+                                     usage, add, remove.
+  delta resume <id> <file>           Save a conversation carried over from
+                                     another session to <file> (see
+                                     CONTINUED CONVERSATIONS). With no
+                                     arguments, list them.
 
-  Read "delta canvas|music|books|maps|gmail help" before using those, and
+  Read "delta canvas|music|books|maps|gmail|accounts help" before using those, and
   "delta docx" before making or editing a Word document.
   Aliases: ls = list, rm = delete, get = pull.
 
@@ -207,6 +227,10 @@ func run(args []string) error {
 		return runGmail(args)
 	case "docx":
 		return runDocx(args)
+	case "accounts", "account":
+		return runAccounts(args)
+	case "resume":
+		return runResume(args)
 	case "list", "ls":
 		if len(args) != 0 {
 			return errors.New("usage: delta list")
