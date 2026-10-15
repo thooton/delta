@@ -87,10 +87,12 @@ COMMANDS
   delta books ...                    Find and download ebooks.
   delta maps ...                     Find places (restaurants, stores, ...)
                                      and their hours with Google Maps.
+  delta gmail ...                    The user's Gmail: search, read, send,
+                                     reply, forward, archive, trash, label.
   delta docx                         How to make Word documents (.docx).
   delta docx extract [dir]           Extract the scripts that guide uses.
 
-  Read "delta canvas|music|books|maps help" before using those, and
+  Read "delta canvas|music|books|maps|gmail help" before using those, and
   "delta docx" before making or editing a Word document.
   Aliases: ls = list, rm = delete, get = pull.
 
@@ -176,6 +178,8 @@ func run(args []string) error {
 		return runBooks(args)
 	case "maps":
 		return runMaps(args)
+	case "gmail", "mail", "email":
+		return runGmail(args)
 	case "docx":
 		return runDocx(args)
 	case "list", "ls":

@@ -129,6 +129,9 @@ func selfTest() error {
 	if err := booksSelfTest(expect, token); err != nil {
 		return err
 	}
+	if err := gmailSelfTest(expect, token, dir); err != nil {
+		return err
+	}
 	if err := secretSelfTest(expect, token, accessTokenStore(dir), "ghp_first", "github_pat_second"); err != nil {
 		return err
 	}
@@ -278,6 +281,50 @@ func booksSelfTest(expect func(desc string, want int, method, path, tok string, 
 		return err
 	}
 	_, err = expect("book login after removal", 404, "GET", "/books-login", token, nil)
+	return err
+}
+
+// gmailSelfTest checks that the Gmail login can be set, read back, replaced
+// and removed, that it is private, and that incomplete logins are rejected.
+func gmailSelfTest(expect func(desc string, want int, method, path, tok string, body []byte) ([]byte, error), token, dir string) error {
+	if _, err := expect("gmail login requires the token", 401, "GET", "/gmail-login", "", nil); err != nil {
+		return err
+	}
+	if _, err := expect("no gmail login yet", 404, "GET", "/gmail-login", token, nil); err != nil {
+		return err
+	}
+	for _, bad := range []string{"", "nope", `{"client_id":"a","client_secret":"b","refresh_token":"c"}`, `{"client_id":"a","client_secret":"b","email":"me@gmail.com"}`} {
+		if _, err := expect(fmt.Sprintf("gmail login %q is rejected", bad), 400, "PUT", "/gmail-login", token, []byte(bad)); err != nil {
+			return err
+		}
+	}
+	if _, err := expect("oversized gmail login is rejected", 413, "PUT", "/gmail-login", token, make([]byte, maxGmailLogin+1)); err != nil {
+		return err
+	}
+	for _, login := range []gmailLogin{
+		{ClientID: "id-1.apps.googleusercontent.com", ClientSecret: "secret-1", RefreshToken: "1//first", Email: "me@gmail.com"},
+		{ClientID: "id-2.apps.googleusercontent.com", ClientSecret: "secret-2", RefreshToken: "1//second", Email: "other@gmail.com"},
+	} {
+		body, _ := json.Marshal(login)
+		if _, err := expect("set gmail login", 200, "PUT", "/gmail-login", token, body); err != nil {
+			return err
+		}
+		data, err := expect("read gmail login", 200, "GET", "/gmail-login", token, nil)
+		if err != nil {
+			return err
+		}
+		var got gmailLogin
+		if err := json.Unmarshal(data, &got); err != nil || got != login {
+			return fmt.Errorf("read gmail login: got %s", data)
+		}
+	}
+	if info, err := os.Stat(filepath.Join(dir, gmailLoginFile)); err != nil || info.Mode().Perm() != 0o600 {
+		return fmt.Errorf("gmail login file: %v %v", info, err)
+	}
+	if _, err := expect("remove gmail login", 200, "DELETE", "/gmail-login", token, nil); err != nil {
+		return err
+	}
+	_, err := expect("gmail login after removal", 404, "GET", "/gmail-login", token, nil)
 	return err
 }
 
