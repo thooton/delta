@@ -84,6 +84,8 @@ Backup sessions (see agents.go):
   -agent-memory SIZE         each container's memory limit (default 4g; empty: none)
   -agent-cpus N              each container's CPU limit (default 2; empty: none)
   -agent-pids N              each container's process limit (default 4096; 0: none)
+  -agent-setup FILE          a Bash script each new container runs as root before
+                             the agent starts (default: install the delta CLI)
 
 Canvas relay (see canvas.go):
   -canvas-url URL            Canvas origin (default https://canvas.asu.edu;
@@ -136,7 +138,17 @@ func serve(args []string) {
 	fs.StringVar(&agentCfg.Memory, "agent-memory", "4g", "memory limit for each backup session's container; empty for none")
 	fs.StringVar(&agentCfg.CPUs, "agent-cpus", "2", "CPU limit for each backup session's container; empty for none")
 	fs.IntVar(&agentCfg.PIDs, "agent-pids", 4096, "process limit for each backup session's container; 0 for none")
+	agentSetupFile := fs.String("agent-setup", "", "Bash script each new backup session's container runs as root; empty installs the delta CLI")
 	fs.Parse(args)
+	if *agentSetupFile != "" {
+		// An update keeps the command line, so a script that has gone
+		// missing falls back to the default rather than stopping the server.
+		if data, err := os.ReadFile(*agentSetupFile); err != nil {
+			log.Printf("backup sessions: -agent-setup: %v; using the default setup script", err)
+		} else {
+			agentCfg.Setup = string(data)
+		}
+	}
 	if agentCfg.Socket == "" {
 		agentCfg.Socket = filepath.Join(*dataDir, "agent-socket", "delta.sock")
 	}

@@ -76,13 +76,11 @@ WHAT THIS IS
   see "delta accounts help".)
 
 SETUP
-  Your first message included a command-center URL and token. Run first:
-
-    delta set-auth <url> <token>
-
-  The token is a password: never repeat or commit it. If the server can't
-  be reached, its host probably needs adding to the cloud environment's
-  allowed hosts; tell the user.
+  Nothing to do: the session's setup script installed this CLI, and the
+  environment's DELTA_SERVER and DELTA_TOKEN sign it in to the command
+  center. The token is a password: never repeat or commit it. If the
+  server can't be reached, its host probably needs adding to the cloud
+  environment's allowed hosts; tell the user.
 
 COMMANDS
   delta set-auth <url> <token>       Verify and save the URL and token.
@@ -139,7 +137,7 @@ BACKUP SESSIONS
   Claude Code cloud sessions) and backup ones (marked ▲), which the
   command center runs itself in a Linux container of their own, for when
   regular sessions aren't available. You are in a backup session if
-  set-auth was given a unix:///run/delta/... URL. Then:
+  DELTA_SERVER is a unix:///run/delta/... URL. Then:
 
   - You are root in a fresh Debian container. Install what you need with
     apt-get (gh is "apt-get install -y gh"). The container keeps its files

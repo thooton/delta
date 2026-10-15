@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -66,6 +67,12 @@ func (a *agentService) ensureContainer(s *agentSession) error {
 	if err := os.MkdirAll(filepath.Dir(a.cfg.Socket), 0o755); err != nil {
 		return err
 	}
+	// Each container gets a token of its own, so one made again after it
+	// was gone doesn't need the old one, which is never kept.
+	token, err := newAgentToken()
+	if err != nil {
+		return err
+	}
 	// No --privileged, no host network and no runtime socket: the container
 	// reaches this machine only through the agent socket.
 	args := []string{"run", "-d",
@@ -76,6 +83,10 @@ func (a *agentService) ensureContainer(s *agentSession) error {
 		// Read-only, so no session can swap the socket for one of its own;
 		// connecting to a socket still works.
 		"-v", filepath.Dir(a.cfg.Socket) + ":" + agentSocketMount + ":ro",
+		// What the delta CLI signs in with, as a cloud environment's
+		// variables are.
+		"-e", "DELTA_SERVER=" + agentSocketURL,
+		"-e", "DELTA_TOKEN=" + token,
 	}
 	if a.cfg.Memory != "" {
 		args = append(args, "--memory", a.cfg.Memory)
@@ -95,7 +106,30 @@ func (a *agentService) ensureContainer(s *agentSession) error {
 	s.meta.Container = true
 	s.saveMeta()
 	s.mu.Unlock()
+	a.setToken(s, token)
+	a.runSetup(s)
 	return nil
+}
+
+// runSetup runs the setup script in a container just made, as root, before
+// the agent first works in it. A script that fails is said on the phone and
+// in the log, and the session goes on: the agent finds out what is missing
+// when it runs `delta help`.
+func (a *agentService) runSetup(s *agentSession) {
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Minute)
+	defer cancel()
+	cmd := s.containerCmd(ctx, agentHome, "bash", "-s")
+	cmd.Stdin = strings.NewReader(a.cfg.Setup)
+	out, err := cmd.CombinedOutput()
+	if err == nil {
+		return
+	}
+	why := lastLine(strings.TrimSpace(string(out)))
+	if why == "" {
+		why = err.Error()
+	}
+	log.Printf("backup session %s: setup script: %v: %s", s.meta.ID, err, strings.TrimSpace(string(out)))
+	s.status("This session's setup script failed: " + why)
 }
 
 func (a *agentService) stopContainer(id string) error {

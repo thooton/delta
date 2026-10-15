@@ -277,6 +277,9 @@ func agentsSelfTest(expect expectFunc, token, dir string, agents *agentService, 
 	if n := strings.Count(readFileString(filepath.Join(dir, "agent-bin", "runtime.log")), "run -d"); n != 1 {
 		return fmt.Errorf("backup session made %d containers, want 1", n)
 	}
+	if err := checkContainerSetup(dir, agents); err != nil {
+		return err
+	}
 
 	// What a session's token may reach, on the agent socket only.
 	const agentToken = "delta_agent_selftest"
@@ -504,6 +507,43 @@ func checkTranscript(path string) error {
 	}
 	if !strings.Contains(readFileString(path), "delta-setup") {
 		return fmt.Errorf("backup session's first message lacks the setup block")
+	}
+	return nil
+}
+
+// checkContainerSetup checks that the container was made signed in, with a
+// token of its own that the command center takes, and ran the setup script
+// as root before the agent's first command.
+func checkContainerSetup(dir string, agents *agentService) error {
+	log := readFileString(filepath.Join(dir, "agent-bin", "runtime.log"))
+	run := ""
+	for _, line := range strings.Split(log, "\n") {
+		if strings.HasPrefix(line, "run -d") {
+			run = line
+		}
+	}
+	if !strings.Contains(run, "DELTA_SERVER="+agentSocketURL) {
+		return fmt.Errorf("backup session's container lacks DELTA_SERVER: %s", run)
+	}
+	i := strings.Index(run, "DELTA_TOKEN=")
+	if i < 0 {
+		return fmt.Errorf("backup session's container lacks DELTA_TOKEN: %s", run)
+	}
+	token := strings.Fields(run[i+len("DELTA_TOKEN="):])[0]
+	if !agents.validToken(token) {
+		return fmt.Errorf("backup session's container token isn't taken")
+	}
+	execs := []string{}
+	for _, line := range strings.Split(log, "\n") {
+		if strings.HasPrefix(line, "exec ") {
+			execs = append(execs, line)
+		}
+	}
+	if len(execs) == 0 || !strings.HasSuffix(execs[0], " bash -s") {
+		return fmt.Errorf("backup session's first command in its container wasn't the setup script: %v", execs)
+	}
+	if !strings.HasPrefix(readFileString(filepath.Join(dir, "agent-bin", "exec-stdin")), defaultAgentSetup) {
+		return fmt.Errorf("backup session's container wasn't given the setup script")
 	}
 	return nil
 }
