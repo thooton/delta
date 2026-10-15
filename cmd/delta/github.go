@@ -2,81 +2,28 @@ package main
 
 import (
 	"bufio"
-	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
 	"os"
-	"os/exec"
-	"strconv"
 	"strings"
 	"time"
 )
 
-// The GitHub personal access token lives on the command center
-// (GET/PUT /personal-access-token). The CLI never keeps a copy: `delta git`
-// and `delta gh` fetch it on every run and hand it to that one process
-// through its environment, so no git config, remote URL or file ever holds
-// it, and a new token takes effect immediately.
+// The GitHub personal access token lives on the command center, which never
+// hands it out: `delta set-personal-access-token` replaces it, and
+// `delta git` and `delta gh` reach GitHub through the command center's relay
+// (relay.go), which adds it to each request on the way out.
 
-func fetchAccessToken() (string, error) {
+// runWithAccessToken runs git or gh through the relay, with the caller's
+// stdio, and exits with its status.
+func runWithAccessToken(prog string, args []string) error {
 	cfg, err := loadConfig()
 	if err != nil {
-		return "", err
-	}
-	data, err := do(cfg, http.MethodGet, "/personal-access-token", nil)
-	if err != nil {
-		return "", err
-	}
-	var res struct {
-		Token string `json:"token"`
-	}
-	if err := json.Unmarshal(data, &res); err != nil {
-		return "", err
-	}
-	return res.Token, nil
-}
-
-func getAccessToken() error {
-	token, err := fetchAccessToken()
-	if err != nil {
 		return err
 	}
-	fmt.Println(token)
-	return nil
-}
-
-// runWithAccessToken runs git (sending the token to github.com as a basic
-// auth header, the way actions/checkout does) or gh (as GH_TOKEN), with the
-// caller's stdio, and exits with its status.
-func runWithAccessToken(prog string, args []string) error {
-	token, err := fetchAccessToken()
-	if err != nil {
-		return err
-	}
-	cmd := exec.Command(prog, args...)
-	cmd.Stdin, cmd.Stdout, cmd.Stderr = os.Stdin, os.Stdout, os.Stderr
-	cmd.Env = os.Environ()
-	switch prog {
-	case "git":
-		// Added after any GIT_CONFIG_* entries already in the environment.
-		n, _ := strconv.Atoi(os.Getenv("GIT_CONFIG_COUNT"))
-		auth := base64.StdEncoding.EncodeToString([]byte("x-access-token:" + token))
-		cmd.Env = append(cmd.Env,
-			fmt.Sprintf("GIT_CONFIG_COUNT=%d", n+1),
-			fmt.Sprintf("GIT_CONFIG_KEY_%d=http.https://github.com/.extraheader", n),
-			fmt.Sprintf("GIT_CONFIG_VALUE_%d=Authorization: Basic %s", n, auth),
-		)
-	case "gh":
-		cmd.Env = append(cmd.Env, "GH_TOKEN="+token, "GITHUB_TOKEN="+token)
-	}
-	err = cmd.Run()
-	var exit *exec.ExitError
-	if errors.As(err, &exit) {
-		os.Exit(exit.ExitCode())
-	}
-	return err
+	return runThroughRelay(cfg, prog, args)
 }
 
 func setAccessToken(token string) error {
