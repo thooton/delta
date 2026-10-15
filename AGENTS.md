@@ -6,8 +6,9 @@ This repository holds the Delta command center and the Delta CLI.
 
 Delta runs in three places:
 
-1. **Phone (Sonim XP3).** The user carries a Sonim XP3 flip phone running the Delta app, which lives in [thooton/sonim](https://github.com/thooton/sonim) under `delta/`. It has three tabs: **Chats** lists the user's Claude Code cloud sessions, **Session** is the conversation with one of them, and **Files** shows everything on the command center, where the user can download it, install it (APKs), move it into a folder on the phone such as Music, or delete it. The user can also upload a file from the phone and send it to the agent: the app puts it on the command center and ends the message with a `<delta-files>` block naming it, which the agent fetches with `delta pull`.
-2. **Command center (VPS).** A server that runs around the clock. It handles authentication and relays between the phone and everything else, including external services such as Canvas. It updates itself only when an agent tells it to.
+1. **Phone (Sonim XP3).** The user carries a Sonim XP3 flip phone running the Delta app, which lives in [thooton/sonim](https://github.com/thooton/sonim) under `delta/`. It has three tabs: **Chats** lists the user's sessions, **Session** is the conversation with one of them, and **Files** shows everything on the command center, where the user can download it, install it (APKs), move it into a folder on the phone such as Music, or delete it. The user can also upload a file from the phone and send it to the agent: the app puts it on the command center and ends the message with a `<delta-files>` block naming it, which the agent fetches with `delta pull`.
+   Chats holds two kinds of session. Regular ones, marked ●, are Claude Code cloud sessions. Backup ones, marked ▲, are run by the command center itself for when cloud sessions aren't available (see [Backup sessions](#backup-sessions)). The app is white-labelled: it never names the agent or the model behind either kind.
+2. **Command center (VPS).** A server that runs around the clock. It handles authentication and relays between the phone and everything else, including external services such as Canvas. It also runs the backup sessions. It updates itself only when an agent tells it to.
 3. **CLI (agent).** The tool an agent uses to send things to the command center.
 
 A typical job looks like this. One of the apps on the phone has a bug, so the user opens the Delta app and describes the problem to the agent. The phone apps live in [thooton/sonim](https://github.com/thooton/sonim), and the agent has read and write access to it and to this repository. The agent clones the repository, fixes the bug, and pushes the change. It then uses the CLI to push the rebuilt APK to the command center. The APK shows up in the files list in the Delta app, where the user decides whether to download it, install it, or delete it.
@@ -18,8 +19,8 @@ The agent is never told to clone this repository, since that would only clutter 
 
 ## Layout
 
-- `cmd/delta-cc`: the command center, an HTTP server. `canvas.go` is the Canvas relay, `music_run.go` runs music downloads, `secret.go` stores single secrets (the GitHub token in `github.go`, the Google Maps key in `maps.go`), and `books.go` and `gmail.go` store the book and Gmail logins.
-- `cmd/delta`: the CLI. Its `delta help`, `delta canvas help`, `delta music help`, `delta books help`, `delta maps help`, `delta gmail help` and `delta docx` text is written for the agent. The `canvas*.go` files hold the Canvas commands, `music*.go` the music commands, `books*.go` the book commands, `maps*.go` the place search commands, `gmail*.go` the Gmail commands, `docx_help.md` the guide to making Word documents and `docx/` the scripts it uses (both embedded by `docx.go`; `delta docx extract` writes out the scripts), and `markdown.go` converts Markdown to HTML.
+- `cmd/delta-cc`: the command center, an HTTP server. `agents.go` runs the backup sessions, with `agents_pi.go` (the agent process and its events), `agents_runtime.go` (the containers) and `agent-extension.ts` (embedded; it moves the agent's tools into the container). `scope.go` decides what each kind of token may do. `canvas.go` is the Canvas relay, `music_run.go` runs music downloads, `secret.go` stores single secrets (the GitHub token in `github.go`, which also has the GitHub relay, the Google Maps key in `maps.go`, and the backup sessions' API key), and `books.go` and `gmail.go` store the book and Gmail logins.
+- `cmd/delta`: the CLI. Its `delta help`, `delta canvas help`, `delta music help`, `delta books help`, `delta maps help`, `delta gmail help` and `delta docx` text is written for the agent. The `canvas*.go` files hold the Canvas commands, `music*.go` the music commands, `books*.go` the book commands, `maps*.go` the place search commands, `gmail*.go` the Gmail commands, `relay.go` the GitHub relay's local end for backup sessions, `backup.go` `delta backup-key`, `docx_help.md` the guide to making Word documents and `docx/` the scripts it uses (both embedded by `docx.go`; `delta docx extract` writes out the scripts), and `markdown.go` converts Markdown to HTML.
 - `scripts/install.sh`: the setup script published to the release as `install.sh`.
 - `scripts/fetch-music-engine.sh`: puts the music engine into `cmd/delta-cc/music-engine/` for the command center to embed (see [Music](#music)).
 - `.github/workflows/release.yml`: on every push to `master`, builds both programs and publishes them to the [`latest` release](https://github.com/thooton/delta/releases/tag/latest). It does not deploy anything.
@@ -36,6 +37,8 @@ delta-cc gen-token
 ```
 
 This prints the token once and stores only its SHA-256 hash, in `data/token.sha256`. Running the command again replaces the token; restart `delta-cc` afterwards so it takes effect. Every request to the command center must include the header `Authorization: Bearer <token>`.
+
+Backup sessions get a token of their own instead, made when the session is created and revoked when it is deleted. It works only on the agent socket inside its container and can do much less (see [Backup sessions](#backup-sessions)). `GET /auth` reports which kind a token is, as `"scope": "full"` or `"agent"`.
 
 The Delta app stores the token and includes it, along with the command center's URL, in the prompt it sends to the agent. The agent runs `delta set-auth <url> <token>`, which checks the token against the server and saves both values to `~/.config/delta/config.json` for later commands.
 
@@ -55,6 +58,7 @@ delta git <args> / delta gh <args>       run git or gh with the user's GitHub to
 delta get-personal-access-token          print the user's GitHub token
 delta set-personal-access-token <tok|->  check and save a new GitHub token
 delta update-cc <binary-url>   update the command center to a new binary
+delta backup-key set <key|->   save the API key backup sessions use
 delta canvas <command> ...     use the user's Canvas (see below)
 delta music song|album <name>  download a song or an album (see below)
 delta music re-login           give the command center a new music account
@@ -79,7 +83,7 @@ Every endpoint requires the bearer token.
 
 | Method | Path | Description |
 |---|---|---|
-| GET | `/auth` | Checks the token. |
+| GET | `/auth` | Checks the token, and says its scope (`full` or `agent`). |
 | GET | `/files` | Lists files as JSON (`name`, `size`, `modified`), newest first. |
 | GET | `/files/{name}` | Downloads a file. |
 | PUT | `/files/{name}` | Uploads a file from the raw request body. Returns 201, or 409 if the name is taken: files are never overwritten. |
@@ -106,8 +110,18 @@ Every endpoint requires the bearer token.
 | GET | `/gmail-login` | The Gmail login, as `{"client_id", "client_secret", "refresh_token", "email"}`. 404 while none is set. |
 | PUT | `/gmail-login` | Replaces it. Needs all four fields. |
 | DELETE | `/gmail-login` | Removes it. |
+| any | `/github/{host}/{path}` | Relayed to `https://{host}/{path}` with the GitHub token, for `github.com`, `api.github.com`, `uploads.github.com` and `codeload.github.com`. Redirects are passed back, not followed. |
+| GET | `/agent-sessions` | The backup sessions, as `{"data": [{"id", "title", "status", "created", "updated"}]}`, newest first. `status` is `running` or `idle`. |
+| POST | `/agent-sessions` | Takes `{"title", "uuid", "text", "images"}` (images as base64 JPEGs) and starts a backup session with it. Returns 201 and `{"id"}`. |
+| POST | `/agent-sessions/{id}/messages` | Takes `{"uuid", "text", "images"}`. A message sent mid-turn reaches the agent between its steps. |
+| POST | `/agent-sessions/{id}/interrupt` | Stops the turn under way. |
+| DELETE | `/agent-sessions/{id}` | Deletes the session: its agent, its container, its token and its files. |
+| GET | `/agent-sessions/{id}/events` | The session's stream as server-sent events, replayed after `?from_sequence_num=` or `Last-Event-ID`. |
+| PUT | `/agent-key` | Replaces the backup sessions' API key with the raw request body. (`GET` returns it, to the delta token only.) |
 
-Running `delta-cc` with no arguments starts the server. By default it listens on `:8080`, stores data in `./data`, and accepts uploads up to 1 GiB; the `-addr`, `-data`, and `-max-upload` flags change these. The server speaks plain HTTP, so run it behind a reverse proxy that handles TLS (Caddy, for example). Otherwise the token travels unencrypted.
+The `/agent-sessions` routes and `/agent-key` are on the public listener only. A backup session's token can't use them.
+
+Running `delta-cc` with no arguments starts the server. By default it listens on `:8080`, stores data in `./data`, and accepts uploads up to 1 GiB; the `-addr`, `-data`, and `-max-upload` flags change these. It also listens on the agent socket, `data/agent-socket/delta.sock` (see [Backup sessions](#backup-sessions)). The server speaks plain HTTP, so run it behind a reverse proxy that handles TLS (Caddy, for example). Otherwise the token travels unencrypted.
 
 ## Canvas
 
@@ -151,7 +165,27 @@ The engine is white-labeled. The agent never runs it or sees its name: the comma
 
 ## GitHub access
 
-The agent reaches the user's repositories with a GitHub personal access token stored on the command center as `data/personal-access-token`. The agent runs `delta git ...` and `delta gh ...` instead of `git` and `gh`. Each fetches the token and hands it to that one process through its environment: to git as an `http.https://github.com/.extraheader` basic-auth header via `GIT_CONFIG_COUNT`/`GIT_CONFIG_KEY_n`/`GIT_CONFIG_VALUE_n` (as actions/checkout does), to gh as `GH_TOKEN`. So no git config, remote URL or clone ever holds it. (An earlier version had the agent install a global git credential helper, which Claude Code's auto-mode classifier blocks as unauthorized persistence.) `delta set-personal-access-token` checks a new token against `api.github.com/user` (refusing one GitHub rejects, saving it with a warning if GitHub can't be reached) before storing it. To set it on the VPS directly, write the token to that file, readable only by the `delta` user.
+The agent reaches the user's repositories with a GitHub personal access token stored on the command center as `data/personal-access-token`. (Backup sessions reach them through a relay instead, without the token; see [Backup sessions](#backup-sessions).) The agent runs `delta git ...` and `delta gh ...` instead of `git` and `gh`. Each fetches the token and hands it to that one process through its environment: to git as an `http.https://github.com/.extraheader` basic-auth header via `GIT_CONFIG_COUNT`/`GIT_CONFIG_KEY_n`/`GIT_CONFIG_VALUE_n` (as actions/checkout does), to gh as `GH_TOKEN`. So no git config, remote URL or clone ever holds it. (An earlier version had the agent install a global git credential helper, which Claude Code's auto-mode classifier blocks as unauthorized persistence.) `delta set-personal-access-token` checks a new token against `api.github.com/user` (refusing one GitHub rejects, saving it with a warning if GitHub can't be reached) before storing it. To set it on the VPS directly, write the token to that file, readable only by the `delta` user.
+
+## Backup sessions
+
+Backup sessions (▲ in the app) are agent sessions the command center runs itself, for when Claude Code cloud sessions aren't available. The phone lists them in Chats beside the cloud sessions and talks to them the same way: `POST /agent-sessions` starts one with its first message, and its event stream uses the cloud's frame format (`event: client_event`, `{"sequence_num", "source", "payload"}` with `user`, `assistant`, `result` and `env_manager_log` payloads), so the app's transcript code reads both. The app offers "New session ●" and "New session ▲", and **Delete** in place of Archive for a backup session.
+
+**How one runs.** The agent is [pi](https://pi.dev) (`@earendil-works/pi-coding-agent`, version pinned as `piVersion` in `agents_pi.go`), using `opencode/muse-spark-1.3` (OpenCode Zen, paid; `-agent-model` changes it). It runs on the VPS and talks to the model. The embedded extension `agent-extension.ts` replaces its four tools (read, write, edit, bash) with versions that run in the session's container through `<runtime> exec`, so everything the model does happens there. pi's environment, which holds the API key, is never passed into the container. Each session gets its own container, made from `-agent-image` (default `docker.io/library/buildpack-deps:trixie-scm`: Debian with curl and git, and nothing else). Nothing is baked into it: like a cloud session, the agent installs the delta CLI itself, following a `<delta-setup>` block the command center puts ahead of the first message. The phone never sees that block, because the stream records only what was typed. pi runs with no permission prompts, extensions, skills or context files of its own, and with a Delta system prompt in place of its own, which names pi.
+
+**Surviving updates.** pi is started detached (in its own session, by a shell that exits at once), reading RPC commands from a FIFO in the session's directory and appending its events to `pi.out` there. So it belongs to no command center process, and an `update-cc` (which execs the new binary in place) leaves it running. The new command center finds it again by its pid and start time, both kept in `session.json`, and carries on reading `pi.out` from the saved offset. A turn whose pi died with the old process ends with a note telling the user to send a message, and the next message starts pi again; pi resumes from its own session file.
+
+**Idle sessions.** After `-agent-idle` (default 15 minutes) with nothing happening, a session's pi is stopped and its container stopped (not removed). The next message starts both again, with the container's files as they were.
+
+**What a backup session can reach.** Containers are made with no `--privileged`, no host network and no runtime socket, and with `-agent-memory` (4g), `-agent-cpus` (2) and `-agent-pids` (4096) limits. They reach the command center only through the agent socket, whose directory is mounted at `/run/delta`. The agent signs in there with its session's token (`delta set-auth unix:///run/delta/delta.sock <token>`). The command center accepts that token only on the socket, never on the public listener, and accepts the delta token only on the public listener. On the socket the token may use the files, music, `GET` of the book login and the maps key, `/auth`, `/version`, the GitHub relay, and `/update` with official release URLs only (`https://github.com/thooton/delta/releases/download/...`). Canvas, Gmail, the GitHub token itself, the settings and the backup sessions API all answer 403. The book login and the maps key stay readable, because `delta books` and `delta maps` need them.
+
+**GitHub without the token.** In a backup session, `delta git` and `delta gh` never hold the user's GitHub token. The CLI runs a small proxy for the length of the command. git reaches it through a `url.http://127.0.0.1:<port>/github.com/.insteadOf=https://github.com/` setting in its environment. gh reaches it through `http_unix_socket` in a temporary `GH_CONFIG_DIR`, with a placeholder `GH_TOKEN`. The proxy sends GitHub requests to the command center's `/github/{host}/...` relay, which adds the token, and fetches anything off GitHub (signed download links) directly, with no credentials. `delta get-personal-access-token` answers 403.
+
+**The API key.** OpenCode Zen's key is kept as `data/agent-key` (mode 0600) and set from a regular session with `delta backup-key set -`, or by writing the file on the VPS. Model errors reach the phone as generic messages ("The API key for backup sessions was rejected", "out of credit", "Too many requests", ...), because the app never names the provider. pi's own error text goes to the command center's log.
+
+**Storage.** Each session lives in `data/agents/<id>/`: `session.json` (title, times, the token's hash, pi's pid, the read offset), `events.jsonl` (the phone's stream), pi's session files, `pi.in` (the FIFO), `pi.out` and `pi.err`. pi itself is installed with npm on first use into `data/agents/pi-<version>/`; `-agent-pi` names an installed one instead. Containers are named `delta-<id>` (the session id without its `session_delta_`) and labelled `delta-session=<id>`.
+
+**Failing safely.** If the agent socket can't be opened, the command center logs why and runs without backup sessions rather than not starting, so an update can't lock the phone out. The self-test runs a backup session from start to delete with stand-ins for pi and the container runtime (`selftest_agents.go`), and checks what a session's token can and can't reach.
 
 ## Books
 
@@ -220,3 +254,17 @@ sudo systemctl enable --now delta-cc
 ```
 
 The `delta` user must own `/opt/delta`, because updates replace `/opt/delta/delta-cc` in place.
+
+**For backup sessions** (also once, and on an existing VPS too), install Node.js 22.19 or newer with npm, and rootless Podman for the `delta` user:
+
+```
+# Node.js 22.19+ (Debian's own may be older; NodeSource's is current)
+curl -fsSL https://deb.nodesource.com/setup_22.x | sudo bash -
+sudo apt-get install -y nodejs podman uidmap passt
+# Rootless containers need subordinate ids, and a user session that outlives logins.
+sudo usermod --add-subuids 200000-265535 --add-subgids 200000-265535 delta
+sudo loginctl enable-linger delta
+sudo -u delta XDG_RUNTIME_DIR=/run/user/$(id -u delta) podman pull docker.io/library/buildpack-deps:trixie-scm
+```
+
+Then save the API key from a regular session (`delta backup-key set -`). The command center finds `/run/user/<uid>` itself. Never add `delta` to the `docker` group or give containers the runtime's socket: either makes the delta token root on the VPS. To check that containers can't reach services bound to the VPS's loopback (such as the canvas-cookie service on `127.0.0.1:4782`), run `sudo -u delta XDG_RUNTIME_DIR=/run/user/$(id -u delta) podman run --rm docker.io/library/buildpack-deps:trixie-scm curl -m 5 http://host.containers.internal:4782/`; it should fail to connect. A `systemctl restart delta-cc` (unlike `update-cc`) stops the backup sessions' agents along with the service; their next messages start them again.

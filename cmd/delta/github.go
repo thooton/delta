@@ -49,8 +49,19 @@ func getAccessToken() error {
 
 // runWithAccessToken runs git (sending the token to github.com as a basic
 // auth header, the way actions/checkout does) or gh (as GH_TOKEN), with the
-// caller's stdio, and exits with its status.
+// caller's stdio, and exits with its status. In a backup session, whose
+// token can't read the GitHub token, it runs them through the command
+// center's GitHub relay instead (relay.go).
 func runWithAccessToken(prog string, args []string) error {
+	cfg, err := loadConfig()
+	if err != nil {
+		return err
+	}
+	if scoped, err := isAgentScope(cfg); err != nil {
+		return err
+	} else if scoped {
+		return runThroughRelay(cfg, prog, args)
+	}
 	token, err := fetchAccessToken()
 	if err != nil {
 		return err

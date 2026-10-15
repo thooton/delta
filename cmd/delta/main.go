@@ -4,15 +4,18 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"text/tabwriter"
 	"time"
 )
@@ -20,8 +23,9 @@ import (
 const helpText = `delta: the CLI for the Delta command center
 
 WHAT THIS IS
-  You are a Claude Code cloud session started from the Delta app on the
-  user's Sonim XP3 flip phone. The app has three tabs: Chats (their
+  You are an agent session started from the Delta app on the user's Sonim
+  XP3 flip phone: a Claude Code cloud session, or a backup session (see
+  BACKUP SESSIONS). The app has three tabs: Chats (their
   sessions), Session (this one) and Files (the files on the command
   center, which they can download, install, open, move into a folder on
   the phone such as Music or Download, upload from the phone, or delete).
@@ -82,6 +86,8 @@ COMMANDS
                                      Check and save a new GitHub token ("-"
                                      reads stdin).
   delta update-cc <binary-url>       Update the command center (see below).
+  delta backup-key set <key|->       Save the API key backup sessions use
+                                     (see BACKUP SESSIONS).
   delta canvas ...                   The user's Canvas (they are a student).
   delta music ...                    Purchase and download a song or an album.
   delta books ...                    Find and download ebooks.
@@ -109,6 +115,26 @@ GITHUB
   Never show the token or put it in a URL or file. If it is missing or
   expired, ask the user for a new one and save it with
   set-personal-access-token.
+
+BACKUP SESSIONS
+  The Chats tab lists two kinds of session: regular ones (marked ●, like
+  Claude Code cloud sessions) and backup ones (marked ▲), which the
+  command center runs itself in a Linux container of their own, for when
+  regular sessions aren't available. You are in a backup session if
+  set-auth was given a unix:///run/delta/... URL. Then:
+
+  - You are root in a fresh Debian container. Install what you need with
+    apt-get (gh is "apt-get install -y gh"). The container keeps its files
+    until the user deletes the session, but stops while it is idle.
+  - Canvas, Gmail and the GitHub token itself are out of reach. For Canvas
+    or Gmail, tell the user to start a regular (●) session. "delta git"
+    and "delta gh" still work: they go through the command center, which
+    adds the token for you.
+  - You can update the command center only to an official build from the
+    thooton/delta releases.
+
+  From a regular session, "delta backup-key set -" saves the API key
+  backup sessions use (the user gives it to you; read it from stdin).
 
 UPDATING THE COMMAND CENTER
   Push the change to master in thooton/delta, wait for its GitHub Actions
@@ -204,6 +230,8 @@ func run(args []string) error {
 		return setAccessToken(args[0])
 	case "git", "gh":
 		return runWithAccessToken(cmd, args)
+	case "backup-key":
+		return runBackupKey(args)
 	case "update-cc":
 		if len(args) != 1 {
 			return errors.New("usage: delta update-cc <binary-url>")
@@ -240,16 +268,44 @@ func loadConfig() (config, error) {
 	if c.Server == "" || c.Token == "" {
 		return c, errors.New("not authenticated; run `delta set-auth <command-center-url> <token>` first")
 	}
-	return c, nil
+	return c.resolve(), nil
 }
+
+// unixHost stands in for the command center when it is reached over a unix
+// socket, as backup sessions reach it: requests go to http://<unixHost>/...
+// and the default transport dials the socket for that host alone.
+const unixHost = "delta-cc.socket"
+
+// resolve turns a unix:///path server into one requests can be made to.
+func (c config) resolve() config {
+	path, ok := strings.CutPrefix(c.Server, "unix://")
+	if !ok {
+		return c
+	}
+	unixSocketOnce.Do(func() {
+		t := http.DefaultTransport.(*http.Transport)
+		dial := t.DialContext
+		t.DialContext = func(ctx context.Context, network, addr string) (net.Conn, error) {
+			if addr == unixHost+":80" {
+				return (&net.Dialer{}).DialContext(ctx, "unix", path)
+			}
+			return dial(ctx, network, addr)
+		}
+	})
+	c.Server = "http://" + unixHost
+	return c
+}
+
+var unixSocketOnce sync.Once
 
 func setAuth(server, token string) error {
 	u, err := url.Parse(server)
-	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
-		return fmt.Errorf("invalid command-center URL %q (expected http(s)://host[:port])", server)
+	if err != nil || !(u.Scheme == "http" || u.Scheme == "https") && u.Scheme != "unix" ||
+		u.Scheme == "unix" && (u.Host != "" || u.Path == "") || u.Scheme != "unix" && u.Host == "" {
+		return fmt.Errorf("invalid command-center URL %q (expected http(s)://host[:port] or unix:///path)", server)
 	}
 	c := config{Server: strings.TrimRight(server, "/"), Token: token}
-	if _, err := do(c, http.MethodGet, "/auth", nil); err != nil {
+	if _, err := do(c.resolve(), http.MethodGet, "/auth", nil); err != nil {
 		return fmt.Errorf("could not verify token: %w", err)
 	}
 
