@@ -185,3 +185,61 @@ func TestMusicLogLine(t *testing.T) {
 		}
 	}
 }
+
+func TestMusicRunLinks(t *testing.T) {
+	m := newMusicService(t.TempDir())
+	for _, body := range []string{`{"link":"http://x/y"}`, `{"link":"slsk://bob"}`, `{"link":"slsk://bob/a\nb.mp3"}`} {
+		w := httptest.NewRecorder()
+		m.run(w, httptest.NewRequest("POST", "/music", strings.NewReader(body)))
+		if w.Code != 400 {
+			t.Errorf("%s: got %d %s", body, w.Code, w.Body)
+		}
+	}
+	// Backup sessions only download by name, white-labeled.
+	w := httptest.NewRecorder()
+	r := httptest.NewRequest("POST", "/music", strings.NewReader(`{"link":"slsk://bob/Music/a.mp3"}`))
+	m.run(w, withScope(r, scopeAgent))
+	if w.Code != 403 {
+		t.Errorf("agent link: got %d %s", w.Code, w.Body)
+	}
+	// A search takes no link.
+	w = httptest.NewRecorder()
+	m.search(w, httptest.NewRequest("POST", "/music-search", strings.NewReader(`{"link":"slsk://bob/Music/a.mp3"}`)))
+	if w.Code != 400 {
+		t.Errorf("search by link: got %d %s", w.Code, w.Body)
+	}
+}
+
+func TestParseMusicHits(t *testing.T) {
+	if _, ok := parseMusicHits("[cli] Starting CLI session"); ok {
+		t.Error("log line taken for results")
+	}
+	songs := `[{"User":{"Username":"bob","UploadSpeed":1.5,"HasFreeUploadSlot":true},"File":{"Length":215,"Filename":"@@x\\Music\\A - B.mp3","Size":5000000,"BitRate":320}},` +
+		`{"User":{"Username":"eve"},"File":{"Filename":"a/b\\c.mp3","Size":1}}]`
+	hits, ok := parseMusicHits(songs)
+	if !ok || len(hits) != 1 {
+		t.Fatalf("songs = %+v, %v", hits, ok)
+	}
+	h := hits[0]
+	if h.Link != "slsk://bob/@@x/Music/A - B.mp3" || h.User != "bob" || h.Speed != 1.5 || !h.Free || h.Folder != "" ||
+		len(h.Files) != 1 || h.Files[0].Bitrate != 320 || h.Files[0].Length != 215 || h.Files[0].Size != 5000000 {
+		t.Errorf("song hit = %+v", h)
+	}
+	albums := `[{"User":{"Username":"carol"},"Files":[{"Filename":"m\\A\\X\\CD1\\01.flac","Size":1},{"Filename":"m\\A\\X\\CD2\\01.flac","Size":2}]}]`
+	hits, ok = parseMusicHits(albums)
+	if !ok || len(hits) != 1 || hits[0].Folder != `m\A\X` || hits[0].Link != "slsk://carol/m/A/X/" || len(hits[0].Files) != 2 {
+		t.Errorf("albums = %+v, %v", hits, ok)
+	}
+	if hits, ok := parseMusicHits("[]"); !ok || hits == nil || len(hits) != 0 {
+		t.Errorf("no results = %#v, %v", hits, ok)
+	}
+}
+
+func TestPlainLogLine(t *testing.T) {
+	if got, ok := plainLogLine("\x1b[32m[002] SongJob: succeeded: A - B: bob\\Music\\B.mp3\x1b[0m\r"); !ok || got != `[002] SongJob: succeeded: A - B: bob\Music\B.mp3` {
+		t.Errorf("plain = %q, %v", got, ok)
+	}
+	if _, ok := plainLogLine("[debug] x"); ok {
+		t.Error("debug line kept")
+	}
+}

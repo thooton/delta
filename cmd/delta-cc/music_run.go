@@ -48,9 +48,18 @@ import (
 // POST /music-login makes up a new one. One account can only be logged in
 // once, so runs take turns.
 //
+// The phone's Source app lets the user choose instead, and sees everything:
+// POST /music-search streams the same kind of run, ending with every result
+// that meets the config's conditions, ranked by its preferences, and POST
+// /music with a result's link downloads that one. Neither is white-labeled,
+// and neither is open to backup sessions.
+//
 // Routes (all behind the delta bearer token):
 //
-//	POST   /music             {"mode": "song"|"album", "query": "..."}; streams the run.
+//	POST   /music             {"mode": "song"|"album", "query": "..."}, or
+//	                          {"link": "slsk://..."}; streams the run.
+//	POST   /music-search      {"mode": "song"|"album", "query": "..."}; streams
+//	                          the search, ending with {"done": {"error", "results"}}.
 //	GET    /music-jobs/{id}   The job's files, as a tar.
 //	DELETE /music-jobs/{id}   Remove the job.
 //	POST   /music-login       Replace the account with a new one.
@@ -71,6 +80,16 @@ var musicBroader = []string{"--desperate", "--remove-ft", "--remove-brackets"}
 
 var errMusicFailed = errors.New(`No match found on Amazon Music (see above). Try the name written differently: ` +
 	`a shorter title, without "feat. ..." or remix and edition names, or without the artist if it is "Various Artists"`)
+
+// The plain log's errors, for Source.
+var (
+	errEngineFailed = errors.New("the engine stopped with an error (see above)")
+	errMusicNoHits  = errors.New(`Nothing on Soulseek met the config's conditions (see above). Try the name written differently: ` +
+		`a shorter title, without "feat. ..." or remix and edition names, or without the artist if it is "Various Artists"`)
+)
+
+// musicMaxHits is how many search results reach the phone.
+const musicMaxHits = 100
 
 type musicService struct {
 	dataDir string
@@ -95,17 +114,19 @@ func newMusicService(dataDir string) *musicService {
 func (m *musicService) register(mux *http.ServeMux) {
 	m.config.register(mux)
 	mux.HandleFunc("POST /music", m.run)
+	mux.HandleFunc("POST /music-search", m.search)
 	mux.HandleFunc("GET /music-jobs/{id}", m.getJob)
 	mux.HandleFunc("DELETE /music-jobs/{id}", m.deleteJob)
 	mux.HandleFunc("POST /music-login", m.relogin)
 }
 
 // musicEvent is one line of a run's response. An event with no fields only
-// keeps the connection alive.
+// keeps the connection alive. Done is a musicResult, or a musicSearchResult
+// for a search.
 type musicEvent struct {
-	Stdout *string      `json:"stdout,omitempty"`
-	Stderr *string      `json:"stderr,omitempty"`
-	Done   *musicResult `json:"done,omitempty"`
+	Stdout *string `json:"stdout,omitempty"`
+	Stderr *string `json:"stderr,omitempty"`
+	Done   any     `json:"done,omitempty"`
 }
 
 // musicResult ends a run. Job is empty when nothing was saved.
@@ -120,24 +141,72 @@ type musicFile struct {
 	Size int64  `json:"size"`
 }
 
-func (m *musicService) run(w http.ResponseWriter, r *http.Request) {
-	var req struct {
-		Mode  string `json:"mode"`
-		Query string `json:"query"`
-	}
+// musicRequest is the body of POST /music and POST /music-search.
+type musicRequest struct {
+	Mode  string `json:"mode"`
+	Query string `json:"query"`
+	Link  string `json:"link"`
+}
+
+// musicLink is a search result's link: a file, or a folder ending in "/".
+var musicLink = regexp.MustCompile(`^slsk://[^/\x00-\x1f]+/[^\x00-\x1f]+$`)
+
+// readMusicRequest reads and checks a request, answering it if it is bad. A
+// link is only taken when links are.
+func readMusicRequest(w http.ResponseWriter, r *http.Request, links bool) (musicRequest, bool) {
+	var req musicRequest
 	if err := json.NewDecoder(io.LimitReader(r.Body, 64<<10)).Decode(&req); err != nil {
 		writeError(w, http.StatusBadRequest, `expected JSON body {"mode": "song"|"album", "query": "..."}`)
-		return
+		return req, false
+	}
+	if req.Link != "" && links {
+		if !musicLink.MatchString(req.Link) || len(req.Link) > 4096 {
+			writeError(w, http.StatusBadRequest, `link must be one search result's "slsk://user/path" link`)
+			return req, false
+		}
+		if scopeOf(r) == scopeAgent {
+			writeError(w, http.StatusForbidden, "this session can only download by name")
+			return req, false
+		}
+		return req, true
 	}
 	req.Query = strings.TrimSpace(req.Query)
 	if req.Mode != "song" && req.Mode != "album" {
 		writeError(w, http.StatusBadRequest, `mode must be "song" or "album"`)
-		return
+		return req, false
 	}
 	if req.Query == "" || strings.HasPrefix(req.Query, "-") || strings.ContainsAny(req.Query, "\x00\r\n") {
 		writeError(w, http.StatusBadRequest, `query must be one line of text, not starting with "-"`)
+		return req, false
+	}
+	return req, true
+}
+
+func (m *musicService) run(w http.ResponseWriter, r *http.Request) {
+	req, ok := readMusicRequest(w, r, true)
+	if !ok {
 		return
 	}
+	m.stream(w, r, func(engine string, out *musicStream) any {
+		res := m.download(r.Context(), engine, req, out)
+		return &res
+	})
+}
+
+func (m *musicService) search(w http.ResponseWriter, r *http.Request) {
+	req, ok := readMusicRequest(w, r, false)
+	if !ok {
+		return
+	}
+	m.stream(w, r, func(engine string, out *musicStream) any {
+		res := m.find(r.Context(), engine, req.Mode, req.Query, out)
+		return &res
+	})
+}
+
+// stream answers a checked request with a run: it waits for the turn, runs
+// it, and sends what it returns as the last event.
+func (m *musicService) stream(w http.ResponseWriter, r *http.Request, run func(engine string, out *musicStream) any) {
 	engine, err := m.engine()
 	if err != nil {
 		writeError(w, http.StatusServiceUnavailable, err.Error())
@@ -159,22 +228,48 @@ func (m *musicService) run(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	defer func() { <-m.turn }()
-	res := m.download(r.Context(), engine, req.Mode, req.Query, out)
-	out.send(musicEvent{Done: &res})
+	out.send(musicEvent{Done: run(engine, out)})
 }
 
-// download runs the engine for one request, with the turn held.
-func (m *musicService) download(ctx context.Context, engine, mode, query string, out *musicStream) musicResult {
-	m.sweepJobs()
-	fail := func(err error) musicResult { return musicResult{Error: err.Error()} }
+// musicSession is what an engine run needs: the account, and a private
+// directory to run in holding the config with the login in it.
+type musicSession struct {
+	user, dir, config string
+}
+
+// session makes one; done removes its directory.
+func (m *musicService) session() (s musicSession, done func(), err error) {
 	acct, err := m.account(false)
 	if err != nil {
-		return fail(err)
+		return s, nil, err
 	}
 	conf, err := m.config.text()
 	if err != nil {
+		return s, nil, err
+	}
+	tmp, err := os.MkdirTemp("", "delta-music-*")
+	if err != nil {
+		return s, nil, err
+	}
+	s = musicSession{user: acct.Username, dir: tmp, config: filepath.Join(tmp, "music.conf")}
+	if err := os.WriteFile(s.config, []byte(musicConfigWithLogin(conf, acct.Username, acct.Password)), 0o600); err != nil {
+		os.RemoveAll(tmp)
+		return s, nil, err
+	}
+	return s, func() { os.RemoveAll(tmp) }, nil
+}
+
+// download runs the engine for one request, with the turn held: a search by
+// name that takes the best match, white-labeled, or the one search result a
+// link names, plainly.
+func (m *musicService) download(ctx context.Context, engine string, req musicRequest, out *musicStream) musicResult {
+	m.sweepJobs()
+	fail := func(err error) musicResult { return musicResult{Error: err.Error()} }
+	s, done, err := m.session()
+	if err != nil {
 		return fail(err)
 	}
+	defer done()
 	id := make([]byte, 16)
 	rand.Read(id)
 	job := hex.EncodeToString(id)
@@ -182,23 +277,21 @@ func (m *musicService) download(ctx context.Context, engine, mode, query string,
 	if err := os.MkdirAll(jobDir, 0o700); err != nil {
 		return fail(err)
 	}
-	tmp, err := os.MkdirTemp("", "delta-music-*")
-	if err != nil {
-		return fail(err)
-	}
-	defer os.RemoveAll(tmp)
-	confPath := filepath.Join(tmp, "music.conf")
-	if err := os.WriteFile(confPath, []byte(musicConfigWithLogin(conf, acct.Username, acct.Password)), 0o600); err != nil {
-		return fail(err)
-	}
 
-	args := []string{"--config", confPath, "--input", query, "--input-type", "string", "--" + mode,
-		"--output-dir", jobDir, "--no-progress"}
-	err = runEngine(ctx, engine, tmp, args, acct.Username, jobDir, out)
-	if err == errMusicFailed {
-		out.stdout("")
-		out.stdout("No exact match found; trying a broader search on Amazon Music.")
-		err = runEngine(ctx, engine, tmp, append(args, musicBroader...), acct.Username, jobDir, out)
+	if req.Link != "" {
+		args := []string{"--config", s.config, "--input", req.Link, "--input-type", "soulseek",
+			"--output-dir", jobDir, "--no-progress"}
+		err = runEngine(ctx, engine, s.dir, args, musicView{user: s.user, jobDir: jobDir, plain: true}, out)
+	} else {
+		view := musicView{user: s.user, jobDir: jobDir}
+		args := []string{"--config", s.config, "--input", req.Query, "--input-type", "string", "--" + req.Mode,
+			"--output-dir", jobDir, "--no-progress"}
+		err = runEngine(ctx, engine, s.dir, args, view, out)
+		if err == errMusicFailed {
+			out.stdout("")
+			out.stdout("No exact match found; trying a broader search on Amazon Music.")
+			err = runEngine(ctx, engine, s.dir, append(args, musicBroader...), view, out)
+		}
 	}
 	var res musicResult
 	if err != nil {
@@ -213,6 +306,154 @@ func (m *musicService) download(ctx context.Context, engine, mode, query string,
 		res.Job = job
 	}
 	return res
+}
+
+// musicSearchResult ends a search: the results, best first, or why there
+// are none.
+type musicSearchResult struct {
+	Error   string     `json:"error,omitempty"`
+	Results []musicHit `json:"results"`
+}
+
+// musicHit is one search result: a file for a song, a folder of files for an
+// album. Link is what POST /music downloads it by.
+type musicHit struct {
+	Link   string         `json:"link"`
+	User   string         `json:"user"`
+	Speed  float64        `json:"speed"`            // their upload speed, in MB/s
+	Free   bool           `json:"free"`             // whether they have an upload slot free
+	Folder string         `json:"folder,omitempty"` // an album's folder, as shared
+	Files  []musicHitFile `json:"files"`
+}
+
+type musicHitFile struct {
+	Path       string `json:"path"` // as shared, with backslashes
+	Size       int64  `json:"size"`
+	Length     int    `json:"length,omitempty"` // seconds
+	Bitrate    int    `json:"bitrate,omitempty"`
+	SampleRate int    `json:"samplerate,omitempty"`
+	BitDepth   int    `json:"bitdepth,omitempty"`
+}
+
+// find searches by name, with the turn held, for Source to choose from: the
+// results the engine would choose among, best first. Like a download by name
+// it tries once more, more broadly, when nothing turns up.
+func (m *musicService) find(ctx context.Context, engine, mode, query string, out *musicStream) musicSearchResult {
+	s, done, err := m.session()
+	if err != nil {
+		return musicSearchResult{Error: err.Error(), Results: []musicHit{}}
+	}
+	defer done()
+	var hits []musicHit
+	view := musicView{user: s.user, jobDir: s.dir, plain: true, take: func(line string) bool {
+		found, ok := parseMusicHits(line)
+		if ok {
+			hits = found
+		}
+		return ok
+	}}
+	args := []string{"--config", s.config, "--input", query, "--input-type", "string", "--" + mode,
+		"--output-dir", filepath.Join(s.dir, "out"), "--no-write-index", "--no-progress", "--print", "json-all"}
+	err = runEngine(ctx, engine, s.dir, args, view, out)
+	if len(hits) == 0 && err == errEngineFailed {
+		out.stdout("")
+		out.stdout("Nothing found; searching again with " + strings.Join(musicBroader, " ") + ".")
+		err = runEngine(ctx, engine, s.dir, append(args, musicBroader...), view, out)
+	}
+	res := musicSearchResult{Results: hits}
+	if res.Results == nil {
+		res.Results = []musicHit{}
+	}
+	switch {
+	case len(hits) > 0:
+	case err != nil && err != errEngineFailed:
+		res.Error = err.Error()
+	default:
+		res.Error = errMusicNoHits.Error()
+	}
+	return res
+}
+
+// engineHit is one entry of the engine's --print json-all output: a file for
+// a song search, a folder's files for an album search.
+type engineHit struct {
+	User struct {
+		Username          string
+		UploadSpeed       float64
+		HasFreeUploadSlot bool
+	}
+	File  *engineFile
+	Files []engineFile
+}
+
+type engineFile struct {
+	Filename                              string
+	Size                                  int64
+	Length, BitRate, SampleRate, BitDepth float64
+}
+
+// parseMusicHits reads the engine's --print json-all line, if line is it.
+// Results it couldn't download by link are left out.
+func parseMusicHits(line string) ([]musicHit, bool) {
+	if !strings.HasPrefix(line, "[") {
+		return nil, false
+	}
+	var found []engineHit
+	if json.Unmarshal([]byte(line), &found) != nil {
+		return nil, false
+	}
+	hits := []musicHit{}
+	for _, e := range found {
+		hit := musicHit{User: e.User.Username, Speed: e.User.UploadSpeed, Free: e.User.HasFreeUploadSlot}
+		files := e.Files
+		if e.File != nil {
+			files = []engineFile{*e.File}
+		}
+		usable := hit.User != "" && !strings.Contains(hit.User, "/") && len(files) > 0
+		for _, f := range files {
+			if f.Filename == "" || strings.Contains(f.Filename, "/") {
+				usable = false
+			}
+			hit.Files = append(hit.Files, musicHitFile{Path: f.Filename, Size: f.Size, Length: int(f.Length),
+				Bitrate: int(f.BitRate), SampleRate: int(f.SampleRate), BitDepth: int(f.BitDepth)})
+		}
+		if !usable {
+			continue
+		}
+		if e.File != nil {
+			hit.Link = "slsk://" + hit.User + "/" + strings.ReplaceAll(e.File.Filename, `\`, "/")
+		} else {
+			hit.Folder = musicFolder(files)
+			if hit.Folder == "" {
+				continue
+			}
+			hit.Link = "slsk://" + hit.User + "/" + strings.ReplaceAll(hit.Folder, `\`, "/") + "/"
+		}
+		hits = append(hits, hit)
+		if len(hits) == musicMaxHits {
+			break
+		}
+	}
+	return hits, true
+}
+
+// musicFolder is the folder an album's files share.
+func musicFolder(files []engineFile) string {
+	var common []string
+	for i, f := range files {
+		parts := strings.Split(f.Filename, `\`)
+		parts = parts[:len(parts)-1]
+		if i == 0 {
+			common = parts
+			continue
+		}
+		n := 0
+		for n < len(common) && n < len(parts) && common[n] == parts[n] {
+			n++
+		}
+		common = common[:n]
+	}
+	return strings.Join(common, `\`)
 }
 
 // musicStream writes a run's events. Writes come from the engine's two
@@ -552,6 +793,10 @@ const musicLoginTries = 4
 var errMusicLogin = errors.New("couldn't reach Amazon Music (" + fmt.Sprint(musicLoginTries) +
 	" tries). It may be down or rate-limiting downloads; try again in a few minutes")
 
+var errSoulseekLogin = errors.New("couldn't log in to Soulseek (" + fmt.Sprint(musicLoginTries) +
+	" tries). The server may be down or throttling this account; try again in a few minutes, " +
+	"and reconnect the account only if it keeps happening")
+
 // isLoginFailure reports whether an engine log line says a login attempt
 // failed.
 func isLoginFailure(line string) bool {
@@ -563,11 +808,11 @@ func isLoginFailure(line string) bool {
 var (
 	// A remote path as the engine logs it: user\\..\\folder\\file or
 	// user\\folder\\file, up to the end of the line or a quote.
-	remotePath = regexp.MustCompile(`[^\s:'"\\]+(\\[^\\'"\n]+)+`)
-	engineLink = regexp.MustCompile(`slsk://[^/\s]+/(.*?)/?$`)
-	jobPrefix  = regexp.MustCompile(`^\[\d+\]\s+(\w+)Job:\s*`)
-	jobStatus  = regexp.MustCompile(`^([A-Za-z][A-Za-z-]*).*?:(.*)$`)
-	errorLine  = regexp.MustCompile(`^(\s*)(Error|Reason):`)
+	remotePath    = regexp.MustCompile(`[^\s:'"\\]+(\\[^\\'"\n]+)+`)
+	engineLink    = regexp.MustCompile(`slsk://[^/\s]+/(.*?)/?$`)
+	jobPrefix     = regexp.MustCompile(`^\[\d+\]\s+(\w+)Job:\s*`)
+	jobStatus     = regexp.MustCompile(`^([A-Za-z][A-Za-z-]*).*?:(.*)$`)
+	errorLine     = regexp.MustCompile(`^(\s*)(Error|Reason):`)
 	completedLine = regexp.MustCompile(`^Completed:\s*(.*)$`)
 	// Words that would give away where the files come from.
 	sourceWords = regexp.MustCompile(`(?i)\bpeers?\b|upload|\bshares?\b|\bshared\b|\busers?(name)?\b|queued \([rl]\)|slsk|soulseek|sockseek`)
@@ -606,7 +851,7 @@ func rewriteMusicJobLine(line string) ([]string, bool) {
 	status, query, display := splitJobRest(rest)
 	// A word we didn't anticipate still gives the source away: hide the
 	// line rather than leak it.
-	if sourceWords.MatchString(status+" "+query+" "+display) {
+	if sourceWords.MatchString(status + " " + query + " " + display) {
 		return nil, false
 	}
 	quote := func() string { return fmt.Sprintf("%q", display) }
@@ -755,12 +1000,35 @@ func musicLogLine(line, user string) ([]string, bool) {
 	return []string{line}, true
 }
 
+// plainLogLine is a line of engine output for Source, which sees the log as
+// the engine wrote it, without its colours and debug lines.
+func plainLogLine(line string) (string, bool) {
+	line = strings.TrimRight(ansiEscape.ReplaceAllString(line, ""), "\r")
+	if strings.HasPrefix(line, "[debug]") || strings.HasPrefix(line, "[trace]") {
+		return "", false
+	}
+	return line, true
+}
+
+// musicView is how a run's log reaches whoever asked for it.
+type musicView struct {
+	user   string // the account, which the white-labeled log leaves out
+	jobDir string // paths in it are made relative to it
+	// plain passes the log on as the engine wrote it (plainLogLine), for
+	// Source; otherwise it is white-labeled (musicLogLine), for the agent.
+	plain bool
+	// take, if set, is offered each line of output first, and keeps the
+	// ones it takes out of the log.
+	take func(line string) bool
+}
+
 // runEngine runs the engine once in dir, with its stdin closed, and sends its
-// filtered output to out, with paths in jobDir made relative to it (they mean
-// nothing to the agent, whose copies are in its own directory). If logins keep failing it stops the engine and
-// returns errMusicLogin; if the engine reports that it couldn't download
-// what it was asked for, errMusicFailed.
-func runEngine(ctx context.Context, engine, dir string, args []string, user, jobDir string, out *musicStream) error {
+// output to out as v says, with paths in v.jobDir made relative to it (they
+// mean nothing to the agent, whose copies are in its own directory). If
+// logins keep failing it stops the engine and returns errMusicLogin
+// (errSoulseekLogin, plainly); if the engine reports that it couldn't do what
+// it was asked, errMusicFailed (errEngineFailed).
+func runEngine(ctx context.Context, engine, dir string, args []string, v musicView, out *musicStream) error {
 	cmd := exec.CommandContext(ctx, engine, args...)
 	cmd.Dir = dir
 	cmd.Env = append(os.Environ(), "NO_COLOR=1")
@@ -785,7 +1053,7 @@ func runEngine(ctx context.Context, engine, dir string, args []string, user, job
 		switch {
 		case strings.HasPrefix(line, "[warn] [soulseek] Connection lost"):
 			failures++
-			if failures == 1 {
+			if failures == 1 && !v.plain {
 				out.stderr("Couldn't reach Amazon Music; retrying.")
 			}
 			if failures >= musicLoginTries && !gaveUp {
@@ -802,11 +1070,20 @@ func runEngine(ctx context.Context, engine, dir string, args []string, user, job
 		sc.Buffer(make([]byte, 64<<10), max)
 		for sc.Scan() {
 			watch(sc.Text())
-			if lines, ok := musicLogLine(sc.Text(), user); ok {
-				for _, line := range lines {
-					line = strings.ReplaceAll(line, jobDir+string(filepath.Separator), "")
-					send(strings.ReplaceAll(line, jobDir, "."))
+			if v.take != nil && v.take(sc.Text()) {
+				continue
+			}
+			var lines []string
+			if v.plain {
+				if line, ok := plainLogLine(sc.Text()); ok {
+					lines = []string{line}
 				}
+			} else {
+				lines, _ = musicLogLine(sc.Text(), v.user)
+			}
+			for _, line := range lines {
+				line = strings.ReplaceAll(line, v.jobDir+string(filepath.Separator), "")
+				send(strings.ReplaceAll(line, v.jobDir, "."))
 			}
 		}
 	}
@@ -820,6 +1097,8 @@ func runEngine(ctx context.Context, engine, dir string, args []string, user, job
 	<-done
 	err = cmd.Wait()
 	switch {
+	case gaveUp && v.plain:
+		return errSoulseekLogin
 	case gaveUp:
 		return errMusicLogin
 	case ctx.Err() != nil:
@@ -829,6 +1108,9 @@ func runEngine(ctx context.Context, engine, dir string, args []string, user, job
 	if errors.As(err, &exit) {
 		if exit.ExitCode() == 2 {
 			return errors.New("the music download was given invalid input (see above)")
+		}
+		if v.plain {
+			return errEngineFailed
 		}
 		return errMusicFailed
 	}
