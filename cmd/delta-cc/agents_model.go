@@ -16,42 +16,49 @@ import (
 	"time"
 )
 
-// The model behind backup sessions: GLM 5.3 Flash, through OpenCode Zen's free
-// tier. No API key is involved, so there is nothing to pay for and nothing
-// to keep secret; paid models aren't offered at all.
+// The model behind backup sessions: GLM 5.3 Flash, through OpenCode Zen's
+// free tier, thinking hard (reasoning effort high). No API key is involved,
+// so there is nothing to pay for and nothing to keep secret; paid models
+// aren't offered at all.
 //
 // Zen serves its free models only to requests that look like they come from
-// the OpenCode CLI. As of OpenCode 1.18.35 it checks, and only checks, that:
+// the OpenCode CLI. As of OpenCode 1.19.3 it checks, and only checks, that:
 //
-//   - an Authorization header is there ("Bearer public" will do, on
-//     /inference/v1, the CLI's own endpoint; /zen/v1 wants a real key);
 //   - the User-Agent holds opencode/<version>, 1.18.0 or newer (older ones
 //     get 426 Upgrade Required);
-//   - x-opencode-session and x-opencode-session-id both hold an OpenCode
-//     session id: "ses_" and a descending ULID (see zenSessionID);
-//   - the request's tools include one named "read" whose parameters have at
-//     least one property (ours has path, offset and limit).
+//   - x-opencode-session holds an OpenCode session id: "ses_" and a
+//     descending ULID (see zenSessionID);
+//   - the request streams (stream: true);
+//   - the request's tools include one named "read" (its parameters don't
+//     matter).
 //
-// TLS, header case and order, the system prompt and the other x-opencode
-// headers make no difference. Each session keeps its own OpenCode session id
-// in session.json.
+// Anything else gets 403 FreeTierError. Authorization, x-opencode-session-id,
+// the other x-opencode headers, stream_options, the path (/inference/v1 or
+// /inference/openai/v1) and the system prompt make no difference; we send
+// what the CLI sends anyway. Each session keeps its own OpenCode session id
+// in session.json. GLM's own server wants every tool to have a description
+// (400 otherwise).
 //
-// The API is OpenAI's Responses API, used statelessly (store: false): every
-// request carries the whole conversation. The items a reply is made of,
-// including its reasoning (encrypted, as include asks), go back into the
-// next request exactly as they came, which is how the model keeps its train
-// of thought from one step to the next.
+// GLM speaks only OpenAI's Chat Completions API: the Responses API gets 400
+// ModelProtocolUnsupported. The conversation is still kept as Responses
+// input items (transcript.jsonl, which also holds sessions from before), and
+// chatMessages turns it into chat messages for each request: every request
+// carries the whole conversation. The model's reasoning comes back as
+// reasoning_content and goes back, with the reply it led to, as the
+// assistant message's reasoning_content, which is how GLM keeps its train
+// of thought from one step to the next (OpenCode does the same).
 
 const (
-	agentModelID = "glm-5.3-flash-free"
-	zenBaseURL   = "https://opencode.ai/inference/v1"
-	zenUserAgent = "opencode/1.18.35 ai-sdk/provider-utils/4.0.40 runtime/bun/1.3.14"
-
-	modelTries = 4 // a request and its retries
+	agentModelID   = "glm-5.3-flash-free"
+	agentEffort    = "high"
+	agentMaxTokens = 32000 // the most the free model writes in one reply
+	zenBaseURL     = "https://opencode.ai/inference/openai/v1"
+	zenUserAgent   = "opencode/1.19.3 ai-sdk/provider-utils/4.0.23 runtime/bun/1.3.14"
+	modelTries     = 4 // a request and its retries
 )
 
-// modelReply is what one request produced: its output items, as they came,
-// and how it ended.
+// modelReply is what one request produced, as Responses output items
+// (reasoning, message, function_call), and how it ended.
 type modelReply struct {
 	Items      []json.RawMessage
 	Incomplete string // why the reply was cut short, if it was
@@ -101,18 +108,19 @@ func (s *agentSession) askOnce(ctx context.Context, input []json.RawMessage) (*m
 	zen := s.meta.ZenSession
 	s.mu.Unlock()
 	body, err := json.Marshal(map[string]any{
-		"model":     agentModelID,
-		"input":     append([]json.RawMessage{developerMessage()}, input...),
-		"tools":     agentTools,
-		"stream":    true,
-		"store":     false,
-		"reasoning": map[string]string{"effort": "high", "summary": "auto"},
-		"include":   []string{"reasoning.encrypted_content"},
+		"model":            agentModelID,
+		"max_tokens":       agentMaxTokens,
+		"reasoning_effort": agentEffort,
+		"messages":         chatMessages(append([]json.RawMessage{developerMessage()}, input...)),
+		"tools":            chatTools(),
+		"tool_choice":      "auto",
+		"stream":           true,
+		"stream_options":   map[string]bool{"include_usage": true},
 	})
 	if err != nil {
 		return nil, err
 	}
-	req, err := http.NewRequestWithContext(ctx, "POST", s.svc.cfg.ModelURL+"/responses", bytes.NewReader(body))
+	req, err := http.NewRequestWithContext(ctx, "POST", s.svc.cfg.ModelURL+"/chat/completions", bytes.NewReader(body))
 	if err != nil {
 		return nil, err
 	}
@@ -136,10 +144,173 @@ func (s *agentSession) askOnce(ctx context.Context, input []json.RawMessage) (*m
 	return readModelStream(resp.Body)
 }
 
-// readModelStream reads a streamed reply, keeping each output item as it is
-// finished and the reply's final state.
+// chatTools gives agentTools in Chat Completions' shape.
+func chatTools() []map[string]any {
+	tools := make([]map[string]any, 0, len(agentTools))
+	for _, t := range agentTools {
+		tools = append(tools, map[string]any{"type": "function", "function": map[string]any{
+			"name": t["name"], "description": t["description"], "parameters": t["parameters"],
+		}})
+	}
+	return tools
+}
+
+// chatMessages turns the conversation's Responses items into chat messages.
+// A reply's items (its reasoning, text and tool calls) make one assistant
+// message. Pictures a tool returned follow its results as a user message,
+// since a tool message holds only text. Reasoning kept only encrypted, from
+// the model sessions used before, can't be read back and is left out.
+func chatMessages(items []json.RawMessage) []map[string]any {
+	var msgs []map[string]any
+	var asst map[string]any // the assistant message being put together
+	var images []map[string]any
+	flushImages := func() {
+		if len(images) > 0 {
+			content := append([]map[string]any{{"type": "text", "text": "The pictures the read tool returned:"}}, images...)
+			msgs = append(msgs, map[string]any{"role": "user", "content": content})
+			images = nil
+		}
+	}
+	assistant := func() map[string]any {
+		if asst == nil {
+			flushImages()
+			asst = map[string]any{"role": "assistant", "content": ""}
+			msgs = append(msgs, asst)
+		}
+		return asst
+	}
+	for _, item := range items {
+		var it struct {
+			Type    string          `json:"type"`
+			Role    string          `json:"role"`
+			Content json.RawMessage `json:"content"`
+			CallID  string          `json:"call_id"`
+			Name    string          `json:"name"`
+			Args    string          `json:"arguments"`
+			Output  json.RawMessage `json:"output"`
+		}
+		if json.Unmarshal(item, &it) != nil {
+			continue
+		}
+		if it.Type == "" && it.Role != "" {
+			it.Type = "message"
+		}
+		switch {
+		case it.Type == "reasoning":
+			if text := partsText(it.Content, "reasoning_text"); text != "" {
+				a := assistant()
+				a["reasoning_content"] = joinText(a["reasoning_content"], text)
+			}
+		case it.Type == "message" && it.Role == "assistant":
+			a := assistant()
+			a["content"] = joinText(a["content"], partsText(it.Content, "output_text"))
+		case it.Type == "function_call":
+			a := assistant()
+			calls, _ := a["tool_calls"].([]map[string]any)
+			a["tool_calls"] = append(calls, map[string]any{
+				"id": it.CallID, "type": "function",
+				"function": map[string]string{"name": it.Name, "arguments": it.Args},
+			})
+		case it.Type == "function_call_output":
+			asst = nil
+			text, pics := toolResult(it.Output)
+			msgs = append(msgs, map[string]any{"role": "tool", "tool_call_id": it.CallID, "content": text})
+			images = append(images, pics...)
+		case it.Type == "message":
+			// The system prompt (developer) or what the user said.
+			asst = nil
+			flushImages()
+			role := it.Role
+			if role == "developer" {
+				role = "system"
+			}
+			msgs = append(msgs, map[string]any{"role": role, "content": userContent(it.Content)})
+		}
+	}
+	flushImages()
+	return msgs
+}
+
+// contentPart is one part of a Responses message's content, or of a tool's
+// result.
+type contentPart struct {
+	Type     string `json:"type"`
+	Text     string `json:"text"`
+	ImageURL string `json:"image_url"`
+}
+
+// partsText joins the text of the content parts of one type.
+func partsText(content json.RawMessage, typ string) string {
+	var parts []contentPart
+	json.Unmarshal(content, &parts)
+	var texts []string
+	for _, p := range parts {
+		if p.Type == typ {
+			texts = append(texts, p.Text)
+		}
+	}
+	return strings.Join(texts, "\n")
+}
+
+func joinText(prev any, text string) string {
+	if p, _ := prev.(string); p != "" && text != "" {
+		return p + "\n\n" + text
+	} else if p != "" {
+		return p
+	}
+	return text
+}
+
+// userContent turns a message's content, a string or a list of
+// input_text and input_image parts, into a chat message's.
+func userContent(content json.RawMessage) any {
+	var text string
+	if json.Unmarshal(content, &text) == nil {
+		return text
+	}
+	var parts []contentPart
+	json.Unmarshal(content, &parts)
+	out := []map[string]any{}
+	for _, p := range parts {
+		switch p.Type {
+		case "input_text", "output_text":
+			out = append(out, map[string]any{"type": "text", "text": p.Text})
+		case "input_image":
+			out = append(out, map[string]any{"type": "image_url", "image_url": map[string]string{"url": p.ImageURL}})
+		}
+	}
+	return out
+}
+
+// toolResult splits a tool's result, a string or a list of parts, into its
+// text and its pictures.
+func toolResult(output json.RawMessage) (string, []map[string]any) {
+	var text string
+	if json.Unmarshal(output, &text) == nil {
+		return text, nil
+	}
+	var texts []string
+	var pics []map[string]any
+	var parts []contentPart
+	json.Unmarshal(output, &parts)
+	for _, p := range parts {
+		switch p.Type {
+		case "input_text":
+			texts = append(texts, p.Text)
+		case "input_image":
+			pics = append(pics, map[string]any{"type": "image_url", "image_url": map[string]string{"url": p.ImageURL}})
+		}
+	}
+	return strings.Join(texts, "\n"), pics
+}
+
+// readModelStream reads a streamed chat completion and gives it back as
+// Responses output items: its reasoning, its text and its tool calls.
 func readModelStream(r io.Reader) (*modelReply, error) {
-	items := map[int]json.RawMessage{}
+	var reasoning, text strings.Builder
+	type call struct{ id, name, args string }
+	calls := map[int]*call{}
+	finish := ""
 	sc := bufio.NewScanner(r)
 	sc.Buffer(make([]byte, 64<<10), 64<<20)
 	for sc.Scan() {
@@ -147,60 +318,98 @@ func readModelStream(r io.Reader) (*modelReply, error) {
 		if !ok {
 			continue
 		}
-		var e struct {
-			Type        string          `json:"type"`
-			OutputIndex int             `json:"output_index"`
-			Item        json.RawMessage `json:"item"`
-			Code        any             `json:"code"`
-			Message     string          `json:"message"`
-			Response    struct {
-				Status string `json:"status"`
-				Error  *struct {
-					Code    any    `json:"code"`
-					Message string `json:"message"`
-				} `json:"error"`
-				Incomplete *struct {
-					Reason string `json:"reason"`
-				} `json:"incomplete_details"`
-			} `json:"response"`
+		data = strings.TrimSpace(data)
+		if data == "[DONE]" {
+			break
 		}
-		if json.Unmarshal([]byte(strings.TrimSpace(data)), &e) != nil {
+		var c struct {
+			Error *struct {
+				Code    any    `json:"code"`
+				Type    string `json:"type"`
+				Message string `json:"message"`
+			} `json:"error"`
+			Choices []struct {
+				FinishReason string `json:"finish_reason"`
+				Delta        struct {
+					Content          string `json:"content"`
+					ReasoningContent string `json:"reasoning_content"`
+					ToolCalls        []struct {
+						Index    int    `json:"index"`
+						ID       string `json:"id"`
+						Function struct {
+							Name      string `json:"name"`
+							Arguments string `json:"arguments"`
+						} `json:"function"`
+					} `json:"tool_calls"`
+				} `json:"delta"`
+			} `json:"choices"`
+		}
+		if json.Unmarshal([]byte(data), &c) != nil {
 			continue
 		}
-		switch e.Type {
-		case "response.output_item.done":
-			items[e.OutputIndex] = e.Item
-		case "response.completed", "response.incomplete":
-			reply := &modelReply{}
-			idx := make([]int, 0, len(items))
-			for i := range items {
-				idx = append(idx, i)
-			}
-			sort.Ints(idx)
-			for _, i := range idx {
-				reply.Items = append(reply.Items, items[i])
-			}
-			if e.Response.Incomplete != nil {
-				reply.Incomplete = e.Response.Incomplete.Reason
-			} else if e.Type == "response.incomplete" {
-				reply.Incomplete = "unknown"
-			}
-			return reply, nil
-		case "response.failed":
-			msg := "the reply failed"
-			if e.Response.Error != nil {
-				msg = fmt.Sprintf("%v: %s", e.Response.Error.Code, e.Response.Error.Message)
-			}
+		if c.Error != nil {
+			msg := fmt.Sprintf("%v %s: %s", c.Error.Code, c.Error.Type, c.Error.Message)
 			return nil, &modelError{streamErrorCode(msg), msg}
-		case "error":
-			msg := fmt.Sprintf("%v: %s", e.Code, e.Message)
-			return nil, &modelError{streamErrorCode(msg), msg}
+		}
+		for _, ch := range c.Choices {
+			reasoning.WriteString(ch.Delta.ReasoningContent)
+			text.WriteString(ch.Delta.Content)
+			for _, tc := range ch.Delta.ToolCalls {
+				cl := calls[tc.Index]
+				if cl == nil {
+					cl = &call{}
+					calls[tc.Index] = cl
+				}
+				if tc.ID != "" {
+					cl.id = tc.ID
+				}
+				cl.name += tc.Function.Name
+				cl.args += tc.Function.Arguments
+			}
+			if ch.FinishReason != "" {
+				finish = ch.FinishReason
+			}
 		}
 	}
 	if err := sc.Err(); err != nil {
 		return nil, err
 	}
-	return nil, errors.New("the reply ended early")
+	if finish == "" {
+		return nil, errors.New("the reply ended early")
+	}
+	reply := &modelReply{}
+	add := func(v any) {
+		data, _ := json.Marshal(v)
+		reply.Items = append(reply.Items, data)
+	}
+	if reasoning.Len() > 0 {
+		add(map[string]any{"type": "reasoning", "summary": []any{},
+			"content": []map[string]string{{"type": "reasoning_text", "text": reasoning.String()}}})
+	}
+	if strings.TrimSpace(text.String()) != "" {
+		add(map[string]any{"type": "message", "role": "assistant", "status": "completed",
+			"content": []map[string]any{{"type": "output_text", "text": text.String(), "annotations": []any{}}}})
+	}
+	idx := make([]int, 0, len(calls))
+	for i := range calls {
+		idx = append(idx, i)
+	}
+	sort.Ints(idx)
+	for n, i := range idx {
+		cl := calls[i]
+		if cl.id == "" {
+			cl.id = fmt.Sprintf("call_%d", n)
+		}
+		add(map[string]any{"type": "function_call", "status": "completed", "call_id": cl.id, "name": cl.name, "arguments": cl.args})
+	}
+	switch finish {
+	case "stop", "tool_calls":
+	case "length":
+		reply.Incomplete = "max_output_tokens"
+	default:
+		reply.Incomplete = finish
+	}
+	return reply, nil
 }
 
 // streamErrorCode gives an error reported inside a stream the HTTP status it
