@@ -49,82 +49,107 @@ func (m *fakeModel) problem(format string, args ...any) {
 }
 
 func (m *fakeModel) serve(w http.ResponseWriter, r *http.Request) {
+	type chatMsg struct {
+		Role             string          `json:"role"`
+		Content          json.RawMessage `json:"content"`
+		ReasoningContent string          `json:"reasoning_content"`
+		ToolCallID       string          `json:"tool_call_id"`
+		ToolCalls        []struct {
+			ID       string `json:"id"`
+			Function struct {
+				Name string `json:"name"`
+			} `json:"function"`
+		} `json:"tool_calls"`
+	}
 	var req struct {
-		Model   string            `json:"model"`
-		Store   *bool             `json:"store"`
-		Include []string          `json:"include"`
-		Input   []json.RawMessage `json:"input"`
-		Tools   []struct {
-			Name       string `json:"name"`
-			Parameters struct {
-				Properties map[string]any `json:"properties"`
-			} `json:"parameters"`
+		Model    string    `json:"model"`
+		Effort   string    `json:"reasoning_effort"`
+		Stream   bool      `json:"stream"`
+		Messages []chatMsg `json:"messages"`
+		Tools    []struct {
+			Function struct {
+				Name        string `json:"name"`
+				Description string `json:"description"`
+			} `json:"function"`
 		} `json:"tools"`
 	}
 	body, _ := io.ReadAll(r.Body)
-	if err := json.Unmarshal(body, &req); err != nil || r.URL.Path != "/responses" {
+	if err := json.Unmarshal(body, &req); err != nil || r.URL.Path != "/chat/completions" {
 		m.problem("model request to %s: %v", r.URL.Path, err)
 		http.Error(w, "bad request", 400)
 		return
 	}
 	ses := r.Header.Get("x-opencode-session")
 	switch {
-	case r.Header.Get("Authorization") != "Bearer public":
-		m.problem("model request has Authorization %q", r.Header.Get("Authorization"))
 	case !strings.Contains(r.Header.Get("User-Agent"), "opencode/1."):
 		m.problem("model request has User-Agent %q", r.Header.Get("User-Agent"))
-	case !regexp.MustCompile(`^ses_[0-9a-f]{12}[0-9A-Za-z]{14}$`).MatchString(ses) || r.Header.Get("x-opencode-session-id") != ses:
-		m.problem("model request has OpenCode session %q / %q", ses, r.Header.Get("x-opencode-session-id"))
+	case !regexp.MustCompile(`^ses_[0-9a-f]{12}[0-9A-Za-z]{14}$`).MatchString(ses):
+		m.problem("model request has OpenCode session %q", ses)
 	case req.Model != agentModelID || !strings.HasSuffix(req.Model, "-free"):
 		m.problem("model request asks for %q", req.Model)
-	case req.Store == nil || *req.Store || len(req.Include) != 1:
-		m.problem("model request should be stateless and ask for encrypted reasoning: %s", body[:min(len(body), 300)])
+	case !req.Stream:
+		m.problem("model request doesn't stream")
+	case req.Effort != "high":
+		m.problem("model request has reasoning effort %q", req.Effort)
 	}
 	readOK := false
 	for _, t := range req.Tools {
-		readOK = readOK || (t.Name == "read" && len(t.Parameters.Properties) > 0)
+		readOK = readOK || t.Function.Name == "read"
+		if t.Function.Description == "" {
+			m.problem("model request's tool %s has no description", t.Function.Name)
+		}
 	}
 	if !readOK {
-		m.problem("model request has no read tool with parameters")
+		m.problem("model request has no read tool")
 	}
-	if len(req.Input) < 2 || head(req.Input[0]).Role != "developer" {
+	if len(req.Messages) < 2 || req.Messages[0].Role != "system" {
 		m.problem("model request doesn't start with the system prompt")
 		http.Error(w, "bad request", 400)
 		return
 	}
-	last := head(req.Input[len(req.Input)-1])
-	var items []string
-	switch {
-	case last.Type == "message" && last.Role == "user":
-		items = []string{
-			`{"id":"rs_1","type":"reasoning","encrypted_content":"enc-thinking","summary":[{"type":"summary_text","text":"thinking it over"}]}`,
-			`{"id":"msg_1","type":"message","role":"assistant","status":"completed","content":[{"type":"output_text","text":"pong","annotations":[]}]}`,
-			`{"id":"fc_1","type":"function_call","status":"completed","name":"write","call_id":"call_w","arguments":"{\"path\":\"/root/a.txt\",\"content\":\"secret file contents\"}"}`,
+	last := req.Messages[len(req.Messages)-1]
+	var chunks []string
+	switch last.Role {
+	case "user":
+		chunks = []string{
+			`{"role":"assistant","content":""}`,
+			`{"reasoning_content":"thinking "}`,
+			`{"reasoning_content":"it over"}`,
+			`{"content":"pong"}`,
+			`{"tool_calls":[{"index":0,"id":"call_w","type":"function","function":{"name":"write","arguments":""}}]}`,
+			`{"tool_calls":[{"index":0,"function":{"arguments":"{\"path\":\"/root/a.txt\","}}]}`,
+			`{"tool_calls":[{"index":0,"function":{"arguments":"\"content\":\"secret file contents\"}"}}]}`,
 		}
-	case last.Type == "function_call_output":
-		var out struct {
-			Output string `json:"output"`
-		}
-		json.Unmarshal(req.Input[len(req.Input)-1], &out)
+	case "tool":
+		var out string
+		json.Unmarshal(last.Content, &out)
 		m.mu.Lock()
-		m.outputs[last.CallID] = out.Output
+		m.outputs[last.ToolCallID] = out
 		m.mu.Unlock()
-		if last.CallID == "call_w" && !bytes.Contains(body, []byte(`"encrypted_content":"enc-thinking"`)) {
-			m.problem("the reasoning didn't come back with the tool's result")
+		if last.ToolCallID == "call_w" {
+			prev := req.Messages[len(req.Messages)-2]
+			if prev.Role != "assistant" || prev.ReasoningContent != "thinking it over" || len(prev.ToolCalls) != 1 || prev.ToolCalls[0].ID != "call_w" {
+				m.problem("the reasoning and the tool call didn't come back with the tool's result: %+v", prev)
+			}
 		}
-		items = []string{`{"id":"msg_2","type":"message","role":"assistant","status":"completed","content":[{"type":"output_text","text":"done","annotations":[]}]}`}
+		chunks = []string{`{"content":"done"}`}
 	default:
-		m.problem("model request ends with %s", req.Input[len(req.Input)-1])
+		m.problem("model request ends with a %s message", last.Role)
 		http.Error(w, "bad request", 400)
 		return
 	}
 	w.Header().Set("Content-Type", "text/event-stream")
-	fmt.Fprint(w, "event: response.created\ndata: {\"type\":\"response.created\"}\n\n")
-	// Out of order, as output_index allows.
-	for i := len(items) - 1; i >= 0; i-- {
-		fmt.Fprintf(w, "event: response.output_item.done\ndata: {\"type\":\"response.output_item.done\",\"output_index\":%d,\"item\":%s}\n\n", i, items[i])
+	for i, c := range chunks {
+		finish := "null"
+		if i == len(chunks)-1 {
+			finish = `"stop"`
+			if last.Role == "user" {
+				finish = `"tool_calls"`
+			}
+		}
+		fmt.Fprintf(w, "data: {\"object\":\"chat.completion.chunk\",\"choices\":[{\"index\":0,\"finish_reason\":%s,\"delta\":%s}]}\n\n", finish, c)
 	}
-	fmt.Fprint(w, "event: response.completed\ndata: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\"}}\n\n")
+	fmt.Fprint(w, "data: {\"object\":\"chat.completion.chunk\",\"choices\":[],\"usage\":{\"prompt_tokens\":10}}\n\ndata: [DONE]\n\n")
 }
 
 // fakeRuntime keeps each container's state in a file next to it, and logs
