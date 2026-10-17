@@ -35,6 +35,8 @@ import (
 //	POST   /cloud-accounts/{id}/token   {"access_token", "expires_at"}. A body of {"refused": <token>} says
 //	                                    the provider turned that token down, so a new one is needed.
 //	GET    /cloud-accounts/{id}/usage   The provider's usage report for the account, as it sends it.
+//	ANY    /cloud-accounts/{id}/api/... Relayed to the provider's API with the account's access token,
+//	                                    for the cloud session routes (cloudRelayed). For the website.
 //
 // Times are milliseconds since the epoch. The file is JSON, readable only by
 // the command center's user.
@@ -89,6 +91,7 @@ type cloudAccountStore struct {
 	path             string
 	tokenURL, apiURL string
 	client           *http.Client
+	streams          *http.Client // the relay's, with no timeout: event streams stay open
 
 	mu       sync.Mutex             // the file
 	renewing map[string]*sync.Mutex // one per account, guarded by mu
@@ -100,6 +103,7 @@ func newCloudAccountStore(path string) *cloudAccountStore {
 		tokenURL: cloudUpstream.tokenURL,
 		apiURL:   cloudUpstream.apiURL,
 		client:   &http.Client{Timeout: 30 * time.Second},
+		streams:  &http.Client{},
 		renewing: map[string]*sync.Mutex{},
 	}
 }
@@ -110,6 +114,7 @@ func (s *cloudAccountStore) register(mux *http.ServeMux) {
 	mux.HandleFunc("DELETE /cloud-accounts/{id}", s.remove)
 	mux.HandleFunc("POST /cloud-accounts/{id}/token", s.token)
 	mux.HandleFunc("GET /cloud-accounts/{id}/usage", s.usage)
+	mux.HandleFunc("/cloud-accounts/{id}/api/{path...}", s.relay)
 }
 
 // ---------------------------------------------------------------------------
@@ -265,6 +270,92 @@ func (s *cloudAccountStore) usage(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", "application/json")
 	w.Write(body)
+}
+
+// cloudRelayed are the API routes the relay reaches: the cloud sessions,
+// their environments, and the profile (for the organization they're
+// scoped to).
+var cloudRelayed = []string{"v1/sessions", "v1/code/sessions", "v1/environment_providers", "api/oauth/profile"}
+
+// cloudRelayHeaders are the request headers passed on to the provider;
+// everything else the browser sends (its cookies, origin and so on) stays
+// here.
+var cloudRelayHeaders = []string{"Accept", "Content-Type", "Anthropic-Beta", "X-Organization-Uuid", "Last-Event-Id"}
+
+const (
+	cloudRelayMaxBody = 64 << 20
+	// As the phone sends them (Cloud.java in the app).
+	cloudRelayUserAgent = "claude-code/2.1.263"
+)
+
+// relay passes a request to the provider's API with the account's access
+// token, for the website, which can't call the API itself: its session
+// routes answer no CORS preflight. The token stays here, so the browser
+// never holds a cloud login. A 401 renews the login once and tries again;
+// responses (event streams included) are passed back as they arrive.
+func (s *cloudAccountStore) relay(w http.ResponseWriter, r *http.Request) {
+	rest := r.PathValue("path")
+	allowed := false
+	for _, p := range cloudRelayed {
+		if rest == p || strings.HasPrefix(rest, p+"/") {
+			allowed = true
+		}
+	}
+	if !allowed {
+		writeError(w, http.StatusNotFound, "the cloud relay only reaches the session routes")
+		return
+	}
+	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, cloudRelayMaxBody))
+	if err != nil {
+		writeError(w, http.StatusRequestEntityTooLarge, "the request is too big to relay")
+		return
+	}
+	a, err := s.fresh(r.Context(), r.PathValue("id"), "")
+	if err != nil {
+		writeCloudError(w, err)
+		return
+	}
+	// The escaped path, so the provider gets it as sent.
+	target := s.apiURL + "/" + strings.TrimPrefix(r.URL.EscapedPath(), "/cloud-accounts/"+r.PathValue("id")+"/api/")
+	if r.URL.RawQuery != "" {
+		target += "?" + r.URL.RawQuery
+	}
+	var resp *http.Response
+	for attempt := 0; ; attempt++ {
+		out, err := http.NewRequestWithContext(r.Context(), r.Method, target, bytes.NewReader(body))
+		if err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		for _, k := range cloudRelayHeaders {
+			if v := r.Header.Get(k); v != "" {
+				out.Header.Set(k, v)
+			}
+		}
+		out.Header.Set("Authorization", "Bearer "+a.AccessToken)
+		out.Header.Set("anthropic-version", "2023-06-01")
+		out.Header.Set("anthropic-client-platform", "claude_code_cli")
+		out.Header.Set("User-Agent", cloudRelayUserAgent)
+		resp, err = s.streams.Do(out)
+		if err != nil {
+			writeError(w, http.StatusBadGateway, "couldn't reach the provider: "+err.Error())
+			return
+		}
+		if resp.StatusCode != http.StatusUnauthorized || attempt > 0 {
+			break
+		}
+		// Turned down before its time: renew once and ask again.
+		resp.Body.Close()
+		if a, err = s.fresh(r.Context(), a.ID, a.AccessToken); err != nil {
+			writeCloudError(w, err)
+			return
+		}
+	}
+	defer resp.Body.Close()
+	copyHeaders(w.Header(), resp.Header)
+	w.Header().Set("X-Accel-Buffering", "no")
+	w.WriteHeader(resp.StatusCode)
+	flushCopy(w, resp.Body)
 }
 
 var errCloudUnknown = errors.New("no such account")
