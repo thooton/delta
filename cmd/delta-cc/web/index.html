@@ -1,0 +1,136 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="color-scheme" content="dark light">
+<title>Delta</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%23111'/%3E%3Cpath d='M16 7 26 25H6Z' fill='none' stroke='%23fff' stroke-width='2.6' stroke-linejoin='round'/%3E%3C/svg%3E">
+<link rel="stylesheet" href="web/app.css">
+</head>
+<body>
+
+<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+  <symbol id="i-new" viewBox="0 0 20 20"><path d="M11.5 3.5H5.75A2.25 2.25 0 0 0 3.5 5.75v8.5a2.25 2.25 0 0 0 2.25 2.25h8.5a2.25 2.25 0 0 0 2.25-2.25V8.5" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/><path d="M14.6 2.9a1.5 1.5 0 0 1 2.1 2.1L10.4 11.3 7.75 12.25l.95-2.65z" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/></symbol>
+  <symbol id="i-files" viewBox="0 0 20 20"><path d="M3.5 6.25A1.75 1.75 0 0 1 5.25 4.5h3l1.75 2h4.75a1.75 1.75 0 0 1 1.75 1.75v6.5a1.75 1.75 0 0 1-1.75 1.75h-9.5a1.75 1.75 0 0 1-1.75-1.75z" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/></symbol>
+  <symbol id="i-accounts" viewBox="0 0 20 20"><path d="M3.5 15.5v-1a3 3 0 0 1 3-3h7a3 3 0 0 1 3 3v1" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/><circle cx="10" cy="6.75" r="2.75" fill="none" stroke="currentColor" stroke-width="1.5"/></symbol>
+  <symbol id="i-refresh" viewBox="0 0 20 20"><path d="M15.5 9.5a5.5 5.5 0 1 1-1.6-3.9M15.5 3.5v3h-3" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+  <symbol id="i-plus" viewBox="0 0 20 20"><path d="M10 4.5v11M4.5 10h11" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></symbol>
+  <symbol id="i-up" viewBox="0 0 20 20"><path d="M10 15.5v-11M5.5 9 10 4.5 14.5 9" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+  <symbol id="i-stop" viewBox="0 0 20 20"><rect x="6" y="6" width="8" height="8" rx="1.5" fill="currentColor"/></symbol>
+  <symbol id="i-chevron" viewBox="0 0 20 20"><path d="m7.5 5 5 5-5 5" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+  <symbol id="i-down" viewBox="0 0 20 20"><path d="m5.5 7.75 4.5 4.5 4.5-4.5" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+  <symbol id="i-more" viewBox="0 0 20 20"><circle cx="5" cy="10" r="1.3" fill="currentColor"/><circle cx="10" cy="10" r="1.3" fill="currentColor"/><circle cx="15" cy="10" r="1.3" fill="currentColor"/></symbol>
+  <symbol id="i-menu" viewBox="0 0 20 20"><path d="M3.5 6h13M3.5 10h13M3.5 14h13" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></symbol>
+  <symbol id="i-sidebar" viewBox="0 0 20 20"><rect x="3" y="4" width="14" height="12" rx="2.25" fill="none" stroke="currentColor" stroke-width="1.5"/><path d="M8 4v12" stroke="currentColor" stroke-width="1.5"/></symbol>
+  <symbol id="i-x" viewBox="0 0 20 20"><path d="m6 6 8 8M14 6l-8 8" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></symbol>
+  <symbol id="i-file" viewBox="0 0 20 20"><path d="M11 3.5H6.25A1.75 1.75 0 0 0 4.5 5.25v9.5a1.75 1.75 0 0 0 1.75 1.75h7.5a1.75 1.75 0 0 0 1.75-1.75V8M11 3.5 15.5 8M11 3.5V8h4.5" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/></symbol>
+  <symbol id="i-signout" viewBox="0 0 20 20"><path d="M8 4.5H5.75A1.75 1.75 0 0 0 4 6.25v7.5a1.75 1.75 0 0 0 1.75 1.75H8M12 6.5 15.5 10 12 13.5M15.5 10H8" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+  <symbol id="i-logo" viewBox="0 0 24 24"><path d="M12 4.5 20.5 19h-17Z" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linejoin="round"/></symbol>
+</svg>
+
+<div id="signin" class="signin" hidden>
+  <form id="signin-form" class="signin-card">
+    <svg class="signin-logo"><use href="#i-logo"/></svg>
+    <h1>Sign in to Delta</h1>
+    <p>Enter your command center's token.</p>
+    <input id="signin-token" type="password" autocomplete="current-password" placeholder="Token" spellcheck="false" required>
+    <button type="submit" class="primary">Continue</button>
+    <p id="signin-error" class="error" hidden></p>
+  </form>
+</div>
+
+<div id="app" class="app" hidden>
+  <aside id="sidebar" class="sidebar">
+    <div class="sidebar-top">
+      <div class="brand"><svg><use href="#i-logo"/></svg>Delta</div>
+      <button type="button" class="icon-btn ghost" id="collapse" title="Hide sidebar"><svg><use href="#i-sidebar"/></svg></button>
+    </div>
+    <nav class="nav">
+      <a class="nav-item" href="#/" data-view="new"><svg><use href="#i-new"/></svg><span>New chat</span></a>
+      <a class="nav-item" href="#/files" data-view="files"><svg><use href="#i-files"/></svg><span>Files</span></a>
+      <a class="nav-item" href="#/accounts" data-view="accounts"><svg><use href="#i-accounts"/></svg><span>Accounts</span></a>
+    </nav>
+    <div class="section-head">
+      <span>Chats</span>
+      <button type="button" class="icon-btn ghost small" id="refresh" title="Refresh"><svg><use href="#i-refresh"/></svg></button>
+    </div>
+    <div id="chat-warning" class="chat-warning" hidden></div>
+    <ul id="chats" class="chats"></ul>
+    <div class="sidebar-foot">
+      <button type="button" class="nav-item" id="signout"><svg><use href="#i-signout"/></svg><span>Sign out</span></button>
+    </div>
+  </aside>
+  <div id="scrim" class="scrim"></div>
+
+  <main class="main">
+    <header class="topbar">
+      <button type="button" class="icon-btn ghost" id="expand" title="Show sidebar"><svg><use href="#i-sidebar"/></svg></button>
+      <div class="topbar-title" id="title"></div>
+      <div class="topbar-actions" id="top-actions"></div>
+    </header>
+
+    <section id="view-chat" class="view view-chat">
+      <div id="scroller" class="scroller">
+        <div id="hero" class="hero" hidden>
+          <svg class="hero-logo"><use href="#i-logo"/></svg>
+          <h1>Let's build</h1>
+          <button type="button" class="hero-kind" id="hero-kind"></button>
+        </div>
+        <div class="thread">
+          <div id="transcript" class="transcript"></div>
+          <div id="tail" class="tail"></div>
+        </div>
+      </div>
+      <div class="composer-wrap">
+        <div id="banner" class="banner" hidden></div>
+        <form id="composer" class="composer">
+          <div id="attachments" class="attachments" hidden></div>
+          <textarea id="input" rows="1" placeholder="Ask Delta anything" spellcheck="true"></textarea>
+          <div class="composer-row">
+            <button type="button" class="icon-btn ghost round" id="attach" title="Attach files or pictures"><svg><use href="#i-plus"/></svg></button>
+            <input type="file" id="file-input" multiple hidden>
+            <div class="picker">
+              <button type="button" class="pill" id="kind-btn"></button>
+              <div class="menu up" id="kind-menu" hidden>
+                <button type="button" class="menu-item" data-kind="cloud"><span class="mark">●</span><span><b>Regular</b><small>Runs on your accounts</small></span></button>
+                <button type="button" class="menu-item" data-kind="backup"><span class="mark">▲</span><span><b>Backup</b><small>Runs on the command center</small></span></button>
+              </div>
+            </div>
+            <span class="spacer"></span>
+            <button type="submit" class="send" id="send" title="Send"><svg><use href="#i-up"/></svg></button>
+          </div>
+        </form>
+      </div>
+    </section>
+
+    <section id="view-files" class="view view-page" hidden>
+      <div class="page">
+        <div class="page-head">
+          <h1>Files</h1>
+          <button type="button" class="button" id="upload"><svg><use href="#i-plus"/></svg>Upload</button>
+          <input type="file" id="upload-input" multiple hidden>
+        </div>
+        <p class="page-sub">Everything on the command center. Agents put files here with <code>delta push</code>, and fetch the ones you send with <code>delta pull</code>.</p>
+        <div id="upload-progress" class="progress" hidden><div></div></div>
+        <div id="files" class="rows"></div>
+      </div>
+    </section>
+
+    <section id="view-accounts" class="view view-page" hidden>
+      <div class="page">
+        <div class="page-head"><h1>Accounts</h1></div>
+        <p class="page-sub">New regular chats start on the first account, in this order, with room left in both windows.</p>
+        <div id="accounts" class="cards"></div>
+      </div>
+    </section>
+  </main>
+</div>
+
+<div id="toast" class="toast" hidden></div>
+<div id="dropzone" class="dropzone" hidden><div>Drop files to attach</div></div>
+
+<script src="web/md.js"></script>
+<script src="web/app.js"></script>
+</body>
+</html>

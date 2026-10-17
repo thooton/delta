@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -21,6 +22,7 @@ type fakeCloud struct {
 	mu       sync.Mutex
 	current  int // the live refresh token's number
 	renewals int
+	refuse   bool // the sessions list turns the next token down, as if it expired early
 }
 
 func newFakeCloud() *fakeCloud {
@@ -85,6 +87,22 @@ func newFakeCloud() *fakeCloud {
 		}
 		writeJSON(w, http.StatusOK, map[string]any{"five_hour": map[string]any{"utilization": 42.0, "resets_at": "2030-01-01T00:00:00Z"}})
 	})
+	mux.HandleFunc("GET /v1/code/sessions", func(w http.ResponseWriter, r *http.Request) {
+		who := who(r)
+		f.mu.Lock()
+		refuse := f.refuse
+		f.refuse = false
+		f.mu.Unlock()
+		if refuse || who == "" || r.Header.Get("anthropic-version") == "" {
+			writeError(w, http.StatusUnauthorized, "invalid token")
+			return
+		}
+		http.SetCookie(w, &http.Cookie{Name: "provider", Value: "secret"})
+		writeJSON(w, http.StatusOK, map[string]any{
+			"who": who, "org": r.Header.Get("x-organization-uuid"), "query": r.URL.RawQuery,
+			"leaked": r.Header.Get("Cookie") + r.Header.Get("Origin"),
+		})
+	})
 	f.Server = httptest.NewServer(mux)
 	return f
 }
@@ -93,7 +111,7 @@ func newFakeCloud() *fakeCloud {
 // by looking up a still-good access token), listed without their logins,
 // handed out as access tokens that are renewed exactly when they must be,
 // asked for usage and removed, and that bad and rejected logins are refused.
-func cloudSelfTest(expect func(desc string, want int, method, path, tok string, body []byte) ([]byte, error), token, dir string, fake *fakeCloud) error {
+func cloudSelfTest(expect func(desc string, want int, method, path, tok string, body []byte) ([]byte, error), base, token, dir string, fake *fakeCloud) error {
 	if _, err := expect("cloud accounts require the token", 401, "GET", "/cloud-accounts", "", nil); err != nil {
 		return err
 	}
@@ -175,6 +193,18 @@ func cloudSelfTest(expect func(desc string, want int, method, path, tok string, 
 	if raw, err := os.ReadFile(filepath.Join(dir, cloudAccountsFile)); err != nil || !strings.Contains(string(raw), `"rt-3"`) {
 		return fmt.Errorf("cloud accounts file doesn't hold the renewed login (%v)", err)
 	}
+	if err := cloudRelaySelfTest(base, token, fake); err != nil {
+		return err
+	}
+	if _, err := expect("relay to a route it doesn't reach", 404, "GET", "/cloud-accounts/11111111-aaaa/api/api/oauth/usage", token, nil); err != nil {
+		return err
+	}
+	if _, err := expect("relay for an unknown account", 404, "GET", "/cloud-accounts/nobody/api/v1/code/sessions", token, nil); err != nil {
+		return err
+	}
+	if _, err := expect("the relay requires the token", 401, "GET", "/cloud-accounts/11111111-aaaa/api/v1/code/sessions", "", nil); err != nil {
+		return err
+	}
 	if _, err := expect("remove a cloud account", 200, "DELETE", "/cloud-accounts/22222222-bbbb", token, nil); err != nil {
 		return err
 	}
@@ -187,6 +217,50 @@ func cloudSelfTest(expect func(desc string, want int, method, path, tok string, 
 	}
 	if err := json.Unmarshal(data, &listed); err != nil || len(listed) != 1 || listed[0].ID != "11111111-aaaa" {
 		return fmt.Errorf("list after removal: got %s", data)
+	}
+	return nil
+}
+
+// cloudRelaySelfTest checks that the relay reaches the provider with the
+// account's token and the headers it passes on, renews a token the provider
+// turns down, and keeps the browser's cookies and the provider's to
+// themselves. It needs the request's own headers, which expect doesn't set.
+func cloudRelaySelfTest(base, token string, fake *fakeCloud) error {
+	get := func(desc string) (string, error) {
+		req, _ := http.NewRequest("GET", base+"/cloud-accounts/11111111-aaaa/api/v1/code/sessions?limit=5", nil)
+		req.Header.Set("Authorization", "Bearer "+token)
+		req.Header.Set("x-organization-uuid", "org-1")
+		req.Header.Set("Cookie", "site=mine")
+		req.Header.Set("Origin", "https://example.com")
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			return "", fmt.Errorf("%s: %v", desc, err)
+		}
+		defer resp.Body.Close()
+		data, _ := io.ReadAll(resp.Body)
+		if resp.StatusCode != 200 || resp.Header.Get("Set-Cookie") != "" {
+			return "", fmt.Errorf("%s: HTTP %d %s (Set-Cookie %q)", desc, resp.StatusCode, data, resp.Header.Get("Set-Cookie"))
+		}
+		return string(data), nil
+	}
+	data, err := get("relay to the sessions list")
+	if err != nil {
+		return err
+	}
+	if !strings.Contains(data, `"who":"first"`) || !strings.Contains(data, `"org":"org-1"`) ||
+		!strings.Contains(data, `"query":"limit=5"`) || !strings.Contains(data, `"leaked":""`) {
+		return fmt.Errorf("relay to the sessions list: got %s", data)
+	}
+	// A token turned down before its time: the relay must renew and try again.
+	fake.mu.Lock()
+	fake.refuse = true
+	fake.mu.Unlock()
+	before := fake.renewals
+	if data, err = get("relay after the token was turned down"); err != nil {
+		return err
+	}
+	if !strings.Contains(data, `"who":"first"`) || fake.renewals != before+1 {
+		return fmt.Errorf("relay after the token was turned down: got %s after %d renewals", data, fake.renewals-before)
 	}
 	return nil
 }

@@ -286,7 +286,7 @@ func newHandler(tokenHash []byte, filesDir string, maxUpload int64, u *updater, 
 	publicMux := http.NewServeMux()
 	publicMux.Handle("/", mux)
 	agents.register(publicMux)
-	return requireAuth(tokenHash, publicMux), requireAgentToken(agents.validToken, mux)
+	return withWebsite(requireAuth(tokenHash, publicMux)), requireAgentToken(agents.validToken, mux)
 }
 
 func logRequests(next http.Handler) http.Handler {

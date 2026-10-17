@@ -11,6 +11,8 @@ Delta runs in three places:
 2. **Command center (VPS).** A server that runs around the clock. It handles authentication and relays between the phone and everything else, including external services such as Canvas. It also keeps the Claude accounts' logins and runs the backup sessions. It updates itself only when an agent tells it to.
 3. **CLI (agent).** The tool an agent uses to send things to the command center.
 
+The command center also serves a **website** (see [Website](#website)): the phone app's Chats, Session, Files and Accounts for a computer's browser, laid out like the Codex app.
+
 A typical job looks like this. One of the apps on the phone has a bug, so the user opens the Delta app and describes the problem to the agent. The phone apps live in [thooton/sonim](https://github.com/thooton/sonim), and the agent has read and write access to it and to this repository. The agent clones the repository, fixes the bug, and pushes the change. It then uses the CLI to push the rebuilt APK to the command center. The APK shows up in the files list in the Delta app, where the user decides whether to download it, install it, or delete it.
 
 If the problem is in Delta itself, the agent fixes it here instead. Once the fix lands on `master` and GitHub Actions has built it, the agent tells the command center to update to the new binary.
@@ -19,7 +21,7 @@ The agent is never told to clone this repository, since that would only clutter 
 
 ## Layout
 
-- `cmd/delta-cc`: the command center, an HTTP server. `agents.go` runs the backup sessions, with `agents_loop.go` (the agent loop and the saved conversation), `agents_model.go` (the model, and how its requests pass for the OpenCode CLI's), `agents_tools.go` (the agent's tools, which run in the container) and `agents_runtime.go` (the containers). `scope.go` decides what each kind of token may do. `cloud.go` keeps the Claude accounts and renews their logins, `conversations.go` stores conversations carried between sessions, `canvas.go` is the Canvas relay, `music_run.go` runs music downloads, `secret.go` stores single secrets (the GitHub token in `github.go`, which also has the GitHub relay and the Google Maps key in `maps.go`), and `books.go` and `gmail.go` store the book and Gmail logins.
+- `cmd/delta-cc`: the command center, an HTTP server. `agents.go` runs the backup sessions, with `agents_loop.go` (the agent loop and the saved conversation), `agents_model.go` (the model, and how its requests pass for the OpenCode CLI's), `agents_tools.go` (the agent's tools, which run in the container) and `agents_runtime.go` (the containers). `scope.go` decides what each kind of token may do. `cloud.go` keeps the Claude accounts and renews their logins, `conversations.go` stores conversations carried between sessions, `canvas.go` is the Canvas relay, `music_run.go` runs music downloads, `secret.go` stores single secrets (the GitHub token in `github.go`, which also has the GitHub relay and the Google Maps key in `maps.go`), and `books.go` and `gmail.go` store the book and Gmail logins. `web.go` serves the website, whose files are in `web/` (embedded).
 - `cmd/delta`: the CLI. Its `delta help`, `delta accounts help`, `delta canvas help`, `delta music help`, `delta books help`, `delta maps help`, `delta gmail help` and `delta docx` text is written for the agent. The `canvas*.go` files hold the Canvas commands, `music*.go` the music commands, `books*.go` the book commands, `maps*.go` the place search commands, `gmail*.go` the Gmail commands, `accounts.go` the cloud account commands, `resume.go` `delta resume`, `relay.go` the GitHub relay's local end for backup sessions, `docx_help.md` the guide to making Word documents and `docx/` the scripts it uses (both embedded by `docx.go`; `delta docx extract` writes out the scripts), and `markdown.go` converts Markdown to HTML.
 - `scripts/install.sh`: the setup script published to the release as `install.sh`.
 - `scripts/fetch-music-engine.sh`: puts the music engine into `cmd/delta-cc/music-engine/` for the command center to embed (see [Music](#music)).
@@ -79,10 +81,12 @@ curl -fsSL https://github.com/thooton/delta/releases/download/latest/install.sh 
 
 ## Command center API
 
-Every endpoint requires the bearer token.
+Every endpoint requires the bearer token, except the website's `GET /` and `GET /web/...`.
 
 | Method | Path | Description |
 |---|---|---|
+| GET | `/` | The website. No token needed: it asks for one. |
+| GET | `/web/{file}` | The website's scripts and styles. |
 | GET | `/auth` | Checks the token, and says its scope (`full` or `agent`). |
 | GET | `/files` | Lists files as JSON (`name`, `size`, `modified`), newest first. |
 | GET | `/files/{name}` | Downloads a file. |
@@ -106,6 +110,7 @@ Every endpoint requires the bearer token.
 | DELETE | `/cloud-accounts/{id}` | Removes one. |
 | POST | `/cloud-accounts/{id}/token` | An access token for the account, as `{"access_token", "expires_at"}` (milliseconds), renewing the login first if need be. A body of `{"refused": "<token>"}` says the provider turned that token down. 403 when the login no longer works. |
 | GET | `/cloud-accounts/{id}/usage` | The provider's usage report for the account (`five_hour` and `seven_day` utilization and reset times), as it sends it. |
+| any | `/cloud-accounts/{id}/api/{path}` | Relayed to `https://api.anthropic.com/{path}` with the account's access token, for the website. Only the session routes (`v1/sessions`, `v1/code/sessions`, `v1/environment_providers`, `api/oauth/profile`). A 401 renews the login once and retries; event streams are passed through as they arrive. |
 | POST | `/conversations` | Stores a carried-over conversation (the raw body, as text) under a new random id. Returns `{"id"}` with 201. |
 | GET | `/conversations` | The stored conversations, as `[{"id", "size", "modified", "title"}]`, newest first. |
 | GET | `/conversations/{id}` | One conversation, as text. |
@@ -139,6 +144,18 @@ The phone's sessions run on the user's Claude subscriptions (Pro, say), and ther
 **Adding one.** `delta accounts login` runs Claude Code's OAuth flow with the manual redirect: it prints an address, the user signs in with the account to add, and the page shows a code that the user pastes back (or that is passed to `delta accounts finish <code>` when there is no terminal, as when an agent runs it for the user). The CLI trades the code for a login and posts it to the command center, which looks the account up (`/api/oauth/profile`: its UUID, which becomes its id, email and plan) before saving it. `delta accounts add <file>` takes an existing login instead (Claude Code's `.credentials.json`, a Pi `auth.json`, or `{"refresh_token"}`), but the copy it came from stops working once the command center renews it. Adding an account that is already there replaces its login in place.
 
 **Rotation (on the phone).** The phone lists the accounts and their sessions together in Chats. It starts each new session on the first account, in the listed order, that it doesn't know to be out: before using one it checks its usage report, and one whose 5-hour or weekly window is at 100% is skipped until that window resets. When a session's account reaches its limit mid-conversation (the stream's `rate_limit_event` says `rejected`), the foot of the transcript says so and offers a button to move the conversation to a new session on another account. A message the user sends instead waits on the phone and goes out when the limit lifts. Moving reads the old session's full event history from the cloud, writes all of it out as text (tool calls and results included) and stores it on the command center under a random id (`data/conversations/<id>.txt`, see `conversations.go`). The new session's first message opens with a `<delta-continued>` block naming the id, and the agent saves the conversation to a file with `delta resume <id> <file>` and reads it (`delta help` explains this; a file, because an agent's shell cuts long output short). `delta accounts` shows each account's usage.
+
+## Website
+
+`GET /` serves Delta for a computer's browser: plain HTML, CSS and JavaScript in `cmd/delta-cc/web/` (no build step, no libraries), embedded in `delta-cc` so it updates with `update-cc`. It is the phone app's tabs laid out like the Codex app: a sidebar with New chat, Files, Accounts and every chat (● and ▲ alike, newest first), and the conversation with a composer under it. The composer's picker chooses the kind of a new chat, as the phone's "New session ●" and "New session ▲" do.
+
+**Signing in.** The page asks for the delta token, checks it with `GET /auth` (it refuses an `agent` token), and keeps it in the browser's `localStorage`. It sends it with every request to the API on the same origin, so there is no CORS to set up. A 401 from the command center signs the browser out.
+
+**Regular sessions (●).** The provider's session routes refuse a browser's CORS preflight, so the page can't call them itself. It goes through the cloud relay instead (`/cloud-accounts/{id}/api/...`, in `cloud.go`), which adds the account's access token (renewing the login as the token route does), the `anthropic-version` and client headers, and passes on only `Accept`, `Content-Type`, `anthropic-beta`, `x-organization-uuid` and `Last-Event-ID`. The browser never holds a cloud login. Everything else follows the app (`Cloud.java` in thooton/sonim): the session list per account, rotation (the first account whose usage report has room in both windows, remembered in `localStorage` while one is out), the Delta environment found by the same name (a hash of the setup script, the page's origin as `DELTA_SERVER`, and the token), the first message opening with the same `<delta-setup>` block, `set_permission_mode: auto` before every message, interrupt, permission answers and archive. Keep `SETUP_BLOCK` and `SETUP_SCRIPT` in `web/app.js` in step with `Setup.java` and `agentSetup`. Moving a conversation to another account when its limit is reached isn't offered yet: the page says until when the account is out.
+
+**Backup sessions (▲).** Through `/agent-sessions`, as the phone does.
+
+**Messages.** Pictures (pasted, dropped or attached, at most four) are shrunk to 1568 pixels and sent as JPEGs in the message. Other files go up to `/files` first (under a numbered name if taken) and are named in a closing `<delta-files>` block, word for word the app's `Attached.wrap`. The transcript shows what was typed, the agent's replies as Markdown (`web/md.js`), thinking, and each tool call as one line that opens to its input and result (a diff for edits, the plan for to-do updates), as Codex does. Enter sends, Shift+Enter starts a new line, Escape stops a turn.
 
 ## Canvas
 

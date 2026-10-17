@@ -83,6 +83,9 @@ func selfTest() error {
 		body         []byte
 	}{
 		{"no token is rejected", 401, "GET", "/files", "", nil},
+		{"the website needs no token", 200, "GET", "/", "", nil},
+		{"nor do its scripts", 200, "GET", "/web/app.js", "", nil},
+		{"the website's directory isn't listed", 404, "GET", "/web/missing.js", "", nil},
 		{"wrong token is rejected", 401, "GET", "/files", "nope", nil},
 		{"auth check", 200, "GET", "/auth", token, nil},
 		{"version", 200, "GET", "/version", token, nil},
@@ -146,7 +149,7 @@ func selfTest() error {
 	if err := gmailSelfTest(expect, token, dir); err != nil {
 		return err
 	}
-	if err := cloudSelfTest(expect, token, dir, fake); err != nil {
+	if err := cloudSelfTest(expect, ts.URL, token, dir, fake); err != nil {
 		return err
 	}
 	if err := conversationsSelfTest(expect, token); err != nil {
