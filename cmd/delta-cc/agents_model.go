@@ -16,7 +16,7 @@ import (
 	"time"
 )
 
-// The model behind backup sessions: Muse Spark, through OpenCode Zen's free
+// The model behind backup sessions: GLM 5.3 Flash, through OpenCode Zen's free
 // tier. No API key is involved, so there is nothing to pay for and nothing
 // to keep secret; paid models aren't offered at all.
 //
@@ -43,7 +43,7 @@ import (
 // of thought from one step to the next.
 
 const (
-	agentModelID = "muse-spark-1.3-contributor-free"
+	agentModelID = "glm-5.3-flash-free"
 	zenBaseURL   = "https://opencode.ai/inference/v1"
 	zenUserAgent = "opencode/1.18.35 ai-sdk/provider-utils/4.0.40 runtime/bun/1.3.14"
 
@@ -106,7 +106,7 @@ func (s *agentSession) askOnce(ctx context.Context, input []json.RawMessage) (*m
 		"tools":     agentTools,
 		"stream":    true,
 		"store":     false,
-		"reasoning": map[string]string{"effort": "medium", "summary": "auto"},
+		"reasoning": map[string]string{"effort": "high", "summary": "auto"},
 		"include":   []string{"reasoning.encrypted_content"},
 	})
 	if err != nil {
