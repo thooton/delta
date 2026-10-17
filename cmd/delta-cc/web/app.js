@@ -153,6 +153,15 @@
 
   let token = stored('delta.token');
 
+  // The command center may sit in a subdirectory behind a proxy
+  // (https://host/cc/), so every request is made relative to where the page
+  // was loaded from, never from the host's root. The page always has a
+  // trailing slash (index.html adds one).
+  const BASE = location.pathname.replace(/[^/]*$/, '');
+  const url = (path) => BASE + path.replace(/^\//, '');
+  // The command center's address, as the CLI signs in to it (DELTA_SERVER).
+  const SERVER = location.origin + BASE.replace(/\/$/, '');
+
   class HttpError extends Error {
     constructor(status, message) { super(message); this.status = status; }
   }
@@ -171,7 +180,7 @@
       headers['Content-Type'] = 'application/json';
       body = JSON.stringify(opts.json);
     }
-    const resp = await fetch(path, { method: opts.method || 'GET', headers, body, signal: opts.signal });
+    const resp = await fetch(url(path), { method: opts.method || 'GET', headers, body, signal: opts.signal });
     if (resp.status === 401 && !path.includes('/api/')) {
       signOut('Your session on the command center ended. Sign in again.');
       throw new HttpError(401, 'Not signed in');
@@ -209,7 +218,7 @@
   }
 
   async function environmentName() {
-    const all = SETUP_SCRIPT + '\n' + location.origin + '\n' + token;
+    const all = SETUP_SCRIPT + '\n' + SERVER + '\n' + token;
     const sum = new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(all)));
     return 'Delta ' + Array.from(sum.slice(0, 4), (b) => b.toString(16).padStart(2, '0')).join('');
   }
@@ -238,7 +247,7 @@
               environment_type: 'anthropic',
               cwd: '/home/user',
               init_script: SETUP_SCRIPT,
-              environment: { DELTA_SERVER: location.origin, DELTA_TOKEN: token },
+              environment: { DELTA_SERVER: SERVER, DELTA_TOKEN: token },
               languages: [{ name: 'python', version: '3.11' }, { name: 'node', version: '20' }],
               network_config: { allowed_hosts: ['*'], allow_default_hosts: true },
             },
@@ -1041,7 +1050,7 @@
   function put(name, file, progress) {
     return new Promise((resolve, reject) => {
       const x = new XMLHttpRequest();
-      x.open('PUT', '/files/' + encodeURIComponent(name));
+      x.open('PUT', url('/files/' + encodeURIComponent(name)));
       x.setRequestHeader('Authorization', 'Bearer ' + token);
       if (progress) x.upload.onprogress = (e) => e.lengthComputable && progress(e.loaded / e.total);
       x.onload = () => resolve(x.status);
@@ -1485,7 +1494,7 @@
   }
 
   async function signIn(candidate) {
-    const resp = await fetch('/auth', { headers: { Authorization: 'Bearer ' + candidate } });
+    const resp = await fetch(url('/auth'), { headers: { Authorization: 'Bearer ' + candidate } });
     if (resp.status === 401) throw new Error("That token isn't right.");
     if (!resp.ok) throw new Error("Couldn't reach the command center (HTTP " + resp.status + ').');
     const info = await resp.json();
@@ -1643,7 +1652,7 @@
   setInterval(() => { if (token && state.open) renderComposer(); }, 30000);
 
   if (token) {
-    fetch('/auth', { headers: { Authorization: 'Bearer ' + token } }).then((r) => {
+    fetch(url('/auth'), { headers: { Authorization: 'Bearer ' + token } }).then((r) => {
       if (r.status === 401) signOut('Your saved token no longer works. Sign in again.');
       else start();
     }).catch(() => start());
