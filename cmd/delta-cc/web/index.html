@@ -5,6 +5,11 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="color-scheme" content="dark light">
 <title>Delta</title>
+<script>
+  // Relative links need the trailing slash: without it, a command center in
+  // a subdirectory (/cc) would load web/app.js from the host's root.
+  if (!location.pathname.endsWith('/')) location.replace(location.pathname + '/' + location.search + location.hash);
+</script>
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%23111'/%3E%3Cpath d='M16 7 26 25H6Z' fill='none' stroke='%23fff' stroke-width='2.6' stroke-linejoin='round'/%3E%3C/svg%3E">
 <link rel="stylesheet" href="web/app.css">
 </head>
