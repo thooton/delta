@@ -24,6 +24,8 @@ import (
 	"sync"
 	"syscall"
 	"time"
+
+	"github.com/thooton/delta/internal/remarkable"
 )
 
 // The user's reMarkable tablet, through the rmfakecloud server on this
@@ -53,10 +55,13 @@ import (
 //
 //	GET   /remarkable                 Every document and folder.
 //	GET   /remarkable/{id}            A document's files, as a zip (an .rmdoc).
+//	GET   /remarkable/{id}/pages/{n}  Page n (from 1) as the tablet shows it, as a
+//	                                  one-page PDF; X-Pages says how many there are.
 //	POST  /remarkable/documents       Body: a PDF or EPUB. Query: name, parent.
 //	POST  /remarkable/folders         {"name", "parent"}.
 //	PATCH /remarkable/{id}            {"name"?, "parent"?}: rename, move, or
-//	                                  move to the trash (parent "trash").
+//	                                  move to the trash (parent "trash"). POST
+//	                                  does the same, for clients without PATCH.
 const (
 	remarkableHistory = ".root.history"
 	remarkableTrash   = "trash"
@@ -88,9 +93,13 @@ func newRemarkableStore(dataDir, user, envFile string, maxUpload int64) *remarka
 func (s *remarkableStore) register(mux *http.ServeMux) {
 	mux.HandleFunc("GET /remarkable", s.list)
 	mux.HandleFunc("GET /remarkable/{id}", s.download)
+	mux.HandleFunc("GET /remarkable/{id}/pages/{n}", s.page)
 	mux.HandleFunc("POST /remarkable/documents", s.upload)
 	mux.HandleFunc("POST /remarkable/folders", s.mkdir)
 	mux.HandleFunc("PATCH /remarkable/{id}", s.patch)
+	// The same, for clients that can't send PATCH (Java's HttpURLConnection,
+	// so the phone's Tablet app).
+	mux.HandleFunc("POST /remarkable/{id}", s.patch)
 }
 
 func registerRemarkableDisabled(mux *http.ServeMux) {
@@ -323,6 +332,79 @@ func (s *remarkableStore) writeZip(w http.ResponseWriter, id string) {
 		return
 	}
 	writeError(w, http.StatusNotFound, "no such document on the reMarkable")
+}
+
+// page sends page n of a document as the tablet shows it (handwriting and
+// all, drawn as `delta remarkable get` draws it), as a PDF of that page
+// alone, so the phone's Tablet app can show one page at a time without
+// fetching the whole document. X-Pages says how many pages there are, also
+// on a 404 for a page past the end; X-Handwriting-Only is "true" when they
+// are the handwriting alone, on pages of its own (an EPUB, which the tablet
+// lays out itself, or a PDF that couldn't be read), not the document's.
+func (s *remarkableStore) page(w http.ResponseWriter, r *http.Request) {
+	n, err := strconv.Atoi(r.PathValue("n"))
+	if err != nil || n < 1 {
+		writeError(w, http.StatusBadRequest, "pages are numbered from 1")
+		return
+	}
+	it, err := s.find(r.PathValue("id"))
+	if errors.Is(err, errRemarkableMissing) {
+		writeError(w, http.StatusNotFound, err.Error())
+		return
+	} else if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if it.Type == "folder" {
+		writeError(w, http.StatusBadRequest, "that's a folder; it has no pages")
+		return
+	}
+	files, err := s.readFiles(it.ID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	out := remarkable.RenderPage(it.ID, files, n)
+	w.Header().Set("X-Pages", strconv.Itoa(out.Pages))
+	if out.Separate {
+		w.Header().Set("X-Handwriting-Only", "true")
+	}
+	switch {
+	case out.Pages == 0:
+		writeError(w, http.StatusNotFound, "nothing is written on it, and the tablet lays out its pages itself")
+	case out.PDF == nil:
+		writeError(w, http.StatusNotFound, fmt.Sprintf("it has %d pages", out.Pages))
+	default:
+		w.Header().Set("Content-Type", "application/pdf")
+		w.Header().Set("Content-Length", strconv.Itoa(len(out.PDF)))
+		w.Write(out.PDF)
+	}
+}
+
+// readFiles reads document id's files into memory, by name, as
+// remarkable.Render takes them.
+func (s *remarkableStore) readFiles(id string) (map[string][]byte, error) {
+	_, docs, err := s.rootIndex()
+	if err != nil {
+		return nil, err
+	}
+	for _, d := range docs {
+		if d.Name != id {
+			continue
+		}
+		entries, err := s.docFiles(d)
+		if err != nil {
+			return nil, err
+		}
+		files := map[string][]byte{}
+		for _, f := range entries {
+			if data, err := s.readBlob(f.Hash); err == nil {
+				files[f.Name] = data // a missing page leaves the rest readable
+			}
+		}
+		return files, nil
+	}
+	return nil, errRemarkableMissing
 }
 
 // find describes document id.

@@ -52,7 +52,7 @@ func selfTestRemarkable(s *remarkableStore, expect func(desc string, want int, m
 		{"a document isn't a folder", 400, "POST", "/remarkable/folders", []byte(`{"name":"x","parent":"` + doc + `"}`)},
 		{"a folder can't go inside itself", 400, "PATCH", "/remarkable/" + folder, []byte(`{"parent":"` + folder + `"}`)},
 		{"rename", 200, "PATCH", "/remarkable/" + doc, []byte(`{"name":"Worksheet 1"}`)},
-		{"move to the top", 200, "PATCH", "/remarkable/" + doc, []byte(`{"parent":""}`)},
+		{"move to the top", 200, "POST", "/remarkable/" + doc, []byte(`{"parent":""}`)},
 		{"trash", 200, "PATCH", "/remarkable/" + folder, []byte(`{"parent":"trash"}`)},
 		{"missing document", 404, "GET", "/remarkable/nope", nil},
 	}
@@ -121,5 +121,58 @@ func selfTestRemarkable(s *remarkableStore, expect func(desc string, want int, m
 			return fmt.Errorf("blob %s isn't named by its hash", name)
 		}
 	}
+
+	// Pages one at a time, for the phone's Tablet app.
+	data, err = expect("upload a readable PDF", 201, "POST", "/remarkable/documents?name=Essay", selfTestPDF())
+	if err != nil {
+		return err
+	}
+	essay := id(data)
+	data, err = expect("page 1", 200, "GET", "/remarkable/"+essay+"/pages/1", nil)
+	if err != nil {
+		return err
+	}
+	if !bytes.HasPrefix(data, []byte("%PDF-")) || !bytes.Contains(data, []byte("/Count 1")) {
+		return fmt.Errorf("page 1 isn't a one-page PDF")
+	}
+	for _, st := range []struct {
+		desc string
+		want int
+		path string
+	}{
+		{"no page past the end", 404, "/remarkable/" + essay + "/pages/2"},
+		{"pages count from 1", 400, "/remarkable/" + essay + "/pages/0"},
+		{"an unreadable PDF has nothing to show", 404, "/remarkable/" + doc + "/pages/1"},
+		{"a folder has no pages", 400, "/remarkable/" + folder + "/pages/1"},
+		{"no such document's pages", 404, "/remarkable/nope/pages/1"},
+	} {
+		if _, err := expect(st.desc, st.want, "GET", st.path, nil); err != nil {
+			return err
+		}
+	}
 	return nil
+}
+
+// selfTestPDF is the smallest readable PDF: one blank Letter page.
+func selfTestPDF() []byte {
+	objs := []string{
+		"<< /Type /Catalog /Pages 2 0 R >>",
+		"<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+		"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << >> /Contents 4 0 R >>",
+		"<< /Length 0 >>\nstream\n\nendstream",
+	}
+	var b bytes.Buffer
+	b.WriteString("%PDF-1.4\n")
+	offsets := make([]int, len(objs))
+	for i, o := range objs {
+		offsets[i] = b.Len()
+		fmt.Fprintf(&b, "%d 0 obj\n%s\nendobj\n", i+1, o)
+	}
+	xref := b.Len()
+	fmt.Fprintf(&b, "xref\n0 %d\n0000000000 65535 f \n", len(objs)+1)
+	for _, off := range offsets {
+		fmt.Fprintf(&b, "%010d 00000 n \n", off)
+	}
+	fmt.Fprintf(&b, "trailer\n<< /Size %d /Root 1 0 R >>\nstartxref\n%d\n%%%%EOF\n", len(objs)+1, xref)
+	return b.Bytes()
 }
