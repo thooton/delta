@@ -307,9 +307,10 @@ func newHandler(tokenHash []byte, filesDir string, maxUpload int64, u *updater, 
 	agents.register(publicMux)
 	transforms := newTransformService(dataDir, filesDir, remarkable, cloud, maxUpload)
 	transforms.register(publicMux)
-	// Transform sessions fetch their CLI before they have a key.
+	// Transform sessions fetch their CLI and fonts before they have a key.
 	open := http.NewServeMux()
 	open.HandleFunc("GET /transform/cli", serveTransformCLI)
+	open.HandleFunc("GET /transform/fonts/{name}", newTransformFontStore(dataDir).serve)
 	open.Handle("/", requireAuth(tokenHash, transforms, publicMux))
 	return withWebsite(open), requireAgentToken(agents.validToken, mux)
 }
