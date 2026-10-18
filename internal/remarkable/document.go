@@ -59,6 +59,21 @@ func ReadZip(data []byte) (map[string][]byte, error) {
 // Render draws document id from its files, by name as the tablet keeps them
 // (<id>.content, <id>.pdf, <id>/<page>.rm, ...).
 func Render(id string, files map[string][]byte) *Rendered {
+	return render(id, files, 0)
+}
+
+// RenderPage draws page n (from 1) of what Render would draw, alone, for
+// showing one page at a time. Pages still counts them all; PDF is nil when
+// there is no page n.
+func RenderPage(id string, files map[string][]byte, n int) *Rendered {
+	if n < 1 {
+		return &Rendered{}
+	}
+	return render(id, files, n)
+}
+
+// render draws every page when only is 0, otherwise page only alone.
+func render(id string, files map[string][]byte, only int) *Rendered {
 	var content rmContent
 	json.Unmarshal(files[id+".content"], &content)
 	out := &Rendered{Type: "notebook"}
@@ -136,8 +151,13 @@ func Render(id string, files map[string][]byte) *Rendered {
 	if len(pages) == 0 && out.Type == "notebook" {
 		pages = append(pages, notebookPage(&rmPage{}, pointsPerPixel)) // a notebook never opened
 	}
-	if len(pages) > 0 {
-		out.PDF, out.Pages = writePDF(src, pages), len(pages)
+	out.Pages = len(pages)
+	switch {
+	case len(pages) == 0:
+	case only == 0:
+		out.PDF = writePDF(src, pages)
+	case only <= len(pages):
+		out.PDF = writePDF(src, pages[only-1:only])
 	}
 	return out
 }

@@ -129,9 +129,11 @@ Every endpoint requires the bearer token, except the website's `GET /` and `GET 
 | DELETE | `/gmail-login` | Removes it. |
 | GET | `/remarkable` | The reMarkable's documents and folders, as `[{"id", "name", "type", "parent", "pages", "size", "modified"}]`. `type` is `folder`, `pdf`, `epub` or `notebook`; `parent` is `""` at the top level and `"trash"` in the trash. |
 | GET | `/remarkable/{id}` | A document's files, as a zip (the tablet's `.rmdoc`). |
+| GET | `/remarkable/{id}/pages/{n}` | Page `n` (from 1) of a document as the tablet shows it, drawn as `delta remarkable get` draws it, as a one-page PDF. `X-Pages` says how many pages there are (on a 404 past the end too), and `X-Handwriting-Only: true` that they are the handwriting alone (an EPUB, or a PDF that couldn't be read). 404 with `X-Pages: 0` when there is nothing to show. For Tablet on the phone. |
 | POST | `/remarkable/documents` | Puts the body, a PDF or EPUB, on the tablet. Query: `name`, `parent` (a folder's id, or empty). Returns 201 and `{"id"}`. |
 | POST | `/remarkable/folders` | Takes `{"name", "parent"}` and makes a folder. Returns 201 and `{"id"}`. |
 | PATCH | `/remarkable/{id}` | Takes `{"name"?, "parent"?}`: renames or moves, and `"parent": "trash"` trashes. |
+| POST | `/remarkable/{id}` | The same as `PATCH`, for clients that can't send it (Java's `HttpURLConnection`, so Tablet on the phone). |
 | GET | `/transforms` | The transform jobs, newest first, as `[{"id", "document", "name", "status", "created", "updated", "account", "session", "title", "progress", "percent", "error", "result", "tablet", "files"}]`. `status` is `running`, `done` or `failed`; `title`, `progress` (a status line) and `percent` are what the agent last reported. |
 | POST | `/transforms` | Takes `{"document", "server"?}` and starts a transform job on that tablet document. `server` is the command center's `https://` address as the job's session reaches it (by default `https://` and the request's host). Returns 201 and the job. |
 | DELETE | `/transforms/{id}` | Forgets a job; a running one's key stops working. |
@@ -297,7 +299,7 @@ It is white-labeled like music: nothing the agent sees names Z-Library or its ho
 
 ## Transform jobs
 
-A transform job turns a document on the reMarkable into a new one, following instructions the user wrote on it: they write "type this up in MLA format" at the top of a handwritten essay, start a job, and get the typed essay back on the tablet. Jobs are started from the website's **Tablet** page (each document has a Transform button), with `delta remarkable transform <document>`, or with `POST /transforms`. The phone app doesn't offer it yet.
+A transform job turns a document on the reMarkable into a new one, following instructions the user wrote on it: they write "type this up in MLA format" at the top of a handwritten essay, start a job, and get the typed essay back on the tablet. Jobs are started from the website's **Tablet** page (each document has a Transform button), from **Tablet** on the phone (`tablet/` in [thooton/sonim](https://github.com/thooton/sonim), a reMarkable companion that also browses the tablet's files and shows their pages through `GET /remarkable/{id}/pages/{n}`), with `delta remarkable transform <document>`, or with `POST /transforms`.
 
 **How one runs.** `transform.go` starts a cloud session for the job itself, on the first Claude account with room left in both usage windows (as the phone picks one). It runs in an environment made for transform jobs (one per account and command center address, found by its name, `Delta transform <hash>`), unlike the Delta one in three ways:
 

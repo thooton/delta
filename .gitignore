@@ -3,5 +3,10 @@
 /delta
 /delta-cc
 /transform
+# What `go build` leaves when run inside a command's own directory.
+/cmd/delta/delta
+/cmd/delta-cc/delta-cc
+/cmd/transform/transform
 /cmd/delta-cc/music-engine/engine.*
 /cmd/delta-cc/transform-cli/transform-*
+/data.zip
