@@ -1,4 +1,4 @@
-package main
+package remarkable
 
 // Reading the reMarkable's page files (<page-id>.rm), version 6, the format
 // of firmware 3.x. A page is a list of blocks; the ones read here are the

@@ -35,6 +35,11 @@ jobs:
             GOOS=${target%/*} GOARCH=${target#*/} \
               go build -trimpath -ldflags="-s -w" -o "dist/delta-${target%/*}-${target#*/}" ./cmd/delta
           done
+          # The transform CLI, which every command center embeds to serve to
+          # transform jobs' cloud sessions (always linux/amd64).
+          GOOS=linux GOARCH=amd64 \
+            go build -trimpath -ldflags="-s -w" -o cmd/delta-cc/transform-cli/transform-linux-amd64 ./cmd/transform
+          cp cmd/delta-cc/transform-cli/transform-linux-amd64 dist/
           for target in linux/amd64 linux/arm64; do
             # Embeds the `delta music` engine for this platform (if it has one).
             scripts/fetch-music-engine.sh ${target%/*} ${target#*/}

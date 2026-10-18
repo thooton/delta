@@ -1,7 +1,6 @@
 package main
 
 import (
-	"archive/zip"
 	"bytes"
 	"encoding/json"
 	"errors"
@@ -15,6 +14,8 @@ import (
 	"strings"
 	"text/tabwriter"
 	"time"
+
+	"github.com/thooton/delta/internal/remarkable"
 )
 
 // delta remarkable: the user's reMarkable tablet, through the command
@@ -64,6 +65,10 @@ func runRemarkable(args []string) error {
 		return err
 	case "mv", "move", "rename":
 		return rmMove(c, args)
+	case "transform":
+		return rmTransform(c, args)
+	case "transforms", "jobs":
+		return rmTransforms(c)
 	case "rm", "trash", "delete":
 		if len(args) != 1 {
 			return errors.New("usage: delta remarkable rm <document|folder>")
@@ -374,76 +379,6 @@ func rmMove(c config, args []string) error {
 	return nil
 }
 
-// rmContent is the part of a document's .content file that orders its
-// pages: cPages in firmware 3, pages and redirectionPageMap before.
-type rmContent struct {
-	FileType string   `json:"fileType"`
-	Pages    []string `json:"pages"`
-	Redirect []int    `json:"redirectionPageMap"`
-	CPages   struct {
-		Pages []struct {
-			ID  string `json:"id"`
-			Idx struct {
-				Value string `json:"value"`
-			} `json:"idx"`
-			Redir *struct {
-				Value int `json:"value"`
-			} `json:"redir"`
-			Deleted *struct {
-				Value int `json:"value"`
-			} `json:"deleted"`
-		} `json:"pages"`
-	} `json:"cPages"`
-}
-
-type rmPageRef struct {
-	id    string
-	redir int // the page of the PDF or EPUB it is on; -1 for an added page
-}
-
-// pageOrder lists a document's pages in order.
-func (c *rmContent) pageOrder() []rmPageRef {
-	var out []rmPageRef
-	if len(c.CPages.Pages) > 0 {
-		pages := c.CPages.Pages
-		sort.SliceStable(pages, func(i, j int) bool { return pages[i].Idx.Value < pages[j].Idx.Value })
-		for _, p := range pages {
-			if p.Deleted != nil && p.Deleted.Value != 0 {
-				continue
-			}
-			r := -1
-			if p.Redir != nil {
-				r = p.Redir.Value
-			}
-			out = append(out, rmPageRef{p.ID, r})
-		}
-		return out
-	}
-	for i, id := range c.Pages {
-		r := i
-		if i < len(c.Redirect) {
-			r = c.Redirect[i]
-		}
-		out = append(out, rmPageRef{id, r})
-	}
-	return out
-}
-
-// safeFileName makes a document's name usable as a file name.
-func safeFileName(name string) string {
-	name = strings.Map(func(r rune) rune {
-		if strings.ContainsRune(`/\:*?"<>|`, r) || r < 32 {
-			return '_'
-		}
-		return r
-	}, name)
-	name = strings.TrimSpace(name)
-	if name == "" || name == "." || name == ".." {
-		name = "document"
-	}
-	return name
-}
-
 func rmGet(c config, args []string) error {
 	var pos []string
 	original := false
@@ -482,143 +417,112 @@ func rmGet(c config, args []string) error {
 	if err != nil {
 		return err
 	}
-	zr, err := zip.NewReader(bytes.NewReader(body), int64(len(body)))
+	files, err := remarkable.ReadZip(body)
 	if err != nil {
 		return fmt.Errorf("reading the document: %w", err)
 	}
-	files := map[string][]byte{}
-	for _, f := range zr.File {
-		r, err := f.Open()
-		if err != nil {
-			continue
-		}
-		var b bytes.Buffer
-		b.ReadFrom(r)
-		r.Close()
-		files[f.Name] = b.Bytes()
-	}
-	var content rmContent
-	json.Unmarshal(files[it.ID+".content"], &content)
-	base := filepath.Join(dir, safeFileName(it.Name))
-	pdfData, isPDF := files[it.ID+".pdf"]
-	epubData, isEPUB := files[it.ID+".epub"]
-
-	if original || isEPUB {
-		data, ext := pdfData, "pdf"
-		if isEPUB {
-			data, ext = epubData, "epub"
-		}
-		if data == nil {
+	r := remarkable.Render(it.ID, files)
+	base := filepath.Join(dir, remarkable.SafeFileName(it.Name))
+	if original || r.Type == "epub" {
+		if r.Original == nil {
 			return fmt.Errorf("%s is a notebook: there is no original file", t.path(it))
 		}
-		name := base + "." + ext
-		if original && isPDF {
+		name := base + "." + r.Type
+		if original && r.Type == "pdf" {
 			name = base + " (original).pdf"
 		}
-		if err := os.WriteFile(name, data, 0o644); err != nil {
+		if err := os.WriteFile(name, r.Original, 0o644); err != nil {
 			return err
 		}
-		fmt.Printf("Saved %s (the %s as uploaded, %s).\n", name, strings.ToUpper(ext), humanSize(int64(len(data))))
+		fmt.Printf("Saved %s (the %s as uploaded, %s).\n", name, strings.ToUpper(r.Type), humanSize(int64(len(r.Original))))
 		if original {
 			return nil
 		}
 	}
-
-	// The tablet's pages, in order, with what is written on each.
-	refs := content.pageOrder()
-	var src *pdfFile
-	var srcPages []pdfPage
-	if isPDF {
-		if src, err = readPDF(pdfData); err != nil {
-			// Then the PDF as it is, and the handwriting on pages of its own.
-			src = nil
-			name := base + ".pdf"
-			if err := os.WriteFile(name, pdfData, 0o644); err != nil {
-				return err
-			}
-			fmt.Printf("Saved %s (the PDF as uploaded: delta couldn't read it to draw on it, %v).\n", name, err)
-		} else {
-			srcPages = src.pages()
-			if len(refs) == 0 { // never opened on the tablet
-				for i := range srcPages {
-					refs = append(refs, rmPageRef{redir: i})
-				}
-			}
+	if r.Unreadable != nil {
+		// Then the PDF as it is, and the handwriting on pages of its own.
+		name := base + ".pdf"
+		if err := os.WriteFile(name, r.Original, 0o644); err != nil {
+			return err
 		}
+		fmt.Printf("Saved %s (the PDF as uploaded: delta couldn't read it to draw on it, %v).\n", name, r.Unreadable)
 	}
-	scale := pointsPerPixel
-	if len(srcPages) > 0 {
-		scale = rmScale(srcPages[0].shownSize())
+	for _, p := range r.Problems {
+		fmt.Println(p)
 	}
-	var out []outPage
-	written := 0
-	for i, ref := range refs {
-		page := &rmPage{}
-		if data, ok := files[it.ID+"/"+ref.id+".rm"]; ok {
-			p, err := parseRM(data)
-			if err != nil {
-				fmt.Printf("Couldn't read page %d: %v.\n", i+1, err)
-			} else {
-				page = p
-			}
-		}
-		hasInk := len(page.Strokes) > 0 || page.Text != "" || len(page.Highlights) > 0
-		if hasInk {
-			written++
-		}
-		switch {
-		case src != nil && ref.redir >= 0 && ref.redir < len(srcPages):
-			sp := &srcPages[ref.redir]
-			scale = rmScale(sp.shownSize())
-			o := outPage{src: sp}
-			if hasInk {
-				o.ink = inkOps(page, sp.rmTransform())
-			}
-			out = append(out, o)
-		case isPDF && src != nil || !isPDF && !isEPUB:
-			// A notebook's page, or one added to a PDF on the tablet, as
-			// wide as the PDF's pages around it.
-			out = append(out, notebookPage(page, scale))
-		case hasInk:
-			// On an EPUB, or a PDF that couldn't be read: the handwriting
-			// alone, labelled with where it is.
-			o := notebookPage(page, pointsPerPixel)
-			if ref.redir >= 0 {
-				o.label = fmt.Sprintf("Handwriting on page %d of the %s", ref.redir+1, strings.ToUpper(content.FileType))
-			} else {
-				o.label = fmt.Sprintf("A page added after page %d of the %s", lastRedir(refs[:i])+1, strings.ToUpper(content.FileType))
-			}
-			out = append(out, o)
-		}
-	}
-	if len(out) == 0 && !isPDF && !isEPUB {
-		out = append(out, notebookPage(&rmPage{}, pointsPerPixel)) // a notebook never opened
-	}
-	if len(out) == 0 {
+	if r.PDF == nil {
 		fmt.Println("Nothing is written on it.")
 		return nil
 	}
 	name := base + ".pdf"
-	what := fmt.Sprintf("%d page%s", len(out), plural(len(out)))
+	what := fmt.Sprintf("%d page%s", r.Pages, plural(r.Pages))
 	switch {
-	case isEPUB || isPDF && src == nil:
+	case r.Separate:
 		name = base + " (handwriting).pdf"
 		what = "the handwriting on its own, " + what + ", each labelled with the page it is on"
-	case isPDF:
-		what = fmt.Sprintf("as on the tablet, %s, %d written on", what, written)
+	case r.Type == "pdf":
+		what = fmt.Sprintf("as on the tablet, %s, %d written on", what, r.Written)
 	}
-	if err := os.WriteFile(name, writePDF(src, out), 0o644); err != nil {
+	if err := os.WriteFile(name, r.PDF, 0o644); err != nil {
 		return err
 	}
 	fmt.Printf("Saved %s (%s).\n", name, what)
 	return nil
 }
 
-func lastRedir(refs []rmPageRef) int {
-	for i := len(refs) - 1; i >= 0; i-- {
-		if refs[i].redir >= 0 {
-			return refs[i].redir
-		}
+// rmTransform starts a transform job on a document: an agent of its own makes
+// the new document its instructions ask for (cmd/delta-cc/transform.go).
+func rmTransform(c config, args []string) error {
+	if len(args) != 1 {
+		return errors.New("usage: delta remarkable transform <document>")
 	}
-	return -1
+	if strings.HasPrefix(c.Server, "http://"+unixHost) {
+		return errors.New("transform jobs can't be started from this session; the user can start one from a regular (●) session or the website")
+	}
+	t, err := rmLoad(c)
+	if err != nil {
+		return err
+	}
+	it, err := t.find(args[0])
+	if err != nil {
+		return err
+	}
+	body, _ := json.Marshal(map[string]string{"document": it.ID, "server": c.Server})
+	if _, err := do(c, http.MethodPost, "/transforms", bytes.NewReader(body)); err != nil {
+		return err
+	}
+	fmt.Printf("Started a transform job on %s. It runs by itself, in a session of its own, following the instructions written on the document; the result goes on the tablet next to it, and into the files. Check on it with `delta remarkable transforms`.\n", t.path(it))
+	return nil
+}
+
+func rmTransforms(c config) error {
+	body, err := do(c, http.MethodGet, "/transforms", nil)
+	if err != nil {
+		return err
+	}
+	var jobs []struct {
+		Name, Status, Error, Result string
+		Created                     time.Time
+		Files                       []string
+	}
+	if err := json.Unmarshal(body, &jobs); err != nil {
+		return err
+	}
+	if len(jobs) == 0 {
+		fmt.Println("No transform jobs yet.")
+		return nil
+	}
+	tw := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
+	fmt.Fprintln(tw, "STARTED\tDOCUMENT\tSTATUS\tRESULT")
+	for _, j := range jobs {
+		result := ""
+		switch j.Status {
+		case "done":
+			result = fmt.Sprintf("%q on the tablet; files: %s", j.Result, strings.Join(j.Files, ", "))
+		case "failed":
+			result = j.Error
+		}
+		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\n", j.Created.Local().Format("2006-01-02 15:04"), j.Name, j.Status, result)
+	}
+	return tw.Flush()
 }

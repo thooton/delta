@@ -606,3 +606,105 @@ func (s *cloudAccountStore) save(accounts []cloudAccount) error {
 	data, _ := json.MarshalIndent(accounts, "", "  ")
 	return writePrivateFile(s.path, append(data, '\n'))
 }
+
+// ---------------------------------------------------------------------------
+// Sessions started here
+// ---------------------------------------------------------------------------
+
+// pick returns the first account, in the listed order, with room left in
+// both usage windows, as the phone picks one for a new session. An account
+// whose usage can't be read is tried anyway, unless its login is dead.
+func (s *cloudAccountStore) pick(ctx context.Context) (string, error) {
+	s.mu.Lock()
+	accounts, err := s.load()
+	s.mu.Unlock()
+	if err != nil {
+		return "", err
+	}
+	if len(accounts) == 0 {
+		return "", errors.New("no Claude accounts are set up on the command center; add one with `delta accounts login`")
+	}
+	for _, acct := range accounts {
+		a, err := s.fresh(ctx, acct.ID, "")
+		if errors.Is(err, errCloudRejected) {
+			continue
+		} else if err != nil {
+			return acct.ID, nil
+		}
+		status, body, err := s.api(ctx, "/api/oauth/usage", a.AccessToken)
+		if err != nil || status != http.StatusOK {
+			return a.ID, nil
+		}
+		var usage map[string]*struct {
+			Utilization *float64 `json:"utilization"`
+		}
+		json.Unmarshal(body, &usage)
+		full := false
+		for _, k := range []string{"five_hour", "seven_day"} {
+			if w := usage[k]; w != nil && w.Utilization != nil && *w.Utilization >= 100 {
+				full = true
+			}
+		}
+		if !full {
+			return a.ID, nil
+		}
+	}
+	return "", errors.New("every Claude account is at its usage limit")
+}
+
+// request calls the provider's API for account id as the relay does: with
+// its access token, renewing the login once if the provider turns the token
+// down. header adds to the relay's headers.
+func (s *cloudAccountStore) request(ctx context.Context, id, method, path string, header map[string]string, body []byte) (int, []byte, error) {
+	a, err := s.fresh(ctx, id, "")
+	if err != nil {
+		return 0, nil, err
+	}
+	for attempt := 0; ; attempt++ {
+		req, err := http.NewRequestWithContext(ctx, method, s.apiURL+path, bytes.NewReader(body))
+		if err != nil {
+			return 0, nil, err
+		}
+		for k, v := range header {
+			req.Header.Set(k, v)
+		}
+		req.Header.Set("Accept", "application/json")
+		if body != nil {
+			req.Header.Set("Content-Type", "application/json")
+		}
+		req.Header.Set("Authorization", "Bearer "+a.AccessToken)
+		req.Header.Set("anthropic-version", "2023-06-01")
+		req.Header.Set("anthropic-client-platform", "claude_code_cli")
+		req.Header.Set("User-Agent", cloudRelayUserAgent)
+		resp, err := s.client.Do(req)
+		if err != nil {
+			return 0, nil, fmt.Errorf("couldn't reach the provider: %w", err)
+		}
+		data, err := io.ReadAll(io.LimitReader(resp.Body, 4<<20))
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusUnauthorized || attempt > 0 {
+			return resp.StatusCode, data, err
+		}
+		if a, err = s.fresh(ctx, a.ID, a.AccessToken); err != nil {
+			return 0, nil, err
+		}
+	}
+}
+
+// organization is the UUID of the organization account id's sessions are
+// scoped to.
+func (s *cloudAccountStore) organization(ctx context.Context, id string) (string, error) {
+	status, body, err := s.request(ctx, id, http.MethodGet, "/api/oauth/profile", nil, nil)
+	if err != nil {
+		return "", err
+	}
+	var p struct {
+		Organization struct {
+			UUID string `json:"uuid"`
+		} `json:"organization"`
+	}
+	if status != http.StatusOK || json.Unmarshal(body, &p) != nil || p.Organization.UUID == "" {
+		return "", fmt.Errorf("the profile lookup answered HTTP %d", status)
+	}
+	return p.Organization.UUID, nil
+}

@@ -1,4 +1,4 @@
-package main
+package remarkable
 
 // Just enough PDF to draw the user's handwriting on the PDF they wrote on:
 // a reader for the original (cross-reference tables and streams, object

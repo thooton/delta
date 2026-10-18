@@ -22,7 +22,9 @@ type fakeCloud struct {
 	mu       sync.Mutex
 	current  int // the live refresh token's number
 	renewals int
-	refuse   bool // the sessions list turns the next token down, as if it expired early
+	refuse   bool             // the sessions list turns the next token down, as if it expired early
+	envs     []map[string]any // environments made, as sent
+	sessions []map[string]any // sessions started, as sent
 }
 
 func newFakeCloud() *fakeCloud {
@@ -102,6 +104,49 @@ func newFakeCloud() *fakeCloud {
 			"who": who, "org": r.Header.Get("x-organization-uuid"), "query": r.URL.RawQuery,
 			"leaked": r.Header.Get("Cookie") + r.Header.Get("Origin"),
 		})
+	})
+	// Environments and sessions, for transform jobs: only for the first
+	// account's organization.
+	scoped := func(w http.ResponseWriter, r *http.Request, beta bool) bool {
+		if who(r) != "first" || r.Header.Get("x-organization-uuid") != "org-1" || beta && r.Header.Get("anthropic-beta") != transformBeta {
+			writeError(w, http.StatusUnauthorized, "invalid token")
+			return false
+		}
+		return true
+	}
+	mux.HandleFunc("GET /v1/environment_providers", func(w http.ResponseWriter, r *http.Request) {
+		if !scoped(w, r, false) {
+			return
+		}
+		f.mu.Lock()
+		defer f.mu.Unlock()
+		envs := []map[string]any{{"kind": "anthropic_cloud", "name": "Delta 12345678", "environment_id": "env_other"}}
+		for i, e := range f.envs {
+			envs = append(envs, map[string]any{"kind": e["kind"], "name": e["name"], "environment_id": fmt.Sprintf("env_%d", i+1)})
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"environments": envs})
+	})
+	mux.HandleFunc("POST /v1/environment_providers/cloud/create", func(w http.ResponseWriter, r *http.Request) {
+		if !scoped(w, r, true) {
+			return
+		}
+		var env map[string]any
+		json.NewDecoder(r.Body).Decode(&env)
+		f.mu.Lock()
+		defer f.mu.Unlock()
+		f.envs = append(f.envs, env)
+		writeJSON(w, http.StatusOK, map[string]any{"environment_id": fmt.Sprintf("env_%d", len(f.envs))})
+	})
+	mux.HandleFunc("POST /v1/sessions", func(w http.ResponseWriter, r *http.Request) {
+		if !scoped(w, r, true) {
+			return
+		}
+		var session map[string]any
+		json.NewDecoder(r.Body).Decode(&session)
+		f.mu.Lock()
+		defer f.mu.Unlock()
+		f.sessions = append(f.sessions, session)
+		writeJSON(w, http.StatusOK, map[string]any{"id": fmt.Sprintf("session_%d", len(f.sessions))})
 	})
 	f.Server = httptest.NewServer(mux)
 	return f

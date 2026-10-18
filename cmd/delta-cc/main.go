@@ -283,7 +283,8 @@ func newHandler(tokenHash []byte, filesDir string, maxUpload int64, u *updater, 
 	newMusicService(dataDir).register(mux)
 	(&booksLoginStore{path: filepath.Join(dataDir, booksLoginFile)}).register(mux)
 	(&gmailLoginStore{path: filepath.Join(dataDir, gmailLoginFile)}).register(mux)
-	newCloudAccountStore(filepath.Join(dataDir, cloudAccountsFile)).register(mux)
+	cloud := newCloudAccountStore(filepath.Join(dataDir, cloudAccountsFile))
+	cloud.register(mux)
 	(&conversationStore{dir: filepath.Join(dataDir, conversationsDir), max: maxUpload}).register(mux)
 	accessTokenStore(dataDir).register(mux)
 	newGitHubRelay(dataDir).register(mux)
@@ -298,12 +299,19 @@ func newHandler(tokenHash []byte, filesDir string, maxUpload int64, u *updater, 
 	} else {
 		registerRemarkableDisabled(mux)
 	}
-	// Backup sessions are run from the public side only, so the agent
-	// handler never reaches these routes (agentAllowed refuses them too).
+	// Backup sessions and transform jobs are run from the public side only,
+	// so the agent handler never reaches these routes (agentAllowed refuses
+	// them too).
 	publicMux := http.NewServeMux()
 	publicMux.Handle("/", mux)
 	agents.register(publicMux)
-	return withWebsite(requireAuth(tokenHash, publicMux)), requireAgentToken(agents.validToken, mux)
+	transforms := newTransformService(dataDir, filesDir, remarkable, cloud, maxUpload)
+	transforms.register(publicMux)
+	// Transform sessions fetch their CLI before they have a key.
+	open := http.NewServeMux()
+	open.HandleFunc("GET /transform/cli", serveTransformCLI)
+	open.Handle("/", requireAuth(tokenHash, transforms, publicMux))
+	return withWebsite(open), requireAgentToken(agents.validToken, mux)
 }
 
 func logRequests(next http.Handler) http.Handler {
