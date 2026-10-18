@@ -887,8 +887,8 @@ func (p pdfPage) shownSize() (w, h float64) {
 	return w, h
 }
 
-// rmScale is the PDF points per screen pixel the tablet shows a page of
-// this size at: it fits the page inside the screen.
+// rmScale is the PDF points per screen pixel that makes a page of this
+// size fit inside the screen, for pages added between a PDF's pages.
 func rmScale(w, h float64) float64 {
 	if h/w < rmHeight/rmWidth {
 		return w / rmWidth
@@ -897,13 +897,15 @@ func rmScale(w, h float64) float64 {
 }
 
 // rmTransform takes the tablet's page coordinates to this page's: the
-// tablet fits the page, as shown (after /Rotate), inside the screen, puts
-// its top at y = 0 and its middle at x = 0.
+// tablet puts the page, as shown (after /Rotate), at its real size at the
+// screen's 226 dpi, whatever its size and however it is zoomed, with its
+// top at y = 0 and its middle at x = 0. (Not fitted to the screen: a
+// letter page's strokes then come out a line low and too wide.)
 func (p pdfPage) rmTransform() [6]float64 {
 	b := p.visibleBox()
 	llx, lly, urx, ury := b[0], b[1], b[2], b[3]
-	w, h := p.shownSize()
-	s := rmScale(w, h)
+	w, _ := p.shownSize()
+	s := pointsPerPixel
 	switch p.rotate {
 	case 90:
 		return [6]float64{0, s, s, 0, llx, lly + w/2}
