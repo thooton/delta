@@ -6,7 +6,8 @@ package remarkable
 // that copies its pages in the tablet's order, each with its strokes drawn
 // over it, and adds pages of its own for those added on the tablet and for
 // notebooks. Content streams, fonts and images are copied as they are, never
-// decoded. Encrypted PDFs aren't read.
+// decoded; images pasted onto pages on the tablet are added. Encrypted PDFs
+// aren't read.
 
 import (
 	"bytes"
@@ -14,6 +15,10 @@ import (
 	"compress/zlib"
 	"errors"
 	"fmt"
+	"image"
+	"image/color"
+	_ "image/jpeg"
+	_ "image/png"
 	"io"
 	"math"
 	"regexp"
@@ -1093,6 +1098,24 @@ func writePDF(src *pdfFile, pages []outPage) []byte {
 				}
 				res["ExtGState"] = gs
 			}
+			if p.ink != nil && len(p.ink.images) > 0 {
+				xobjs := w.direct(w.resourceEntry(p.src, "XObject"))
+				for name, data := range p.ink.images {
+					img, mask, err := pdfImage(data)
+					if err != nil {
+						continue // cut short past its header; readers skip a missing image
+					}
+					if mask != nil {
+						m := w.alloc()
+						w.set(m, mask)
+						img.Dict["SMask"] = m
+					}
+					r := w.alloc()
+					w.set(r, img)
+					xobjs[pdfName(name)] = r
+				}
+				res["XObject"] = xobjs
+			}
 			if usesFont {
 				if fontRef == (pdfRef{}) {
 					fontRef = w.alloc()
@@ -1137,6 +1160,66 @@ func writePDF(src *pdfFile, pages []outPage) []byte {
 	}
 	fmt.Fprintf(&out, "trailer\n<< /Size %d /Root %d 0 R >>\nstartxref\n%d\n%%%%EOF\n", len(w.objs)+1, catalog.Num, xref)
 	return out.Bytes()
+}
+
+// pdfImage makes an image XObject of a PNG or JPEG file, with a soft mask
+// for its transparency when it has any. A JPEG in gray or YCbCr goes in as
+// it is; anything else is decoded and stored losslessly, in gray when every
+// pixel is.
+func pdfImage(data []byte) (img, mask *pdfStream, err error) {
+	if cfg, format, err := image.DecodeConfig(bytes.NewReader(data)); err == nil && format == "jpeg" {
+		cs := map[color.Model]pdfName{color.GrayModel: "DeviceGray", color.YCbCrModel: "DeviceRGB"}[cfg.ColorModel]
+		if cs != "" {
+			return &pdfStream{Dict: pdfDict{
+				"Type": pdfName("XObject"), "Subtype": pdfName("Image"), "Filter": pdfName("DCTDecode"),
+				"Width": int64(cfg.Width), "Height": int64(cfg.Height), "ColorSpace": cs, "BitsPerComponent": int64(8),
+			}, Data: data}, nil, nil
+		}
+	}
+	m, _, err := image.Decode(bytes.NewReader(data))
+	if err != nil {
+		return nil, nil, err
+	}
+	r := m.Bounds()
+	if r.Empty() {
+		return nil, nil, errors.New("the image is empty")
+	}
+	rgb := make([]byte, 0, r.Dx()*r.Dy()*3)
+	alpha := make([]byte, 0, r.Dx()*r.Dy())
+	gray, opaque := true, true
+	for y := r.Min.Y; y < r.Max.Y; y++ {
+		for x := r.Min.X; x < r.Max.X; x++ {
+			c := color.NRGBAModel.Convert(m.At(x, y)).(color.NRGBA)
+			if c.A == 0 {
+				// Often black, which readers blend into the edges when
+				// they scale the image: white, like the paper, instead.
+				c.R, c.G, c.B = 255, 255, 255
+			}
+			rgb = append(rgb, c.R, c.G, c.B)
+			alpha = append(alpha, c.A)
+			gray = gray && c.R == c.G && c.G == c.B
+			opaque = opaque && c.A == 255
+		}
+	}
+	cs := pdfName("DeviceRGB")
+	if gray {
+		cs = "DeviceGray"
+		for i := range alpha {
+			rgb[i] = rgb[3*i]
+		}
+		rgb = rgb[:len(alpha)]
+	}
+	dict := func(cs pdfName) pdfDict {
+		return pdfDict{"Type": pdfName("XObject"), "Subtype": pdfName("Image"), "Filter": pdfName("FlateDecode"),
+			"Width": int64(r.Dx()), "Height": int64(r.Dy()), "ColorSpace": cs, "BitsPerComponent": int64(8)}
+	}
+	img = flateStream(rgb)
+	img.Dict = dict(cs)
+	if !opaque {
+		mask = flateStream(alpha)
+		mask.Dict = dict("DeviceGray")
+	}
+	return img, mask, nil
 }
 
 func (w *pdfWriter) resourceEntry(p *pdfPage, key pdfName) any {

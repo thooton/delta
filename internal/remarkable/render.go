@@ -1,11 +1,12 @@
 package remarkable
 
-// Drawing reMarkable pages as PDF: each page's strokes as vector paths,
-// its highlights, and its typed text in Helvetica.
+// Drawing reMarkable pages as PDF: each page's images, its strokes as
+// vector paths, its highlights, and its typed text in Helvetica.
 
 import (
 	"bytes"
 	"fmt"
+	"image"
 	"image/color"
 	"math"
 	"strings"
@@ -116,17 +117,24 @@ func rmBounds(pages ...*rmPage) (minX, minY, maxX, maxY float64) {
 				minY, maxY = min(minY, q.Y-w), max(maxY, q.Y+w)
 			}
 		}
+		for _, im := range p.Images {
+			for _, v := range im.Vertices {
+				minX, maxX = min(minX, v[0]), max(maxX, v[0])
+				minY, maxY = min(minY, v[1]), max(maxY, v[1])
+			}
+		}
 	}
 	return
 }
 
-// pdfInk is a page's strokes and text as PDF drawing commands, with the
-// graphics states and font they use.
+// pdfInk is a page's images, strokes and text as PDF drawing commands,
+// with the graphics states, font and images they use.
 type pdfInk struct {
 	ops     bytes.Buffer
 	alphas  map[string]float64 // graphics state name -> opacity
 	blend   map[string]bool    // graphics states that multiply
 	useFont bool
+	images  map[string][]byte // image name -> its file (PNG or JPEG)
 }
 
 const pdfInkFont = "DeltaF1"
@@ -135,11 +143,21 @@ const pdfInkFont = "DeltaF1"
 // commands under the transform m, which takes page coordinates (screen
 // pixels, y down) to the PDF page's.
 func inkOps(p *rmPage, m [6]float64) *pdfInk {
-	out := &pdfInk{alphas: map[string]float64{}, blend: map[string]bool{}}
+	out := &pdfInk{alphas: map[string]float64{}, blend: map[string]bool{}, images: map[string][]byte{}}
 	b := &out.ops
 	b.WriteString("q\n")
 	fmt.Fprintf(b, "%s %s %s %s %s %s cm\n", pdfNum(m[0]), pdfNum(m[1]), pdfNum(m[2]), pdfNum(m[3]), pdfNum(m[4]), pdfNum(m[5]))
 	b.WriteString("1 J 1 j\n")
+	// Images first, so what is written over them shows.
+	for i, im := range p.Images {
+		if _, _, err := image.DecodeConfig(bytes.NewReader(im.Data)); err != nil {
+			continue // not a PNG or JPEG
+		}
+		name := fmt.Sprintf("%s%d", pdfImagePrefix, i+1)
+		if imageOps(b, im, name) {
+			out.images[name] = im.Data
+		}
+	}
 	// Highlights that snapped to a PDF's text are rectangles, not strokes.
 	for _, h := range p.Highlights {
 		c, ok := rmColors[h.Color]
@@ -199,6 +217,38 @@ func inkOps(p *rmPage, m [6]float64) *pdfInk {
 	}
 	b.WriteString("Q\n")
 	return out
+}
+
+const pdfImagePrefix = "DeltaIm"
+
+// imageOps draws an image, clipped to its mesh, under the transform its
+// mesh gives it: the one taking the image's u and v to page positions,
+// worked out from the corners of its first triangle. (A mesh the tablet
+// warped into something no transform makes comes out flat.) It is false
+// for a mesh too thin to draw on.
+func imageOps(b *bytes.Buffer, im rmImage, name string) bool {
+	v0, v1, v2 := im.Vertices[im.Indices[0]], im.Vertices[im.Indices[1]], im.Vertices[im.Indices[2]]
+	du1, dv1, du2, dv2 := v1[2]-v0[2], v1[3]-v0[3], v2[2]-v0[2], v2[3]-v0[3]
+	det := du1*dv2 - du2*dv1
+	if math.Abs(det) < 1e-9 {
+		return false
+	}
+	// Page offset per unit of u (ux, uy) and of v (vx, vy).
+	dx1, dy1, dx2, dy2 := v1[0]-v0[0], v1[1]-v0[1], v2[0]-v0[0], v2[1]-v0[1]
+	ux, uy := (dx1*dv2-dx2*dv1)/det, (dy1*dv2-dy2*dv1)/det
+	vx, vy := (dx2*du1-dx1*du2)/det, (dy2*du1-dy1*du2)/det
+	// Where u = v = 0, the image's top left corner, is.
+	ox, oy := v0[0]-ux*v0[2]-vx*v0[3], v0[1]-uy*v0[2]-vy*v0[3]
+	b.WriteString("q\n")
+	for i := 0; i+2 < len(im.Indices); i += 3 {
+		a, c, d := im.Vertices[im.Indices[i]], im.Vertices[im.Indices[i+1]], im.Vertices[im.Indices[i+2]]
+		fmt.Fprintf(b, "%s %s m %s %s l %s %s l h\n", pdfNum(a[0]), pdfNum(a[1]), pdfNum(c[0]), pdfNum(c[1]), pdfNum(d[0]), pdfNum(d[1]))
+	}
+	b.WriteString("W n\n")
+	// A PDF image fills the unit square from its bottom left, so v runs
+	// from the top: (s, t) is u = s, v = 1 - t.
+	fmt.Fprintf(b, "%s %s %s %s %s %s cm /%s Do Q\n", pdfNum(ux), pdfNum(uy), pdfNum(-vx), pdfNum(-vy), pdfNum(ox+vx), pdfNum(oy+vy), name)
+	return true
 }
 
 // textOps writes typed text where the tablet shows it, in Helvetica, at

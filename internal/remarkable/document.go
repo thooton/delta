@@ -119,7 +119,14 @@ func render(id string, files map[string][]byte, only int) *Rendered {
 				page = p
 			}
 		}
-		hasInk := len(page.Strokes) > 0 || page.Text != "" || len(page.Highlights) > 0
+		images := page.Images[:0]
+		for _, im := range page.Images {
+			if im.Data = files[id+"/"+ref.id+"/"+im.File]; im.Data != nil {
+				images = append(images, im)
+			}
+		}
+		page.Images = images
+		hasInk := page.written()
 		if hasInk {
 			out.Written++
 		}
