@@ -43,7 +43,12 @@ func selfTest() error {
 	if err != nil {
 		return err
 	}
-	public, agentHandler := newHandler(hash[:], filesDir, 1<<20, u, nil, agents)
+	rmDir := filepath.Join(dir, "rmfakecloud")
+	remarkable := newRemarkableStore(rmDir, "user", "", 1<<20)
+	if err := os.MkdirAll(remarkable.dir, 0o700); err != nil {
+		return err
+	}
+	public, agentHandler := newHandler(hash[:], filesDir, 1<<20, u, nil, remarkable, agents)
 	ts := httptest.NewServer(public)
 	defer ts.Close()
 
@@ -106,6 +111,12 @@ func selfTest() error {
 		if _, err := expect(s.desc, s.want, s.method, s.path, s.tok, s.body); err != nil {
 			return err
 		}
+	}
+
+	if err := selfTestRemarkable(remarkable, func(desc string, want int, method, path string, body []byte) ([]byte, error) {
+		return expect(desc, want, method, path, token, body)
+	}); err != nil {
+		return fmt.Errorf("remarkable: %w", err)
 	}
 
 	data, err := expect("download", 200, "GET", "/files/test.apk", token, nil)
