@@ -58,8 +58,9 @@ EXAMPLES
 
 NOTES
   Handwriting is drawn as strokes (pens, colors, highlighters): to read
-  it, look at the pages; it has no text layer. Typed text is drawn in
-  Helvetica, not the tablet's font. Templates (lines, grids) aren't drawn.
+  it, look at the pages; it has no text layer. Images pasted onto a page
+  are drawn under the writing. Typed text is drawn in Helvetica, not the
+  tablet's font. Templates (lines, grids) aren't drawn.
 
   The tablet picks up changes when it next syncs, which is right away if
   it is awake and online; otherwise tell the user to wake it. Things the

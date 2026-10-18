@@ -3,8 +3,10 @@ package remarkable
 // Reading the reMarkable's page files (<page-id>.rm), version 6, the format
 // of firmware 3.x. A page is a list of blocks; the ones read here are the
 // strokes (scene line items), typed text (the root text block), highlights
-// on PDFs and EPUBs (scene glyph items) and the layers (tree nodes), whose
-// visibility decides whether their strokes are drawn. The format is
+// on PDFs and EPUBs (scene glyph items), images pasted onto the page (scene
+// image items, and the table naming their files) and the layers (tree
+// nodes), whose visibility decides whether their strokes and images are
+// drawn. The format is
 // reverse-engineered; this follows rmscene (github.com/ricklupton/rmscene).
 //
 // Inside a block, values are tagged: a varuint whose low 4 bits say the
@@ -61,6 +63,19 @@ type rmHighlight struct {
 	Rects [][4]float64 // x, y, w, h
 }
 
+// rmImage is an image pasted onto the page: a mesh of triangles, each
+// corner a page position and the point of the image (u and v, from 0 to 1,
+// v down) drawn there. The image itself is a file beside the page file,
+// <doc>/<page>/<File>.
+type rmImage struct {
+	Layer    rmID
+	ref      [16]byte // its key in the page's image file table
+	File     string
+	Data     []byte       // the file, filled in by render
+	Vertices [][4]float64 // x, y, u, v
+	Indices  []int        // three per triangle
+}
+
 type rmPage struct {
 	Strokes    []rmStroke
 	Text       string // typed text, paragraphs separated by newlines
@@ -68,6 +83,7 @@ type rmPage struct {
 	TextY      float64
 	TextWidth  float64
 	Highlights []rmHighlight
+	Images     []rmImage
 }
 
 type rmNode struct {
@@ -77,14 +93,11 @@ type rmNode struct {
 	anchorX float64
 }
 
-// place moves the strokes of anchored groups to where their text is, and
-// drops the strokes of hidden layers.
+// place moves the strokes and images of anchored groups to where their
+// text is, and drops those of hidden layers.
 func (p *rmPage) place(nodes map[rmID]*rmNode, anchors map[rmID]float64) {
-	kept := p.Strokes[:0]
-	for _, s := range p.Strokes {
-		var dx, dy float64
-		hidden := false
-		id := s.Layer
+	// where is a layer's offset, and whether it is hidden.
+	where := func(id rmID) (dx, dy float64, hidden bool) {
 		for depth := 0; depth < 32; depth++ {
 			n := nodes[id]
 			if n == nil {
@@ -100,6 +113,11 @@ func (p *rmPage) place(nodes map[rmID]*rmNode, anchors map[rmID]float64) {
 			}
 			id = n.parent
 		}
+		return
+	}
+	kept := p.Strokes[:0]
+	for _, s := range p.Strokes {
+		dx, dy, hidden := where(s.Layer)
 		if hidden {
 			continue
 		}
@@ -112,6 +130,24 @@ func (p *rmPage) place(nodes map[rmID]*rmNode, anchors map[rmID]float64) {
 		kept = append(kept, s)
 	}
 	p.Strokes = kept
+	images := p.Images[:0]
+	for _, im := range p.Images {
+		dx, dy, hidden := where(im.Layer)
+		if hidden {
+			continue
+		}
+		for i := range im.Vertices {
+			im.Vertices[i][0] += dx
+			im.Vertices[i][1] += dy
+		}
+		images = append(images, im)
+	}
+	p.Images = images
+}
+
+// written is true when there is something on the page to draw.
+func (p *rmPage) written() bool {
+	return len(p.Strokes) > 0 || p.Text != "" || len(p.Highlights) > 0 || len(p.Images) > 0
 }
 
 const (
@@ -284,6 +320,7 @@ func parseRM(data []byte) (*rmPage, error) {
 	r := &rmReader{b: data, off: 43}
 	var textItems []rmTextItem
 	var styles map[rmID]int
+	imageFiles := map[[16]byte]string{}
 	var firstErr error
 	for r.left() >= 8 {
 		length := int(r.u32())
@@ -344,15 +381,28 @@ func parseRM(data []byte) (*rmPage, error) {
 			}
 		case 0x07: // typed text
 			textItems, styles = parseRMText(b, page)
+		case 0x0E: // the names of the page's image files
+			parseRMImageFiles(b, imageFiles)
+		case 0x0F: // an image
+			if im, ok := parseRMImage(b); ok {
+				page.Images = append(page.Images, im)
+			}
 		}
 		if b.err != nil && firstErr == nil {
 			firstErr = b.err
 		}
 	}
+	images := page.Images[:0]
+	for _, im := range page.Images {
+		if im.File = imageFiles[im.ref]; im.File != "" {
+			images = append(images, im)
+		}
+	}
+	page.Images = images
 	var anchors map[rmID]float64
 	page.Text, anchors = orderText(textItems, styles, page.TextY)
 	page.place(nodes, anchors)
-	if len(page.Strokes) == 0 && page.Text == "" && len(page.Highlights) == 0 && firstErr != nil {
+	if !page.written() && firstErr != nil {
 		return page, firstErr
 	}
 	return page, nil
@@ -438,6 +488,70 @@ func parseRMGlyph(b *rmReader) (rmHighlight, bool) {
 		}
 	}
 	return h, v.err == nil
+}
+
+// parseRMImageFiles reads the table of the page's image files: for each,
+// the key images name it by, and its file name, as a last-writer-wins
+// value (a timestamp, then the name).
+func parseRMImageFiles(b *rmReader, files map[[16]byte]string) {
+	t := b.sub(1)
+	n := t.varuint()
+	for i := uint64(0); i < n && t.err == nil; i++ {
+		e := t.sub(0)
+		var key [16]byte
+		copy(key[:], e.bytes(16))
+		if v := e.optSub(1); v != nil {
+			v.tagID(1)
+			name := v.sub(2).rmString()
+			if v.err == nil && validImageFile(name) {
+				files[key] = name
+			}
+		}
+	}
+}
+
+// validImageFile is true for a bare file name, which can't reach outside
+// the page's folder.
+func validImageFile(name string) bool {
+	return name != "" && name != "." && name != ".." && !strings.ContainsAny(name, "/\\\x00")
+}
+
+// parseRMImage reads an image item: which file it shows (by its key in the
+// image file table, as a last-writer-wins value), and the mesh it is drawn
+// on.
+func parseRMImage(b *rmReader) (rmImage, bool) {
+	parent, v := sceneItem(b)
+	if v == nil || b.err != nil {
+		return rmImage{}, false
+	}
+	im := rmImage{Layer: parent}
+	ref := v.sub(1)
+	ref.tagID(1)
+	copy(im.ref[:], ref.sub(2).bytes(16))
+	if !v.find(3, tagSub) {
+		return rmImage{}, false
+	}
+	verts := v.sub(3)
+	n := verts.varuint() // floats, four to a corner
+	for i := uint64(0); i+4 <= n && verts.err == nil; i += 4 {
+		im.Vertices = append(im.Vertices, [4]float64{verts.f32(), verts.f32(), verts.f32(), verts.f32()})
+	}
+	if idx := v.optSub(4); idx != nil {
+		n := idx.varuint()
+		for i := uint64(0); i < n && idx.err == nil; i++ {
+			if k := int(idx.u32()); k < len(im.Vertices) {
+				im.Indices = append(im.Indices, k)
+			}
+		}
+	}
+	im.Indices = im.Indices[:len(im.Indices)/3*3]
+	if len(im.Indices) == 0 {
+		for i := 2; i < len(im.Vertices); i++ { // a fan, failing a list
+			im.Indices = append(im.Indices, 0, i-1, i)
+		}
+	}
+	ok := ref.err == nil && verts.err == nil && len(im.Indices) > 0
+	return im, ok
 }
 
 func parseRMText(b *rmReader, page *rmPage) ([]rmTextItem, map[rmID]int) {
