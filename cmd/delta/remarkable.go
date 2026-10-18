@@ -501,9 +501,10 @@ func rmTransforms(c config) error {
 		return err
 	}
 	var jobs []struct {
-		Name, Status, Error, Result string
-		Created                     time.Time
-		Files                       []string
+		Name, Title, Status, Progress, Error, Result string
+		Percent                                      int
+		Created                                      time.Time
+		Files                                        []string
 	}
 	if err := json.Unmarshal(body, &jobs); err != nil {
 		return err
@@ -513,16 +514,21 @@ func rmTransforms(c config) error {
 		return nil
 	}
 	tw := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
-	fmt.Fprintln(tw, "STARTED\tDOCUMENT\tSTATUS\tRESULT")
+	fmt.Fprintln(tw, "STARTED\tDOCUMENT\tTITLE\tSTATUS\tRESULT")
 	for _, j := range jobs {
 		result := ""
 		switch j.Status {
+		case "running":
+			result = fmt.Sprintf("%d%%", j.Percent)
+			if j.Progress != "" {
+				result += ": " + j.Progress
+			}
 		case "done":
 			result = fmt.Sprintf("%q on the tablet; files: %s", j.Result, strings.Join(j.Files, ", "))
 		case "failed":
 			result = j.Error
 		}
-		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\n", j.Created.Local().Format("2006-01-02 15:04"), j.Name, j.Status, result)
+		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\n", j.Created.Local().Format("2006-01-02 15:04"), j.Name, j.Title, j.Status, result)
 	}
 	return tw.Flush()
 }

@@ -2,5 +2,6 @@
 /dist/
 /delta
 /delta-cc
+/transform
 /cmd/delta-cc/music-engine/engine.*
 /cmd/delta-cc/transform-cli/transform-*

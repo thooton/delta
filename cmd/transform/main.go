@@ -16,6 +16,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -51,6 +52,22 @@ func run(args []string) error {
 		return get(rest)
 	case "preview":
 		return preview(rest)
+	case "title":
+		if len(rest) == 0 {
+			return errors.New(`usage: transform title "<a few words>"`)
+		}
+		return update(map[string]any{"title": strings.Join(rest, " ")})
+	case "status":
+		return status(rest)
+	case "percent":
+		if len(rest) != 1 {
+			return errors.New("usage: transform percent <0-100>")
+		}
+		n, err := percent(rest[0])
+		if err != nil {
+			return err
+		}
+		return update(map[string]any{"percent": n})
 	case "submit":
 		return submit(rest)
 	case "fail":
@@ -344,6 +361,55 @@ func submit(args []string) error {
 	}
 	json.Unmarshal(resp, &r)
 	fmt.Printf("Submitted %q. It is going onto the user's tablet, next to the original, and into their files to download (%s). The job is done: say in a sentence what you made.\n", r.Name, strings.Join(r.Files, ", "))
+	return nil
+}
+
+// percent reads a percentage: "40" or "40%".
+func percent(s string) (int, error) {
+	n, err := strconv.Atoi(strings.TrimSuffix(strings.TrimSpace(s), "%"))
+	if err != nil || n < 0 || n > 100 {
+		return 0, fmt.Errorf("%q isn't a percentage from 0 to 100", s)
+	}
+	return n, nil
+}
+
+// status sets the status line, and the percentage if the last word is one.
+func status(args []string) error {
+	if len(args) == 0 {
+		return errors.New(`usage: transform status "<what you're doing>" [percent]`)
+	}
+	change := map[string]any{}
+	if len(args) > 1 {
+		if n, err := percent(args[len(args)-1]); err == nil {
+			change["percent"] = n
+			args = args[:len(args)-1]
+		}
+	}
+	change["status"] = strings.Join(args, " ")
+	return update(change)
+}
+
+// update tells the user what the job is and how it is going.
+func update(change map[string]any) error {
+	body, _ := json.Marshal(change)
+	data, err := do(http.MethodPost, "/transform/status", body)
+	if err != nil {
+		return err
+	}
+	var now struct {
+		Title, Status string
+		Percent       int
+	}
+	json.Unmarshal(data, &now)
+	title := now.Title
+	if title == "" {
+		title = "(no title yet)"
+	}
+	line := now.Status
+	if line == "" {
+		line = "(no status yet)"
+	}
+	fmt.Printf("The user now sees: %s · %s · %d%%\n", title, line, now.Percent)
 	return nil
 }
 

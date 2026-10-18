@@ -10,14 +10,28 @@ const help = `transform: one transform job, for the user's reMarkable tablet
   a study guide", "turn this table into a spreadsheet-style table", "fill in
   this worksheet with my answers, typed".
 
+KEEPING THE USER POSTED
+  The user watches the job from their command center, which shows its
+  title, a status line and a percentage, and nothing else of what you do.
+  Keep all three true as you go:
+  - As soon as you know what you're making, give it a title: a few plain
+    words naming the result, like "MLA essay on Hamlet" or "Biology study
+    guide". At most 6 words; no em dashes and no arrows (->).
+  - Update the status line at each step, in a short plain sentence about
+    what you're doing now ("Reading page 3 of 5", "Typing up the essay",
+    "Checking the layout"), with a percentage of the whole job. Rough is
+    fine; it should only go up, and reach about 90 before you submit.
+
 WORKFLOW
   1. transform start <key> (already done if you can read this after it)
-     saved the document here, as "<name>.pdf".
+     saved the document here, as "<name>.pdf". Set the status to say
+     you're reading it, at 5%.
   2. Read all of it. The handwriting is drawn as strokes and has no text
      layer, so look at every page; zoom in on what's hard to read.
   3. Find the instructions: usually at the top of the first page, sometimes
      in a margin, a box, or a page of their own. They aren't part of the
-     content unless they say so.
+     content unless they say so. Once you know what to make, set the
+     title.
   4. Make the new document:
      - A Word document when the instructions ask for one, or for something
        a word processor does best: essays (MLA, APA, Chicago), letters,
@@ -39,6 +53,13 @@ COMMANDS
                           the pages written on, each labelled.
     --original            Save the PDF or EPUB as it was uploaded, before
                           anything was written on it, instead.
+  title "<a few words>"   Name the job for the user: what you're making,
+                          in at most 6 words, without em dashes or
+                          arrows. Also the result's default name.
+  status "<what you're doing>" [percent]
+                          Update the status line the user sees, and the
+                          percentage (0-100) if you give one.
+  percent <0-100>         Update the percentage alone.
   docx                    How to make Word documents.
   docx extract [dir]      Write out the scripts that guide uses.
   preview <file.docx> [out.pdf]
@@ -47,8 +68,8 @@ COMMANDS
                           Submit the result: the .docx if you made a Word
                           document, otherwise the PDF. NAME is what it is
                           called on the tablet and in the download
-                          (default: "<name> (transformed)"); give it a
-                          short, clear one, like the essay's title.
+                          (default: the job's title, or "<name>
+                          (transformed)" without one).
   fail "<why>"            Give up instead, saying why, in a sentence for
                           the user.
 

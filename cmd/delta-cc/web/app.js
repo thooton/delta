@@ -1456,7 +1456,7 @@
     }
     if (state.view !== 'tablet') return;
     renderJobs(jobs);
-    if (jobs.some((j) => j.status === 'running')) jobsTimer = setTimeout(() => { if (state.view === 'tablet') loadTablet(); }, 10000);
+    if (jobs.some((j) => j.status === 'running')) jobsTimer = setTimeout(() => { if (state.view === 'tablet') loadTablet(); }, 5000);
 
     const byId = new Map(items.map((it) => [it.id, it]));
     const where = (it) => {
@@ -1505,9 +1505,16 @@
     const box = $('#jobs');
     box.hidden = $('#jobs-head').hidden = !jobs.length;
     box.replaceChildren(...jobs.map((j) => {
+      const running = j.status === 'running';
+      const percent = Math.max(0, Math.min(100, j.percent || 0));
       let detail = JOB_STATUS[j.status] || j.status;
+      if (running) detail = (j.progress || 'Starting…') + ' · ' + percent + '%';
       if (j.status === 'done') detail = '“' + j.result + '” is on the tablet';
       if (j.status === 'failed' && j.error) detail = j.error;
+      // The agent's title for the job, once it has given one, over the document it came from.
+      const label = el('span', { class: 'label' }, el('b', { title: j.title || j.name }, j.title || j.name),
+        el('small', { class: j.status === 'failed' ? 'failed' : '' }, (j.title ? 'From ' + j.name + ' · ' : '') + detail + ' · ' + when(instant(j.created))));
+      if (running) label.append(el('span', { class: 'job-bar' }, el('span', { style: 'width:' + percent + '%' })));
       const actions = el('span', { class: 'actions' });
       for (const name of j.files || []) {
         actions.append(el('button', { type: 'button', class: 'button', title: 'Download ' + name, onclick: () => download(name) },
@@ -1519,9 +1526,8 @@
       actions.append(el('button', { type: 'button', class: 'button danger', title: j.status === 'running' ? 'Stop waiting for it' : 'Remove from the list', onclick: () => forgetJob(j) },
         el('span', {}, j.status === 'running' ? 'Cancel' : 'Remove')));
       return el('div', { class: 'row' },
-        el('span', { class: 'icon' }, icon(j.status === 'running' ? 'refresh' : 'file')),
-        el('span', { class: 'label' }, el('b', { title: j.name }, j.name),
-          el('small', { class: j.status === 'failed' ? 'failed' : '' }, detail + ' · ' + when(instant(j.created)))),
+        el('span', { class: 'icon' }, icon(running ? 'refresh' : 'file')),
+        label,
         actions);
     }));
   }
