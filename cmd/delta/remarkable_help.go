@@ -43,6 +43,8 @@ COMMANDS
                              tablet next to it, and into the files. Only
                              when the user asks for a transform job.
   transforms                 List the transform jobs and how they went.
+  sync                       Tell the tablet to sync now (every change here
+                             already does).
 
   Name a document or folder by its path from the top level
   ("School/Math/Worksheet 3"; "trash/..." in the trash) or by its id

@@ -49,7 +49,8 @@ import (
 //
 // Then the tablet is told to sync: rmfakecloud's web API passes that on, for
 // a token signed with its JWT_SECRET_KEY, read from -remarkable-env. Without
-// it, the tablet sees changes the next time it syncs by itself.
+// it, the tablet sees changes only the next time it syncs by itself, so why
+// it can't be told is logged, and POST /remarkable/sync asks again and says.
 //
 // Routes:
 //
@@ -59,6 +60,7 @@ import (
 //	                                  one-page PDF; X-Pages says how many there are.
 //	POST  /remarkable/documents       Body: a PDF or EPUB. Query: name, parent.
 //	POST  /remarkable/folders         {"name", "parent"}.
+//	POST  /remarkable/sync            Tell the tablet to sync now, and say if that failed.
 //	PATCH /remarkable/{id}            {"name"?, "parent"?}: rename, move, or
 //	                                  move to the trash (parent "trash"). POST
 //	                                  does the same, for clients without PATCH.
@@ -96,6 +98,7 @@ func (s *remarkableStore) register(mux *http.ServeMux) {
 	mux.HandleFunc("GET /remarkable/{id}/pages/{n}", s.page)
 	mux.HandleFunc("POST /remarkable/documents", s.upload)
 	mux.HandleFunc("POST /remarkable/folders", s.mkdir)
+	mux.HandleFunc("POST /remarkable/sync", s.syncNow)
 	mux.HandleFunc("PATCH /remarkable/{id}", s.patch)
 	// The same, for clients that can't send PATCH (Java's HttpURLConnection,
 	// so the phone's Tablet app).
@@ -556,15 +559,28 @@ func (s *remarkableStore) update(change func(docs []remarkableEntry) ([]remarkab
 	if err := os.WriteFile(filepath.Join(s.dir, "root"), []byte(hash), 0o644); err != nil {
 		return err
 	}
-	go s.notify()
+	go func() {
+		if err := s.notify(); err != nil {
+			log.Printf("remarkable: couldn't tell the tablet to sync: %v", err)
+		}
+	}()
 	return nil
 }
 
+// syncNow tells the tablet to sync, and says whether that worked.
+func (s *remarkableStore) syncNow(w http.ResponseWriter, r *http.Request) {
+	if err := s.notify(); err != nil {
+		writeError(w, http.StatusServiceUnavailable, "couldn't tell the tablet to sync: "+err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"synced": true})
+}
+
 // notify asks rmfakecloud to tell the tablet to sync now.
-func (s *remarkableStore) notify() {
+func (s *remarkableStore) notify() error {
 	env, err := os.ReadFile(s.envFile)
 	if err != nil {
-		return
+		return fmt.Errorf("can't read rmfakecloud's settings: %w", err)
 	}
 	secret, port := "", "3000"
 	for _, line := range strings.Split(string(env), "\n") {
@@ -581,25 +597,24 @@ func (s *remarkableStore) notify() {
 		}
 	}
 	if secret == "" {
-		return
+		return errors.New("rmfakecloud's settings have no JWT_SECRET_KEY")
 	}
 	token, err := rmfakecloudToken(secret, s.user)
 	if err != nil {
-		log.Printf("remarkable: %v", err)
-		return
+		return err
 	}
 	req, _ := http.NewRequest(http.MethodGet, "http://127.0.0.1:"+port+"/ui/api/sync", nil)
 	req.Header.Set("Authorization", "Bearer "+token)
 	client := &http.Client{Timeout: 10 * time.Second}
 	resp, err := client.Do(req)
 	if err != nil {
-		log.Printf("remarkable: telling the tablet to sync: %v", err)
-		return
+		return err
 	}
 	resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		log.Printf("remarkable: telling the tablet to sync: rmfakecloud answered HTTP %d", resp.StatusCode)
+		return fmt.Errorf("rmfakecloud answered HTTP %d", resp.StatusCode)
 	}
+	return nil
 }
 
 // rmfakecloudToken signs a short-lived token for rmfakecloud's web API, as
