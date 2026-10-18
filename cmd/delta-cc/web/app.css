@@ -658,6 +658,8 @@ code, pre, textarea.mono { font-family: var(--mono); }
 .page-section { font-size: 14px; font-weight: 600; color: var(--muted); margin: 24px 0 10px; }
 .rows + .page-section { margin-top: 28px; }
 .row .label small.failed { color: var(--danger); white-space: normal; }
+.job-bar { display: block; height: 3px; margin-top: 7px; border-radius: 3px; background: var(--active); overflow: hidden; }
+.job-bar span { display: block; height: 100%; background: var(--text); border-radius: 3px; transition: width 0.4s; }
 .rows { border: 1px solid var(--border); border-radius: 12px; overflow: hidden; }
 .row {
   display: flex;

@@ -105,6 +105,16 @@ func transformSelfTest(expect func(desc string, want int, method, path, tok stri
 		{"preview takes Word documents only", "POST", "/transform/preview", 400, stub},
 		{"submit takes PDFs and Word documents only", "POST", "/transform/submit", 400, []byte("hello")},
 		{"a name the tablet can't take is refused", "POST", "/transform/submit?name=a%0Ab", 400, stub},
+		{"a status needs something in it", "POST", "/transform/status", 400, []byte(`{}`)},
+		{"a title can't have em dashes", "POST", "/transform/status", 400, []byte(`{"title":"Essay — final"}`)},
+		{"a title can't have arrows", "POST", "/transform/status", 400, []byte(`{"title":"Notes -> essay"}`)},
+		{"a title is a few words", "POST", "/transform/status", 400, []byte(`{"title":"one two three four five six seven"}`)},
+		{"a title can't be empty", "POST", "/transform/status", 400, []byte(`{"title":"  "}`)},
+		{"a status line can't be empty", "POST", "/transform/status", 400, []byte(`{"status":""}`)},
+		{"a percentage is at most 100", "POST", "/transform/status", 400, []byte(`{"percent":101}`)},
+		{"a percentage is at least 0", "POST", "/transform/status", 400, []byte(`{"percent":-1}`)},
+		{"set the title", "POST", "/transform/status", 200, []byte(`{"title":"MLA essay on Hamlet"}`)},
+		{"set the status line and percentage", "POST", "/transform/status", 200, []byte(`{"status":"Typing up\nthe essay","percent":40}`)},
 	}
 	for _, s := range steps {
 		if _, err := expect(s.desc, s.want, s.method, s.path, key, s.body); err != nil {
@@ -113,6 +123,17 @@ func transformSelfTest(expect func(desc string, want int, method, path, tok stri
 	}
 	if _, err := expect("the delta token isn't a job's key", 403, "GET", "/transform/job", token, nil); err != nil {
 		return err
+	}
+	listJobs := func(desc string) ([]transformJob, []byte, error) {
+		data, err := expect(desc, 200, "GET", "/transforms", token, nil)
+		var jobs []transformJob
+		json.Unmarshal(data, &jobs)
+		return jobs, data, err
+	}
+	if jobs, data, err := listJobs("a running job shows its status"); err != nil {
+		return err
+	} else if len(jobs) != 1 || jobs[0].Title != "MLA essay on Hamlet" || jobs[0].Progress != "Typing up the essay" || jobs[0].Percent != 40 {
+		return fmt.Errorf("a running job's status: got %s", data)
 	}
 	data, err := expect("a job's key gets its document", 200, "GET", "/transform/document", key, nil)
 	if err != nil {
@@ -165,6 +186,23 @@ func transformSelfTest(expect func(desc string, want int, method, path, tok stri
 		return fmt.Errorf("the environment was made again")
 	}
 	fake.mu.Unlock()
+	if _, err := expect("title the second job", 200, "POST", "/transform/status", key, []byte(`{"title":"Study guide"}`)); err != nil {
+		return err
+	}
+	data, err = expect("submit a PDF without a name", 200, "POST", "/transform/submit", key, stub)
+	if err != nil {
+		return err
+	}
+	var titled struct{ Files []string }
+	json.Unmarshal(data, &titled)
+	if !slices.Equal(titled.Files, []string{"Study guide.pdf"}) {
+		return fmt.Errorf("a result without a name isn't named after the title: %s", data)
+	}
+
+	third, key, err := startJob("start a third")
+	if err != nil {
+		return err
+	}
 	if _, err := expect("fail without a reason", 400, "POST", "/transform/fail", key, []byte(`{}`)); err != nil {
 		return err
 	}
@@ -174,14 +212,14 @@ func transformSelfTest(expect func(desc string, want int, method, path, tok stri
 	if _, err := expect("a failed job's key is dead", 401, "POST", "/transform/submit", key, stub); err != nil {
 		return err
 	}
-	data, err = expect("list transform jobs", 200, "GET", "/transforms", token, nil)
+	jobs, data, err := listJobs("list transform jobs")
 	if err != nil {
 		return err
 	}
-	var jobs []transformJob
-	json.Unmarshal(data, &jobs)
-	if len(jobs) != 2 || jobs[0].ID != second.ID || jobs[0].Status != "failed" || jobs[0].Error != "There are no instructions on it." ||
-		jobs[1].ID != first.ID || jobs[1].Status != "done" || jobs[1].Result != "Essay" || strings.Contains(string(data), "key_hash") {
+	if len(jobs) != 3 || jobs[0].ID != third.ID || jobs[0].Status != "failed" || jobs[0].Error != "There are no instructions on it." ||
+		jobs[1].ID != second.ID || jobs[1].Result != "Study guide" ||
+		jobs[2].ID != first.ID || jobs[2].Status != "done" || jobs[2].Result != "Essay" || jobs[2].Percent != 100 || jobs[2].Progress != "" ||
+		strings.Contains(string(data), "key_hash") {
 		return fmt.Errorf("list transform jobs: got %s", data)
 	}
 	for _, s := range []struct {
@@ -202,7 +240,7 @@ func transformSelfTest(expect func(desc string, want int, method, path, tok stri
 			return err
 		}
 	}
-	for _, name := range result.Files {
+	for _, name := range append(result.Files, titled.Files...) {
 		if _, err := expect("delete a result", 200, "DELETE", "/files/"+name, token, nil); err != nil {
 			return err
 		}
