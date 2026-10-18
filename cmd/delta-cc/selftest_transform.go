@@ -3,9 +3,13 @@ package main
 import (
 	"archive/zip"
 	"bytes"
-	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"mime/multipart"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -14,23 +18,55 @@ import (
 )
 
 // transformSelfTest runs transform jobs against the fake provider, with a
-// stand-in for LibreOffice: that a job starts a session on the first
+// stand-in for SourceForge: that a job starts a session on the first
 // account in an environment that reaches only the command center and the
-// package registries, made once; that its key reaches its document and
-// nothing else; that a Word document comes back as a PDF on the tablet,
-// beside the original, and both in Files; and that submitting or failing
-// ends the job and its key. It needs the account cloudSelfTest leaves.
+// package registries, made once, and installs the fonts; that its key
+// reaches its document and nothing else; that a PDF submitted with its Word
+// document goes on the tablet, beside the original, and both in Files; and
+// that submitting or failing ends the job and its key. It needs the account
+// cloudSelfTest leaves.
 func transformSelfTest(expect func(desc string, want int, method, path, tok string, body []byte) ([]byte, error), token, filesDir string, rm *remarkableStore, fake *fakeCloud) error {
-	convert := transformConvert
-	defer func() { transformConvert = convert }()
-	stub := []byte("%PDF-1.4\n% converted by the self-test\n")
-	transformConvert = func(ctx context.Context, docx []byte) ([]byte, error) { return stub, nil }
+	fetch := transformFontSources
+	defer func() { transformFontSources = fetch }()
+	font := []byte("MSCF the self-test's font")
+	fonts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/times32.exe":
+			w.Write(font)
+		case "/arial32.exe":
+			w.Write([]byte("not Arial"))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer fonts.Close()
+	transformFontSources = []string{fonts.URL + "/missing/", fonts.URL + "/"}
+	pinned := transformFonts["times32.exe"]
+	defer func() { transformFonts["times32.exe"] = pinned }()
+	sum := sha256.Sum256(font)
+	transformFonts["times32.exe"] = hex.EncodeToString(sum[:])
+	stub := []byte("%PDF-1.4\n% made by the self-test\n")
 
 	cli := 200
 	if _, err := transformCLIFS.ReadFile(transformCLIPath); err != nil {
 		cli = 503 // a build without it
 	}
 	if _, err := expect("the transform CLI needs no token", cli, "GET", "/transform/cli", "", nil); err != nil {
+		return err
+	}
+	if data, err := expect("the fonts need no token", 200, "GET", "/transform/fonts/times32.exe", "", nil); err != nil {
+		return err
+	} else if !bytes.Equal(data, font) {
+		return fmt.Errorf("the font: got %q", data)
+	}
+	if _, err := expect("only the fonts are served", 404, "GET", "/transform/fonts/other.exe", "", nil); err != nil {
+		return err
+	}
+	if _, err := expect("a download that isn't the font is refused", 502, "GET", "/transform/fonts/arial32.exe", "", nil); err != nil {
+		return err
+	}
+	transformFontSources = nil
+	if _, err := expect("a font is kept once downloaded", 200, "GET", "/transform/fonts/times32.exe", "", nil); err != nil {
 		return err
 	}
 	if _, err := expect("transforms require the token", 401, "GET", "/transforms", "", nil); err != nil {
@@ -87,10 +123,16 @@ func transformSelfTest(expect func(desc string, want int, method, path, tok stri
 	script, _ := cfg["init_script"].(string)
 	vars, _ := cfg["environment"].(map[string]any)
 	if string(hosts) != `["cc.example","pypi.org","files.pythonhosted.org","registry.npmjs.org"]` || net["allow_default_hosts"] != false ||
-		!strings.Contains(script, server+"/transform/cli") || vars["TRANSFORM_SERVER"] != server {
+		!strings.Contains(script, server+"/transform/cli") || !strings.Contains(script, server+"/transform/fonts/") ||
+		!strings.Contains(script, "times32.exe") || vars["TRANSFORM_SERVER"] != server {
 		return fmt.Errorf("the environment isn't closed off: %v", envs[0])
 	}
 
+	var docx bytes.Buffer
+	zw := zip.NewWriter(&docx)
+	f, _ := zw.Create("word/document.xml")
+	f.Write([]byte("<w:document/>"))
+	zw.Close()
 	steps := []struct {
 		desc, method, path string
 		want               int
@@ -102,8 +144,12 @@ func transformSelfTest(expect func(desc string, want int, method, path, tok stri
 		{"a job's key can't read other documents", "GET", "/remarkable/" + folder, 403, nil},
 		{"a job's key can't start jobs", "POST", "/transforms", 403, []byte(`{"document":"` + doc + `"}`)},
 		{"a job's key isn't the delta token", "GET", "/auth", 403, nil},
-		{"preview takes Word documents only", "POST", "/transform/preview", 400, stub},
-		{"submit takes PDFs and Word documents only", "POST", "/transform/submit", 400, []byte("hello")},
+		{"there is no preview", "POST", "/transform/preview", 404, stub},
+		{"submit takes PDFs only", "POST", "/transform/submit", 400, []byte("hello")},
+		{"a Word document comes with its PDF", "POST", "/transform/submit", 400, docx.Bytes()},
+		{"a Word document alone in a form too", "POST", "/transform/submit", 400, selfTestForm("docx", docx.Bytes())},
+		{"the PDF in a form is a PDF", "POST", "/transform/submit", 400, selfTestForm("pdf", []byte("hello"), "docx", docx.Bytes())},
+		{"the Word document is one", "POST", "/transform/submit", 400, selfTestForm("pdf", stub, "docx", []byte("hello"))},
 		{"a name the tablet can't take is refused", "POST", "/transform/submit?name=a%0Ab", 400, stub},
 		{"a status needs something in it", "POST", "/transform/status", 400, []byte(`{}`)},
 		{"a title can't have em dashes", "POST", "/transform/status", 400, []byte(`{"title":"Essay — final"}`)},
@@ -142,17 +188,7 @@ func transformSelfTest(expect func(desc string, want int, method, path, tok stri
 	if zr, err := zip.NewReader(bytes.NewReader(data), int64(len(data))); err != nil || !slices.ContainsFunc(zr.File, func(f *zip.File) bool { return f.Name == doc+".pdf" }) {
 		return fmt.Errorf("the job's document: %v", err)
 	}
-	var docx bytes.Buffer
-	zw := zip.NewWriter(&docx)
-	f, _ := zw.Create("word/document.xml")
-	f.Write([]byte("<w:document/>"))
-	zw.Close()
-	if data, err := expect("preview a Word document", 200, "POST", "/transform/preview", key, docx.Bytes()); err != nil {
-		return err
-	} else if !bytes.Equal(data, stub) {
-		return fmt.Errorf("preview: got %q", data)
-	}
-	data, err = expect("submit a Word document", 200, "POST", "/transform/submit?name=Essay.docx", key, docx.Bytes())
+	data, err = expect("submit a PDF and its Word document", 200, "POST", "/transform/submit?name=Essay.docx", key, selfTestForm("pdf", stub, "docx", docx.Bytes()))
 	if err != nil {
 		return err
 	}
@@ -246,4 +282,20 @@ func transformSelfTest(expect func(desc string, want int, method, path, tok stri
 		}
 	}
 	return nil
+}
+
+const selfTestBoundary = "delta-self-test"
+
+// selfTestForm is a multipart/form-data body of name, value pairs, which
+// the self-test's requests send as one.
+func selfTestForm(fields ...any) []byte {
+	var b bytes.Buffer
+	w := multipart.NewWriter(&b)
+	w.SetBoundary(selfTestBoundary)
+	for i := 0; i+1 < len(fields); i += 2 {
+		part, _ := w.CreateFormFile(fields[i].(string), fields[i].(string))
+		part.Write(fields[i+1].([]byte))
+	}
+	w.Close()
+	return b.Bytes()
 }

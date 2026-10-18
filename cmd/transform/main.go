@@ -12,6 +12,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"mime/multipart"
 	"net/http"
 	"net/url"
 	"os"
@@ -50,8 +51,6 @@ func run(args []string) error {
 		return start(rest[0])
 	case "get":
 		return get(rest)
-	case "preview":
-		return preview(rest)
 	case "title":
 		if len(rest) == 0 {
 			return errors.New(`usage: transform title "<a few words>"`)
@@ -116,6 +115,11 @@ var client = &http.Client{Timeout: 5 * time.Minute}
 // call makes a request with the job's key and returns the body of a 2xx
 // response, or the command center's error.
 func call(k, method, path string, body []byte) ([]byte, error) {
+	return callAs(k, method, path, "", body)
+}
+
+// callAs is call with the body's Content-Type.
+func callAs(k, method, path, contentType string, body []byte) ([]byte, error) {
 	base, err := server()
 	if err != nil {
 		return nil, err
@@ -125,6 +129,9 @@ func call(k, method, path string, body []byte) ([]byte, error) {
 		return nil, err
 	}
 	req.Header.Set("Authorization", "Bearer "+k)
+	if contentType != "" {
+		req.Header.Set("Content-Type", contentType)
+	}
 	resp, err := client.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("couldn't reach the command center: %w", err)
@@ -305,29 +312,6 @@ func pages(n int) string {
 	return fmt.Sprintf("%d pages", n)
 }
 
-func preview(args []string) error {
-	if len(args) < 1 || len(args) > 2 {
-		return errors.New("usage: transform preview <file.docx> [out.pdf]")
-	}
-	data, err := os.ReadFile(args[0])
-	if err != nil {
-		return err
-	}
-	out := strings.TrimSuffix(args[0], filepath.Ext(args[0])) + " (preview).pdf"
-	if len(args) == 2 {
-		out = args[1]
-	}
-	pdf, err := do(http.MethodPost, "/transform/preview", data)
-	if err != nil {
-		return err
-	}
-	if err := os.WriteFile(out, pdf, 0o644); err != nil {
-		return err
-	}
-	fmt.Printf("Saved %s: the PDF the tablet will get for %s. Read it.\n", out, args[0])
-	return nil
-}
-
 func submit(args []string) error {
 	var pos []string
 	name := ""
@@ -344,14 +328,52 @@ func submit(args []string) error {
 			pos = append(pos, a)
 		}
 	}
-	if len(pos) != 1 {
-		return errors.New("usage: transform submit <file.pdf|file.docx> [--name NAME]")
+	const usage = "usage: transform submit <file.pdf> [file.docx] [--name NAME]"
+	if len(pos) < 1 || len(pos) > 2 {
+		return errors.New(usage)
 	}
-	data, err := os.ReadFile(pos[0])
+	var pdf, doc []byte
+	var pdfPath, docPath string
+	for _, path := range pos {
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		switch {
+		case bytes.HasPrefix(data, []byte("%PDF-")) && pdf == nil:
+			pdf, pdfPath = data, path
+		case bytes.HasPrefix(data, []byte("PK")) && strings.EqualFold(filepath.Ext(path), ".docx") && doc == nil:
+			doc, docPath = data, path
+		default:
+			return fmt.Errorf("%s isn't a PDF or a .docx (%s)", path, usage)
+		}
+	}
+	if pdf == nil {
+		out := strings.TrimSuffix(docPath, filepath.Ext(docPath)) + ".pdf"
+		return fmt.Errorf("submit the PDF with the Word document: it goes on the tablet. Convert it here (soffice --headless --convert-to pdf --outdir %q %q), read %s to check it, then: transform submit %q %q",
+			filepath.Dir(out), docPath, out, out, docPath)
+	}
+	var body bytes.Buffer
+	form := multipart.NewWriter(&body)
+	for _, f := range []struct {
+		field, path string
+		data        []byte
+	}{{"pdf", pdfPath, pdf}, {"docx", docPath, doc}} {
+		if f.data == nil {
+			continue
+		}
+		part, err := form.CreateFormFile(f.field, filepath.Base(f.path))
+		if err != nil {
+			return err
+		}
+		part.Write(f.data)
+	}
+	form.Close()
+	k, err := key()
 	if err != nil {
 		return err
 	}
-	resp, err := do(http.MethodPost, "/transform/submit?name="+url.QueryEscape(name), data)
+	resp, err := callAs(k, http.MethodPost, "/transform/submit?name="+url.QueryEscape(name), form.FormDataContentType(), body.Bytes())
 	if err != nil {
 		return err
 	}
@@ -360,7 +382,7 @@ func submit(args []string) error {
 		Files []string `json:"files"`
 	}
 	json.Unmarshal(resp, &r)
-	fmt.Printf("Submitted %q. It is going onto the user's tablet, next to the original, and into their files to download (%s). The job is done: say in a sentence what you made.\n", r.Name, strings.Join(r.Files, ", "))
+	fmt.Printf("Submitted %q. The PDF is going onto the user's tablet, next to the original, and everything into their files to download (%s). The job is done: say in a sentence what you made.\n", r.Name, strings.Join(r.Files, ", "))
 	return nil
 }
 

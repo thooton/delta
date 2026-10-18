@@ -60,6 +60,10 @@ func selfTest() error {
 		if tok != "" {
 			req.Header.Set("Authorization", "Bearer "+tok)
 		}
+		// A form (selfTestForm) says so.
+		if bytes.HasPrefix(body, []byte("--"+selfTestBoundary+"\r\n")) {
+			req.Header.Set("Content-Type", "multipart/form-data; boundary="+selfTestBoundary)
+		}
 		resp, err := ts.Client().Do(req)
 		if err != nil {
 			return 0, nil, err

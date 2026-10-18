@@ -33,14 +33,21 @@ WORKFLOW
      content unless they say so. Once you know what to make, set the
      title.
   4. Make the new document:
-     - A Word document when the instructions ask for one, or for something
-       a word processor does best: essays (MLA, APA, Chicago), letters,
-       reports, resumes. Run "transform docx" and follow that guide.
+     - A Word document when the instructions ask for one, or for anything
+       that gets handed in or that a word processor does best: essays (MLA,
+       APA, Chicago), letters, reports, resumes, homework. Run
+       "transform docx" and follow that guide. Many of the user's teachers
+       take only .docx, so this is the usual choice for schoolwork.
      - Otherwise a PDF, made however suits the job (Python, HTML, ...).
-  5. Check it. "transform preview file.docx" makes the PDF the tablet will
-     get, converted exactly as the command center will; read it, fix what's
-     wrong, and preview again. Read a PDF you made directly.
-  6. "transform submit file" once. It is final.
+  5. Make the PDF and check it. Every job submits a PDF: it goes on the
+     tablet, where the user reads it and, if it needs more work, writes on
+     it and transforms it again. For a Word document, convert it here:
+       soffice --headless --convert-to pdf essay.docx
+     Read the PDF, page by page; fix what's wrong and convert again.
+  6. Submit once; it is final:
+       transform submit essay.pdf essay.docx   (a Word document and its PDF)
+       transform submit notes.pdf              (a PDF made some other way)
+     The user downloads the .docx to hand in, and the PDF for themselves.
 
 COMMANDS
   start <key>             Save the job's key, then the document (as get).
@@ -62,13 +69,11 @@ COMMANDS
   percent <0-100>         Update the percentage alone.
   docx                    How to make Word documents.
   docx extract [dir]      Write out the scripts that guide uses.
-  preview <file.docx> [out.pdf]
-                          The PDF the tablet will get for a Word document.
-  submit <file> [--name NAME]
-                          Submit the result: the .docx if you made a Word
-                          document, otherwise the PDF. NAME is what it is
-                          called on the tablet and in the download
-                          (default: the job's title, or "<name>
+  submit <file.pdf> [file.docx] [--name NAME]
+                          Submit the result: the PDF, always, and the Word
+                          document it was made from if you made one. NAME
+                          is what both are called on the tablet and in the
+                          downloads (default: the job's title, or "<name>
                           (transformed)" without one).
   fail "<why>"            Give up instead, saying why, in a sentence for
                           the user.
@@ -83,6 +88,15 @@ DOING IT WELL
     double spacing, 1-inch margins, a centered title, and a Works Cited
     page if there are sources.
   - Use US Letter paper unless they ask for another size.
+  - The real Times New Roman, Arial, Courier New, Georgia and Verdana are
+    installed here, as are Carlito and Caladea (metric twins of Calibri and
+    Cambria), Liberation, DejaVu and Noto. Use the font the format or the
+    instructions name, never a stand-in for it: Times New Roman for MLA and
+    APA unless they say otherwise. In a Word document, name it ("Times New
+    Roman") and it converts with the real one. In a PDF you draw yourself
+    (reportlab, HTML), load the font's file: fc-match -f '%{file}\n'
+    "Times New Roman:bold" says where it is. Check the PDF's fonts
+    (pymupdf's page.get_fonts()) show the one you meant.
   - Details a format needs that the document doesn't give (an instructor's
     name, say): use a clearly marked placeholder, like [Instructor], never
     an invented one. For a date, use today's.
