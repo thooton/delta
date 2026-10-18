@@ -445,12 +445,24 @@ func safeFileName(name string) string {
 }
 
 func rmGet(c config, args []string) error {
-	if len(args) < 1 || len(args) > 2 {
-		return errors.New("usage: delta remarkable get <document> [dir]")
+	var pos []string
+	original := false
+	for _, a := range args {
+		switch {
+		case a == "--original":
+			original = true
+		case strings.HasPrefix(a, "-"):
+			return fmt.Errorf("unknown option %s", a)
+		default:
+			pos = append(pos, a)
+		}
+	}
+	if len(pos) < 1 || len(pos) > 2 {
+		return errors.New("usage: delta remarkable get <document> [dir] [--original]")
 	}
 	dir := "."
-	if len(args) == 2 {
-		dir = args[1]
+	if len(pos) == 2 {
+		dir = pos[1]
 		if err := os.MkdirAll(dir, 0o755); err != nil {
 			return err
 		}
@@ -459,7 +471,7 @@ func rmGet(c config, args []string) error {
 	if err != nil {
 		return err
 	}
-	it, err := t.find(args[0])
+	it, err := t.find(pos[0])
 	if err != nil {
 		return err
 	}
@@ -488,70 +500,117 @@ func rmGet(c config, args []string) error {
 	var content rmContent
 	json.Unmarshal(files[it.ID+".content"], &content)
 	base := filepath.Join(dir, safeFileName(it.Name))
+	pdfData, isPDF := files[it.ID+".pdf"]
+	epubData, isEPUB := files[it.ID+".epub"]
 
-	// The PDF or EPUB as it was put on the tablet.
-	original := ""
-	for _, ext := range []string{"pdf", "epub"} {
-		if data, ok := files[it.ID+"."+ext]; ok {
-			original = base + "." + ext
-			if err := os.WriteFile(original, data, 0o644); err != nil {
+	if original || isEPUB {
+		data, ext := pdfData, "pdf"
+		if isEPUB {
+			data, ext = epubData, "epub"
+		}
+		if data == nil {
+			return fmt.Errorf("%s is a notebook: there is no original file", t.path(it))
+		}
+		name := base + "." + ext
+		if original && isPDF {
+			name = base + " (original).pdf"
+		}
+		if err := os.WriteFile(name, data, 0o644); err != nil {
+			return err
+		}
+		fmt.Printf("Saved %s (the %s as uploaded, %s).\n", name, strings.ToUpper(ext), humanSize(int64(len(data))))
+		if original {
+			return nil
+		}
+	}
+
+	// The tablet's pages, in order, with what is written on each.
+	refs := content.pageOrder()
+	var src *pdfFile
+	var srcPages []pdfPage
+	if isPDF {
+		if src, err = readPDF(pdfData); err != nil {
+			// Then the PDF as it is, and the handwriting on pages of its own.
+			src = nil
+			name := base + ".pdf"
+			if err := os.WriteFile(name, pdfData, 0o644); err != nil {
 				return err
 			}
-			fmt.Printf("Saved %s (the %s as uploaded, %s).\n", original, strings.ToUpper(ext), humanSize(int64(len(data))))
+			fmt.Printf("Saved %s (the PDF as uploaded: delta couldn't read it to draw on it, %v).\n", name, err)
+		} else {
+			srcPages = src.pages()
+			if len(refs) == 0 { // never opened on the tablet
+				for i := range srcPages {
+					refs = append(refs, rmPageRef{redir: i})
+				}
+			}
 		}
 	}
-
-	// The tablet's pages: every page of a notebook, and the pages of a PDF
-	// or EPUB that were written on.
-	var pages []rmPDFPage
-	var skipped []string
-	for i, ref := range content.pageOrder() {
-		data, ok := files[it.ID+"/"+ref.id+".rm"]
-		var page *rmPage
-		if ok {
-			page, err = parseRM(data)
+	scale := pointsPerPixel
+	if len(srcPages) > 0 {
+		scale = rmScale(srcPages[0].shownSize())
+	}
+	var out []outPage
+	written := 0
+	for i, ref := range refs {
+		page := &rmPage{}
+		if data, ok := files[it.ID+"/"+ref.id+".rm"]; ok {
+			p, err := parseRM(data)
 			if err != nil {
-				skipped = append(skipped, fmt.Sprintf("page %d (%v)", i+1, err))
-				continue
-			}
-		}
-		written := page != nil && (len(page.Strokes) > 0 || page.Text != "")
-		if original != "" && !written {
-			continue
-		}
-		if page == nil {
-			page = &rmPage{}
-		}
-		label := ""
-		if original != "" {
-			if ref.redir >= 0 {
-				label = fmt.Sprintf("Handwriting on page %d of the %s", ref.redir+1, strings.ToUpper(content.FileType))
+				fmt.Printf("Couldn't read page %d: %v.\n", i+1, err)
 			} else {
-				label = fmt.Sprintf("A page added after page %d of the %s", lastRedir(content.pageOrder()[:i])+1, strings.ToUpper(content.FileType))
+				page = p
 			}
 		}
-		pages = append(pages, rmPDFPage{page: page, label: label})
+		hasInk := len(page.Strokes) > 0 || page.Text != "" || len(page.Highlights) > 0
+		if hasInk {
+			written++
+		}
+		switch {
+		case src != nil && ref.redir >= 0 && ref.redir < len(srcPages):
+			sp := &srcPages[ref.redir]
+			scale = rmScale(sp.shownSize())
+			o := outPage{src: sp}
+			if hasInk {
+				o.ink = inkOps(page, sp.rmTransform())
+			}
+			out = append(out, o)
+		case isPDF && src != nil || !isPDF && !isEPUB:
+			// A notebook's page, or one added to a PDF on the tablet, as
+			// wide as the PDF's pages around it.
+			out = append(out, notebookPage(page, scale))
+		case hasInk:
+			// On an EPUB, or a PDF that couldn't be read: the handwriting
+			// alone, labelled with where it is.
+			o := notebookPage(page, pointsPerPixel)
+			if ref.redir >= 0 {
+				o.label = fmt.Sprintf("Handwriting on page %d of the %s", ref.redir+1, strings.ToUpper(content.FileType))
+			} else {
+				o.label = fmt.Sprintf("A page added after page %d of the %s", lastRedir(refs[:i])+1, strings.ToUpper(content.FileType))
+			}
+			out = append(out, o)
+		}
 	}
-	if original == "" && len(pages) == 0 {
-		pages = append(pages, rmPDFPage{page: &rmPage{}}) // a notebook never opened
+	if len(out) == 0 && !isPDF && !isEPUB {
+		out = append(out, notebookPage(&rmPage{}, pointsPerPixel)) // a notebook never opened
 	}
-	for _, s := range skipped {
-		fmt.Printf("Skipped %s.\n", s)
-	}
-	if len(pages) == 0 {
+	if len(out) == 0 {
 		fmt.Println("Nothing is written on it.")
 		return nil
 	}
-	out := base + ".pdf"
-	what := "its pages"
-	if original != "" {
-		out = base + " (handwriting).pdf"
-		what = "the handwriting, one page per page written on, each labelled with the page it is on"
+	name := base + ".pdf"
+	what := fmt.Sprintf("%d page%s", len(out), plural(len(out)))
+	switch {
+	case isEPUB || isPDF && src == nil:
+		name = base + " (handwriting).pdf"
+		what = "the handwriting on its own, " + what + ", each labelled with the page it is on"
+	case isPDF:
+		what = fmt.Sprintf("as on the tablet, %s, %d written on", what, written)
 	}
-	if err := os.WriteFile(out, writePagesPDF(pages), 0o644); err != nil {
+	if err := os.WriteFile(name, writePDF(src, out), 0o644); err != nil {
 		return err
 	}
-	fmt.Printf("Saved %s (%s; %d page%s).\n", out, what, len(pages), plural(len(pages)))
+	fmt.Printf("Saved %s (%s).\n", name, what)
 	return nil
 }
 

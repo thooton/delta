@@ -1,11 +1,10 @@
 package main
 
-// Drawing reMarkable pages as a PDF: each page's strokes as vector paths,
-// and its typed text in Helvetica, at the page's real size.
+// Drawing reMarkable pages as PDF: each page's strokes as vector paths,
+// its highlights, and its typed text in Helvetica.
 
 import (
 	"bytes"
-	"compress/zlib"
 	"fmt"
 	"image/color"
 	"math"
@@ -141,6 +140,19 @@ func inkOps(p *rmPage, m [6]float64) *pdfInk {
 	b.WriteString("q\n")
 	fmt.Fprintf(b, "%s %s %s %s %s %s cm\n", pdfNum(m[0]), pdfNum(m[1]), pdfNum(m[2]), pdfNum(m[3]), pdfNum(m[4]), pdfNum(m[5]))
 	b.WriteString("1 J 1 j\n")
+	// Highlights that snapped to a PDF's text are rectangles, not strokes.
+	for _, h := range p.Highlights {
+		c, ok := rmColors[h.Color]
+		if !ok || h.Color == 0 {
+			c = rmColors[rmColorDefaultH]
+		}
+		out.alphas["DeltaGS45m"], out.blend["DeltaGS45m"] = 0.45, true
+		fmt.Fprintf(b, "q /DeltaGS45m gs %s %s %s rg\n", pdfNum(float64(c.R)/255), pdfNum(float64(c.G)/255), pdfNum(float64(c.B)/255))
+		for _, r := range h.Rects {
+			fmt.Fprintf(b, "%s %s %s %s re\n", pdfNum(r[0]), pdfNum(r[1]), pdfNum(r[2]), pdfNum(r[3]))
+		}
+		b.WriteString("f Q\n")
+	}
 	for _, s := range p.Strokes {
 		ink, ok := inkFor(s)
 		if !ok {
@@ -268,78 +280,17 @@ var winAnsiExtra = map[rune]byte{
 	'™': 0x99, 'š': 0x9A, '›': 0x9B, 'œ': 0x9C, 'ž': 0x9E, 'Ÿ': 0x9F,
 }
 
-// rmPDFPage is a page of the PDF being made: a tablet page, and the label
-// written in its corner (such as "Page 3 of the PDF"), if any.
-type rmPDFPage struct {
-	page  *rmPage
-	label string
+// notebookPage is how a page of a notebook, or one added to a PDF, comes
+// out: s points per screen pixel, as tall and wide as its strokes need
+// (at least the screen). A notebook's pages are the tablet's real size.
+func notebookPage(p *rmPage, s float64) outPage {
+	minX, minY, maxX, maxY := rmBounds(p)
+	w, h := (maxX-minX)*s, (maxY-minY)*s
+	return outPage{width: w, height: h, ink: inkOps(p, [6]float64{s, 0, 0, -s, -minX * s, h + minY*s})}
 }
 
-// pointsPerPixel is the tablet's screen resolution, 226 dpi, so pages come
-// out the size they are on the tablet.
+// pointsPerPixel is the tablet's screen resolution, 226 dpi.
 const pointsPerPixel = 72.0 / 226
-
-// writePagesPDF makes a PDF with one page per tablet page, each as large as
-// its strokes need (at least the screen).
-func writePagesPDF(pages []rmPDFPage) []byte {
-	var out bytes.Buffer
-	var offsets []int
-	obj := func(body string, stream []byte) int {
-		offsets = append(offsets, out.Len())
-		fmt.Fprintf(&out, "%d 0 obj\n%s", len(offsets), body)
-		if stream != nil {
-			out.WriteString("\nstream\n")
-			out.Write(stream)
-			out.WriteString("\nendstream")
-		}
-		out.WriteString("\nendobj\n")
-		return len(offsets)
-	}
-	out.WriteString("%PDF-1.4\n%\xe2\xe3\xcf\xd3\n")
-	// Objects 1 and 2 are the catalog and the page tree, and 3 the font;
-	// each page then takes three: its drawing, its graphics states and
-	// itself.
-	n := len(pages)
-	kids := make([]string, n)
-	for i := range pages {
-		kids[i] = fmt.Sprintf("%d 0 R", 4+3*i+2)
-	}
-	obj("<< /Type /Catalog /Pages 2 0 R >>", nil)
-	obj(fmt.Sprintf("<< /Type /Pages /Kids [%s] /Count %d >>", strings.Join(kids, " "), n), nil)
-	obj("<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>", nil)
-	for _, p := range pages {
-		minX, minY, maxX, maxY := rmBounds(p.page)
-		k := pointsPerPixel
-		w, h := (maxX-minX)*k, (maxY-minY)*k
-		ink := inkOps(p.page, [6]float64{k, 0, 0, -k, -minX * k, h + minY*k})
-		if p.label != "" {
-			fmt.Fprintf(&ink.ops, "BT /%s 9 Tf 0.5 g 12 %s Td (%s) Tj ET\n", pdfInkFont, pdfNum(h-18), pdfWinAnsi(p.label))
-		}
-		var z bytes.Buffer
-		zw, _ := zlib.NewWriterLevel(&z, zlib.BestCompression)
-		zw.Write(ink.ops.Bytes())
-		zw.Close()
-		contents := obj(fmt.Sprintf("<< /Length %d /Filter /FlateDecode >>", z.Len()), z.Bytes())
-		var gs strings.Builder
-		for name, a := range ink.alphas {
-			fmt.Fprintf(&gs, "/%s << /Type /ExtGState /CA %s /ca %s", name, pdfNum(a), pdfNum(a))
-			if ink.blend[name] {
-				gs.WriteString(" /BM /Multiply")
-			}
-			gs.WriteString(" >> ")
-		}
-		states := obj("<< "+gs.String()+">>", nil)
-		obj(fmt.Sprintf("<< /Type /Page /Parent 2 0 R /MediaBox [0 0 %s %s] /Contents %d 0 R /Resources << /Font << /%s 3 0 R >> /ExtGState %d 0 R >> >>",
-			pdfNum(w), pdfNum(h), contents, pdfInkFont, states), nil)
-	}
-	xref := out.Len()
-	fmt.Fprintf(&out, "xref\n0 %d\n0000000000 65535 f \n", len(offsets)+1)
-	for _, o := range offsets {
-		fmt.Fprintf(&out, "%010d 00000 n \n", o)
-	}
-	fmt.Fprintf(&out, "trailer\n<< /Size %d /Root 1 0 R >>\nstartxref\n%d\n%%%%EOF\n", len(offsets)+1, xref)
-	return out.Bytes()
-}
 
 // pdfNum writes a number briefly, as PDF wants it (no exponents).
 func pdfNum(f float64) string {

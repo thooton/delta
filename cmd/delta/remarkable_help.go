@@ -18,14 +18,18 @@ COMMANDS
                              (default: the top level). It is named after
                              the file, without its extension.
     --name NAME              Name it something else.
-  get <document> [dir]       Save a document into dir (default: here):
-                             - a notebook as "<name>.pdf", one page per
-                               page;
-                             - a PDF or EPUB as "<name>.pdf" or ".epub",
-                               as it was uploaded, plus, if the user wrote
-                               on it, "<name> (handwriting).pdf": only the
-                               pages written on, each labelled with the
-                               page it is on. Read both side by side.
+  get <document> [dir]       Save a document into dir (default: here) as
+                             "<name>.pdf", looking as it does on the
+                             tablet: a PDF's own pages, in the tablet's
+                             order, with the user's handwriting,
+                             highlights and typed text drawn on them, and
+                             any pages they added; a notebook's pages.
+                             Pages they scrolled down on come out taller.
+                             An EPUB comes as "<name>.epub", plus
+                             "<name> (handwriting).pdf": the pages written
+                             on, alone, each labelled with its page.
+    --original               Save the PDF or EPUB as it was uploaded
+                             instead.
   mkdir <folder>             Make a folder, and any missing above it
                              ("School/Math").
   mv <item> <folder>         Move into a folder ("/" is the top level).
@@ -44,10 +48,9 @@ EXAMPLES
   delta remarkable get "Quick sheets" notes/
 
 NOTES
-  The handwriting PDFs draw the strokes themselves (pens, colors,
-  highlighters) and any typed text, at the page's real size. To read
-  handwriting, look at the pages; don't expect a text layer. Templates
-  (lines, grids) aren't drawn.
+  Handwriting is drawn as strokes (pens, colors, highlighters): to read
+  it, look at the pages; it has no text layer. Typed text is drawn in
+  Helvetica, not the tablet's font. Templates (lines, grids) aren't drawn.
 
   The tablet picks up changes when it next syncs, which is right away if
   it is awake and online; otherwise tell the user to wake it. Things the
