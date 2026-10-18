@@ -166,6 +166,12 @@ func selfTest() error {
 	if err := conversationsSelfTest(expect, token); err != nil {
 		return err
 	}
+	if err := transformSelfTest(expect, token, filesDir, remarkable, fake); err != nil {
+		return fmt.Errorf("transform: %w", err)
+	}
+	if err := transformCLISelfTest(dir); err != nil {
+		return err
+	}
 	if err := secretSelfTest(expect, token, accessTokenStore(dir), "ghp_first", "github_pat_second"); err != nil {
 		return err
 	}

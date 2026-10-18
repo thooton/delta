@@ -1253,6 +1253,7 @@
     state.view = view;
     $('#view-chat').hidden = !(view === 'chat' || view === 'new');
     $('#view-files').hidden = view !== 'files';
+    $('#view-tablet').hidden = view !== 'tablet';
     $('#view-accounts').hidden = view !== 'accounts';
     document.querySelectorAll('.nav-item[data-view]').forEach((a) => a.classList.toggle('active', a.dataset.view === view));
     $('#app').classList.remove('drawer');
@@ -1301,6 +1302,11 @@
       setTitle('');
       topActions(null);
       loadFiles();
+    } else if (hash === 'tablet') {
+      show('tablet');
+      setTitle('');
+      topActions(null);
+      loadTablet();
     } else if (hash === 'accounts') {
       show('accounts');
       setTitle('');
@@ -1427,6 +1433,120 @@
       bar.firstChild.style.width = '0';
       loadFiles();
     }
+  }
+
+  // ---------------------------------------------------------------------
+  // Tablet: transform jobs on the reMarkable's documents
+  // ---------------------------------------------------------------------
+
+  const DOC_KIND = { pdf: 'PDF', epub: 'EPUB', notebook: 'Notebook' };
+  const JOB_STATUS = { running: 'Working on it…', done: 'Done', failed: 'Failed' };
+  let jobsTimer = 0;
+
+  async function loadTablet() {
+    clearTimeout(jobsTimer);
+    const box = $('#tablet');
+    if (!box.childNodes.length) box.append(el('div', { class: 'empty' }, 'Loading…'));
+    let items, jobs;
+    try {
+      [items, jobs] = await Promise.all([api('/remarkable'), api('/transforms')]);
+    } catch (e) {
+      box.replaceChildren(el('div', { class: 'empty' }, "Couldn't read the tablet: " + e.message));
+      return;
+    }
+    if (state.view !== 'tablet') return;
+    renderJobs(jobs);
+    if (jobs.some((j) => j.status === 'running')) jobsTimer = setTimeout(() => { if (state.view === 'tablet') loadTablet(); }, 10000);
+
+    const byId = new Map(items.map((it) => [it.id, it]));
+    const where = (it) => {
+      const path = [];
+      for (let p = it.parent, n = 0; p && n < 50; n++) {
+        const f = byId.get(p);
+        if (!f) break;
+        path.unshift(f.name);
+        p = f.parent;
+      }
+      return path.join(' / ');
+    };
+    const docs = items.filter((it) => it.type !== 'folder' && it.parent !== 'trash' && !inTrash(it, byId))
+      .sort((a, b) => instant(b.modified) - instant(a.modified));
+    if (!docs.length) {
+      box.replaceChildren(el('div', { class: 'empty' }, 'Nothing on the tablet yet.'));
+      return;
+    }
+    const busy = new Set(jobs.filter((j) => j.status === 'running').map((j) => j.document));
+    box.replaceChildren(...docs.map((it) => {
+      const folder = where(it);
+      const facts = [DOC_KIND[it.type] || it.type];
+      if (it.pages) facts.push(it.pages + (it.pages === 1 ? ' page' : ' pages'));
+      if (folder) facts.push(folder);
+      if (it.modified) facts.push(when(instant(it.modified)));
+      const button = el('button', { type: 'button', class: 'button', onclick: () => transform(it, button) }, el('span', {}, busy.has(it.id) ? 'Transforming…' : 'Transform'));
+      button.disabled = busy.has(it.id);
+      return el('div', { class: 'row' },
+        el('span', { class: 'icon' }, icon('file')),
+        el('span', { class: 'label' }, el('b', { title: it.name }, it.name), el('small', {}, facts.join(' · '))),
+        el('span', { class: 'actions' }, button));
+    }));
+  }
+
+  function inTrash(it, byId) {
+    for (let p = it.parent, n = 0; p && n < 50; n++) {
+      if (p === 'trash') return true;
+      const f = byId.get(p);
+      if (!f) return false;
+      p = f.parent;
+    }
+    return false;
+  }
+
+  function renderJobs(jobs) {
+    const box = $('#jobs');
+    box.hidden = $('#jobs-head').hidden = !jobs.length;
+    box.replaceChildren(...jobs.map((j) => {
+      let detail = JOB_STATUS[j.status] || j.status;
+      if (j.status === 'done') detail = '“' + j.result + '” is on the tablet';
+      if (j.status === 'failed' && j.error) detail = j.error;
+      const actions = el('span', { class: 'actions' });
+      for (const name of j.files || []) {
+        actions.append(el('button', { type: 'button', class: 'button', title: 'Download ' + name, onclick: () => download(name) },
+          el('span', {}, name.toLowerCase().endsWith('.docx') ? 'Word' : 'PDF')));
+      }
+      if (j.session && j.status !== 'done') {
+        actions.append(el('button', { type: 'button', class: 'button', title: 'See what the agent is doing', onclick: () => { location.hash = '#/s/' + j.session; } }, el('span', {}, 'Open chat')));
+      }
+      actions.append(el('button', { type: 'button', class: 'button danger', title: j.status === 'running' ? 'Stop waiting for it' : 'Remove from the list', onclick: () => forgetJob(j) },
+        el('span', {}, j.status === 'running' ? 'Cancel' : 'Remove')));
+      return el('div', { class: 'row' },
+        el('span', { class: 'icon' }, icon(j.status === 'running' ? 'refresh' : 'file')),
+        el('span', { class: 'label' }, el('b', { title: j.name }, j.name),
+          el('small', { class: j.status === 'failed' ? 'failed' : '' }, detail + ' · ' + when(instant(j.created)))),
+        actions);
+    }));
+  }
+
+  async function transform(it, button) {
+    if (!confirm('Transform “' + it.name + '”? An agent reads the instructions written on it and makes the new document.')) return;
+    button.disabled = true;
+    try {
+      await api('/transforms', { method: 'POST', json: { document: it.id, server: SERVER } });
+      toast('Started transforming ' + it.name);
+      listChats().catch(() => {});
+    } catch (e) {
+      toast("Couldn't start it: " + e.message);
+    }
+    loadTablet();
+  }
+
+  async function forgetJob(j) {
+    if (j.status === 'running' && !confirm('Cancel transforming “' + j.name + '”? Its agent can no longer submit anything.')) return;
+    try {
+      await api('/transforms/' + encodeURIComponent(j.id), { method: 'DELETE' });
+    } catch (e) {
+      toast(e.message);
+    }
+    loadTablet();
   }
 
   // ---------------------------------------------------------------------

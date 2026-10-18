@@ -3,3 +3,4 @@
 /delta
 /delta-cc
 /cmd/delta-cc/music-engine/engine.*
+/cmd/delta-cc/transform-cli/transform-*

@@ -36,6 +36,13 @@ COMMANDS
   mv <item> <new path>       Rename, or move and rename.
   rm <item>                  Move to the tablet's trash. Only the user can
                              empty it; "mv trash/<item> /" restores.
+  transform <document>       Start a transform job: the user wrote
+                             instructions on the document ("type this up
+                             in MLA format"), and an agent of its own
+                             follows them and puts the result on the
+                             tablet next to it, and into the files. Only
+                             when the user asks for a transform job.
+  transforms                 List the transform jobs and how they went.
 
   Name a document or folder by its path from the top level
   ("School/Math/Worksheet 3"; "trash/..." in the trash) or by its id

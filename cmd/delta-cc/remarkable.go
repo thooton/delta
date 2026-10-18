@@ -280,7 +280,11 @@ func (s *remarkableStore) list(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *remarkableStore) download(w http.ResponseWriter, r *http.Request) {
-	id := r.PathValue("id")
+	s.writeZip(w, r.PathValue("id"))
+}
+
+// writeZip sends document id's files as a zip.
+func (s *remarkableStore) writeZip(w http.ResponseWriter, id string) {
 	_, docs, err := s.rootIndex()
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
@@ -320,6 +324,24 @@ func (s *remarkableStore) download(w http.ResponseWriter, r *http.Request) {
 	}
 	writeError(w, http.StatusNotFound, "no such document on the reMarkable")
 }
+
+// find describes document id.
+func (s *remarkableStore) find(id string) (remarkableItem, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	items, err := s.items()
+	if err != nil {
+		return remarkableItem{}, err
+	}
+	for _, it := range items {
+		if it.ID == id {
+			return it, nil
+		}
+	}
+	return remarkableItem{}, errRemarkableMissing
+}
+
+var errRemarkableMissing = errors.New("no such document on the reMarkable")
 
 // writeBlob stores data under its hash and returns its entry.
 func (s *remarkableStore) writeBlob(name string, data []byte) (remarkableEntry, error) {
@@ -612,6 +634,19 @@ func (s *remarkableStore) upload(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusRequestEntityTooLarge, fmt.Sprintf("file exceeds %d bytes", s.maxUpload))
 		return
 	}
+	id, err := s.add(name, parent, data)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusCreated, map[string]string{"id": id})
+}
+
+var errRemarkableKind = errors.New("the reMarkable takes PDFs and EPUBs only")
+
+// add puts a PDF or EPUB on the tablet, in folder parent ("" for the top
+// level), and returns its id.
+func (s *remarkableStore) add(name, parent string, data []byte) (string, error) {
 	var kind string
 	switch {
 	case bytes.HasPrefix(data, []byte("%PDF-")):
@@ -619,8 +654,7 @@ func (s *remarkableStore) upload(w http.ResponseWriter, r *http.Request) {
 	case bytes.HasPrefix(data, []byte("PK")) && bytes.Contains(data[:min(len(data), 100)], []byte("application/epub+zip")):
 		kind = "epub"
 	default:
-		writeError(w, http.StatusBadRequest, "the reMarkable takes PDFs and EPUBs only")
-		return
+		return "", errRemarkableKind
 	}
 	id := newRemarkableID()
 	var files []remarkableEntry
@@ -634,12 +668,11 @@ func (s *remarkableStore) upload(w http.ResponseWriter, r *http.Request) {
 	} {
 		e, err := s.writeBlob(f.name, f.data)
 		if err != nil {
-			writeError(w, http.StatusInternalServerError, err.Error())
-			return
+			return "", err
 		}
 		files = append(files, e)
 	}
-	s.create(w, id, parent, files)
+	return id, s.create(id, parent, files)
 }
 
 func (s *remarkableStore) mkdir(w http.ResponseWriter, r *http.Request) {
@@ -654,26 +687,27 @@ func (s *remarkableStore) mkdir(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	s.create(w, id, req.Parent, []remarkableEntry{meta})
-}
-
-func (s *remarkableStore) create(w http.ResponseWriter, id, parent string, files []remarkableEntry) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	doc, err := s.docEntry(id, files)
-	if err == nil {
-		err = s.update(func(docs []remarkableEntry) ([]remarkableEntry, error) {
-			if err := s.checkParent(docs, parent); err != nil {
-				return nil, err
-			}
-			return append(docs, doc), nil
-		})
-	}
-	if err != nil {
+	if err := s.create(id, req.Parent, []remarkableEntry{meta}); err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
 	writeJSON(w, http.StatusCreated, map[string]string{"id": id})
+}
+
+// create adds a document or folder whose files are written.
+func (s *remarkableStore) create(id, parent string, files []remarkableEntry) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	doc, err := s.docEntry(id, files)
+	if err != nil {
+		return err
+	}
+	return s.update(func(docs []remarkableEntry) ([]remarkableEntry, error) {
+		if err := s.checkParent(docs, parent); err != nil {
+			return nil, err
+		}
+		return append(docs, doc), nil
+	})
 }
 
 func (s *remarkableStore) patch(w http.ResponseWriter, r *http.Request) {

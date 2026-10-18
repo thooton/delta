@@ -1,4 +1,4 @@
-package main
+package remarkable
 
 // Drawing reMarkable pages as PDF: each page's strokes as vector paths,
 // its highlights, and its typed text in Helvetica.

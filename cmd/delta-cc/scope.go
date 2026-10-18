@@ -21,12 +21,19 @@ import (
 // to what a backup agent needs (agentAllowed): the user's Canvas, Gmail and
 // Claude accounts stay out of its reach, and it can't change the command
 // center's settings.
+//
+// A transform job's key (see transform.go) is made for that job and travels
+// in its cloud session's first message. It reaches the job's own routes
+// (/transform/...) on the public listener and nothing else, and dies when
+// the job ends.
 
 type scope string
 
 const (
 	scopeFull  scope = "full"
 	scopeAgent scope = "agent"
+	// A transform job's key.
+	scopeTransform scope = "transform"
 )
 
 type scopeKey struct{}
@@ -47,16 +54,30 @@ func bearer(r *http.Request) (string, bool) {
 	return strings.CutPrefix(r.Header.Get("Authorization"), "Bearer ")
 }
 
-// requireAuth rejects any request without the delta token.
-func requireAuth(tokenHash []byte, next http.Handler) http.Handler {
+// requireAuth rejects any request without the delta token, other than a
+// running transform job's to its own routes.
+func requireAuth(tokenHash []byte, jobs *transformService, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		token, ok := bearer(r)
 		sum := sha256.Sum256([]byte(token))
-		if !ok || subtle.ConstantTimeCompare(sum[:], tokenHash) != 1 {
-			writeError(w, http.StatusUnauthorized, "invalid or missing auth token")
+		if ok && subtle.ConstantTimeCompare(sum[:], tokenHash) == 1 {
+			next.ServeHTTP(w, withScope(r, scopeFull))
 			return
 		}
-		next.ServeHTTP(w, withScope(r, scopeFull))
+		if id, ok := jobs.job(token); ok {
+			if !strings.HasPrefix(r.URL.Path, "/transform/") {
+				writeError(w, http.StatusForbidden, "a transform job's key reaches only its own document")
+				return
+			}
+			r = withScope(r, scopeTransform)
+			next.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), transformJobKey{}, id)))
+			return
+		}
+		if strings.HasPrefix(token, transformKeyStart) {
+			writeError(w, http.StatusUnauthorized, "this transform job is over (its result was submitted, or it failed, was cancelled or timed out), so its key no longer works")
+			return
+		}
+		writeError(w, http.StatusUnauthorized, "invalid or missing auth token")
 	})
 }
 

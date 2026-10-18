@@ -655,6 +655,9 @@ code, pre, textarea.mono { font-family: var(--mono); }
 .progress { height: 3px; background: var(--hover); border-radius: 3px; overflow: hidden; margin-bottom: 12px; }
 .progress div { height: 100%; width: 0; background: var(--text); transition: width 0.15s; }
 
+.page-section { font-size: 14px; font-weight: 600; color: var(--muted); margin: 24px 0 10px; }
+.rows + .page-section { margin-top: 28px; }
+.row .label small.failed { color: var(--danger); white-space: normal; }
 .rows { border: 1px solid var(--border); border-radius: 12px; overflow: hidden; }
 .row {
   display: flex;
@@ -732,5 +735,7 @@ code, pre, textarea.mono { font-family: var(--mono); }
   .composer-wrap { padding: 0 12px 12px; }
   .page { padding: 12px 16px 40px; }
   .you .bubble { max-width: 92%; }
-  .row .actions .button span { display: none; }
+  /* The buttons are words, so they go under the name rather than lose them. */
+  .row { flex-wrap: wrap; row-gap: 4px; }
+  .row .actions { flex-basis: 100%; flex-wrap: wrap; padding-left: 36px; }
 }
