@@ -87,6 +87,14 @@ Backup sessions (see agents.go):
   -agent-setup FILE          a Bash script each new container runs as root before
                              the agent starts (default: install the delta CLI)
 
+reMarkable, through rmfakecloud on this machine (see remarkable.go):
+  -remarkable-data DIR       rmfakecloud's data directory
+                             (default /opt/delta/rmfakecloud/data; empty: off)
+  -remarkable-user USER      whose tablet (default sam13703)
+  -remarkable-env FILE       rmfakecloud's environment file; with its
+                             JWT_SECRET_KEY the tablet is told to sync after
+                             each change (default /opt/delta/rmfakecloud/.env)
+
 Canvas relay (see canvas.go):
   -canvas-url URL            Canvas origin (default https://canvas.asu.edu;
                              empty disables the relay)
@@ -138,6 +146,9 @@ func serve(args []string) {
 	fs.StringVar(&agentCfg.Memory, "agent-memory", "4g", "memory limit for each backup session's container; empty for none")
 	fs.StringVar(&agentCfg.CPUs, "agent-cpus", "2", "CPU limit for each backup session's container; empty for none")
 	fs.IntVar(&agentCfg.PIDs, "agent-pids", 4096, "process limit for each backup session's container; 0 for none")
+	rmData := fs.String("remarkable-data", "/opt/delta/rmfakecloud/data", "rmfakecloud's data directory; empty turns the reMarkable off")
+	rmUser := fs.String("remarkable-user", "sam13703", "the rmfakecloud user whose tablet delta uses")
+	rmEnv := fs.String("remarkable-env", "/opt/delta/rmfakecloud/.env", "rmfakecloud's environment file, for its JWT_SECRET_KEY and PORT")
 	agentSetupFile := fs.String("agent-setup", "", "Bash script each new backup session's container runs as root; empty installs the delta CLI")
 	fs.Parse(args)
 	if *agentSetupFile != "" {
@@ -189,7 +200,8 @@ func serve(args []string) {
 	}
 
 	u := &updater{restart: make(chan struct{}, 1)}
-	public, agent := newHandler(tokenHash, filesDir, *maxUpload, u, canvas, agents)
+	remarkable := newRemarkableStore(*rmData, *rmUser, *rmEnv, *maxUpload)
+	public, agent := newHandler(tokenHash, filesDir, *maxUpload, u, canvas, remarkable, agents)
 	srv := &http.Server{
 		Addr:              *addr,
 		Handler:           logRequests(public),
@@ -250,8 +262,8 @@ func listenAgentSocket(path string) (net.Listener, error) {
 // newHandler builds the authenticated API: the public handler, for the delta
 // token, and the agent handler, for backup sessions' tokens on the agent
 // socket (see scope.go). It is shared by serve and selfTest. A nil canvas
-// disables the Canvas relay.
-func newHandler(tokenHash []byte, filesDir string, maxUpload int64, u *updater, canvas *canvasProxy, agents *agentService) (public, agent http.Handler) {
+// disables the Canvas relay, and a nil remarkable the reMarkable.
+func newHandler(tokenHash []byte, filesDir string, maxUpload int64, u *updater, canvas *canvasProxy, remarkable *remarkableStore, agents *agentService) (public, agent http.Handler) {
 	s := &server{filesDir: filesDir, maxUpload: maxUpload}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /auth", func(w http.ResponseWriter, r *http.Request) {
@@ -280,6 +292,11 @@ func newHandler(tokenHash []byte, filesDir string, maxUpload int64, u *updater, 
 		canvas.register(mux)
 	} else {
 		registerCanvasDisabled(mux)
+	}
+	if remarkable != nil {
+		remarkable.register(mux)
+	} else {
+		registerRemarkableDisabled(mux)
 	}
 	// Backup sessions are run from the public side only, so the agent
 	// handler never reaches these routes (agentAllowed refuses them too).

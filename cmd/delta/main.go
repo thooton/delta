@@ -103,6 +103,8 @@ COMMANDS
                                      and their hours with Google Maps.
   delta gmail ...                    The user's Gmail: search, read, send,
                                      reply, forward, archive, trash, label.
+  delta remarkable ...               The user's reMarkable tablet: put PDFs
+                                     on it, get back what they wrote.
   delta docx                         How to make Word documents (.docx).
   delta docx extract [dir]           Extract the scripts that guide uses.
   delta accounts ...                 The Claude accounts the phone's
@@ -113,7 +115,8 @@ COMMANDS
                                      CONTINUED CONVERSATIONS). With no
                                      arguments, list them.
 
-  Read "delta canvas|music|books|maps|gmail|accounts help" before using those, and
+  Read "delta canvas|music|books|maps|gmail|remarkable|accounts help" before
+  using those, and
   "delta docx" before making or editing a Word document.
   Aliases: ls = list, rm = delete, get = pull.
 
@@ -218,6 +221,8 @@ func run(args []string) error {
 		return runMaps(args)
 	case "gmail", "mail", "email":
 		return runGmail(args)
+	case "remarkable", "tablet":
+		return runRemarkable(args)
 	case "docx":
 		return runDocx(args)
 	case "accounts", "account":

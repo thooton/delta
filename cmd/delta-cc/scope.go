@@ -83,7 +83,7 @@ func agentAllowed(r *http.Request) string {
 	p, m := r.URL.Path, r.Method
 	first, _, _ := strings.Cut(strings.TrimPrefix(p, "/"), "/")
 	switch first {
-	case "auth", "version", "files", "music", "music-jobs", "github", "update":
+	case "auth", "version", "files", "music", "music-jobs", "github", "update", "remarkable":
 		return ""
 	case "music-login":
 		return ""
