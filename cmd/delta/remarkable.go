@@ -69,6 +69,12 @@ func runRemarkable(args []string) error {
 		return rmTransform(c, args)
 	case "transforms", "jobs":
 		return rmTransforms(c)
+	case "sync":
+		if _, err := do(c, http.MethodPost, "/remarkable/sync", nil); err != nil {
+			return err
+		}
+		fmt.Println("Told the tablet to sync.")
+		return nil
 	case "rm", "trash", "delete":
 		if len(args) != 1 {
 			return errors.New("usage: delta remarkable rm <document|folder>")

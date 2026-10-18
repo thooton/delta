@@ -93,7 +93,8 @@ reMarkable, through rmfakecloud on this machine (see remarkable.go):
   -remarkable-user USER      whose tablet (default sam13703)
   -remarkable-env FILE       rmfakecloud's environment file; with its
                              JWT_SECRET_KEY the tablet is told to sync after
-                             each change (default /opt/delta/rmfakecloud/.env)
+                             each change
+                             (default /opt/delta/rmfakecloud/rmfakecloud.conf)
 
 Canvas relay (see canvas.go):
   -canvas-url URL            Canvas origin (default https://canvas.asu.edu;
@@ -148,7 +149,7 @@ func serve(args []string) {
 	fs.IntVar(&agentCfg.PIDs, "agent-pids", 4096, "process limit for each backup session's container; 0 for none")
 	rmData := fs.String("remarkable-data", "/opt/delta/rmfakecloud/data", "rmfakecloud's data directory; empty turns the reMarkable off")
 	rmUser := fs.String("remarkable-user", "sam13703", "the rmfakecloud user whose tablet delta uses")
-	rmEnv := fs.String("remarkable-env", "/opt/delta/rmfakecloud/.env", "rmfakecloud's environment file, for its JWT_SECRET_KEY and PORT")
+	rmEnv := fs.String("remarkable-env", "/opt/delta/rmfakecloud/rmfakecloud.conf", "rmfakecloud's environment file, for its JWT_SECRET_KEY and PORT")
 	agentSetupFile := fs.String("agent-setup", "", "Bash script each new backup session's container runs as root; empty installs the delta CLI")
 	fs.Parse(args)
 	if *agentSetupFile != "" {
