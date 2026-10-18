@@ -62,7 +62,7 @@ func transformSelfTest(expect func(desc string, want int, method, path, tok stri
 	if _, err := expect("only the fonts are served", 404, "GET", "/transform/fonts/other.exe", "", nil); err != nil {
 		return err
 	}
-	if _, err := expect("a download that isn't the font is refused", 502, "GET", "/transform/fonts/arial32.exe", "", nil); err != nil {
+	if _, err := expect("a download that isn't the font is refused", 503, "GET", "/transform/fonts/arial32.exe", "", nil); err != nil {
 		return err
 	}
 	transformFontSources = nil
