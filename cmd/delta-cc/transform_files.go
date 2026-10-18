@@ -90,13 +90,26 @@ var transformFontSources = []string{
 
 // fetchTransformFont downloads an installer. The self-test stands in for it.
 var fetchTransformFont = func(ctx context.Context, name string) ([]byte, error) {
-	client := &http.Client{Timeout: 2 * time.Minute}
+	client := &http.Client{
+		Timeout: 2 * time.Minute,
+		// SourceForge sends the file only to a request that comes from no page:
+		// with the Referer a redirect adds, it sends its download page instead.
+		CheckRedirect: func(req *http.Request, via []*http.Request) error {
+			if len(via) >= 10 {
+				return errors.New("too many redirects")
+			}
+			req.Header.Del("Referer")
+			return nil
+		},
+	}
 	var errs []error
 	for _, base := range transformFontSources {
 		req, err := http.NewRequestWithContext(ctx, http.MethodGet, base+name, nil)
 		if err != nil {
 			return nil, err
 		}
+		// As a download tool, which SourceForge sends files to directly.
+		req.Header.Set("User-Agent", "Wget/1.21.3")
 		resp, err := client.Do(req)
 		if err != nil {
 			errs = append(errs, err)
@@ -171,7 +184,8 @@ func (f *transformFontStore) serve(w http.ResponseWriter, r *http.Request) {
 		return
 	} else if err != nil {
 		log.Printf("transform fonts: %v", err)
-		writeError(w, http.StatusBadGateway, "couldn't get the font: "+err.Error())
+		// Not 502: a proxy in front of the command center may put its own page in place of one.
+		writeError(w, http.StatusServiceUnavailable, "couldn't get the font: "+err.Error())
 		return
 	}
 	w.Header().Set("Content-Type", "application/octet-stream")
