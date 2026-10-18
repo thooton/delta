@@ -1,5 +1,5 @@
 // Package docx holds the guide to making Word documents and the scripts it
-// uses, for `delta docx` and `transform docx`.
+// uses, for `delta docx`.
 package docx
 
 import (
