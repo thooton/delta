@@ -11,16 +11,14 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"image"
 	"io"
 	"net/http"
-	"net/url"
 	"os"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"time"
 
-	"github.com/thooton/delta/internal/docx"
 	"github.com/thooton/delta/internal/remarkable"
 )
 
@@ -41,8 +39,6 @@ func run(args []string) error {
 	case "help", "-h", "--help":
 		fmt.Print(help)
 		return nil
-	case "docx":
-		return runDocx(rest)
 	case "start":
 		if len(rest) != 1 {
 			return errors.New("usage: transform start <key>")
@@ -50,24 +46,11 @@ func run(args []string) error {
 		return start(rest[0])
 	case "get":
 		return get(rest)
-	case "preview":
-		return preview(rest)
-	case "title":
-		if len(rest) == 0 {
-			return errors.New(`usage: transform title "<a few words>"`)
-		}
-		return update(map[string]any{"title": strings.Join(rest, " ")})
-	case "status":
-		return status(rest)
-	case "percent":
+	case "build":
 		if len(rest) != 1 {
-			return errors.New("usage: transform percent <0-100>")
+			return errNoForm
 		}
-		n, err := percent(rest[0])
-		if err != nil {
-			return err
-		}
-		return update(map[string]any{"percent": n})
+		return build(rest[0])
 	case "submit":
 		return submit(rest)
 	case "fail":
@@ -188,12 +171,31 @@ func start(k string) error {
 		return err
 	}
 	fmt.Printf("This job transforms %q, a %s on the user's tablet.\n", j.Name, kindName(j.Type))
-	if err := save(".", false); err != nil {
+	pdf, err := save(".", false)
+	if err != nil {
 		return err
 	}
-	fmt.Println("Next: run `transform help` and read all of it, then read the document.")
+	if pdf != "" {
+		n, err := renderPages(pdf, pagesDir)
+		if err != nil {
+			return err
+		}
+		fmt.Printf("Drew its %s as %s/page-1.png and on: read those.\n", pages(n), pagesDir)
+	}
+	if err := update(map[string]any{"status": "Reading the document", "percent": 10}); err != nil {
+		return err
+	}
+	fmt.Println("Next: run `transform help` and read all of it, then read the pages.")
 	return nil
 }
+
+// Where start draws the document's pages, and build puts the result.
+const (
+	pagesDir   = "pages"
+	resultDocx = "result.docx"
+	resultPDF  = "result.pdf"
+	previewDir = "result-pages"
+)
 
 func kindName(t string) string {
 	switch t {
@@ -225,31 +227,32 @@ func get(args []string) error {
 	if len(pos) == 1 {
 		dir = pos[0]
 	}
-	return save(dir, original)
+	_, err := save(dir, original)
+	return err
 }
 
 // save writes the document into dir as it looks on the tablet, or as it was
-// uploaded.
-func save(dir string, original bool) error {
+// uploaded, and returns the PDF of what is written on it ("" if nothing).
+func save(dir string, original bool) (string, error) {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return err
+		return "", err
 	}
 	k, err := key()
 	if err != nil {
-		return err
+		return "", err
 	}
 	j, err := jobInfo(k)
 	if err != nil {
-		return err
+		return "", err
 	}
 	data, err := call(k, http.MethodGet, "/transform/document", nil)
 	if err != nil {
-		return err
+		return "", err
 	}
 	var id string
 	files, err := remarkable.ReadZip(data)
 	if err != nil {
-		return fmt.Errorf("reading the document: %w", err)
+		return "", fmt.Errorf("reading the document: %w", err)
 	}
 	for name := range files {
 		if strings.HasSuffix(name, ".content") && !strings.Contains(name, "/") {
@@ -265,9 +268,10 @@ func save(dir string, original bool) error {
 		fmt.Printf("Saved %s (%s).\n", name, what)
 		return nil
 	}
+	orig := ""
 	if original || r.Type == "epub" || r.Unreadable != nil {
 		if r.Original == nil {
-			return errors.New("the document is a notebook: there is no original file")
+			return "", errors.New("the document is a notebook: there is no original file")
 		}
 		name := base + "." + r.Type
 		if original && r.Type == "pdf" {
@@ -278,7 +282,10 @@ func save(dir string, original bool) error {
 			what = fmt.Sprintf("the PDF as uploaded: it couldn't be read to draw on it, %v", r.Unreadable)
 		}
 		if err := write(name, r.Original, what); err != nil || original {
-			return err
+			return "", err
+		}
+		if r.Type == "pdf" {
+			orig = name
 		}
 	}
 	for _, p := range r.Problems {
@@ -286,16 +293,17 @@ func save(dir string, original bool) error {
 	}
 	if r.PDF == nil {
 		fmt.Println("Nothing is written on it.")
-		return nil
+		return orig, nil
 	}
 	if r.Separate {
-		return write(base+" (handwriting).pdf", r.PDF, fmt.Sprintf("what the user wrote, alone, %s, each labelled with the page it is on", pages(r.Pages)))
+		name := base + " (handwriting).pdf"
+		return name, write(name, r.PDF, fmt.Sprintf("what the user wrote, alone, %s, each labelled with the page it is on", pages(r.Pages)))
 	}
 	what := fmt.Sprintf("as it looks on the tablet, %s, %d written on", pages(r.Pages), r.Written)
 	if r.Type == "notebook" {
 		what = "as it looks on the tablet, " + pages(r.Pages)
 	}
-	return write(base+".pdf", r.PDF, what)
+	return base + ".pdf", write(base+".pdf", r.PDF, what)
 }
 
 func pages(n int) string {
@@ -305,53 +313,83 @@ func pages(n int) string {
 	return fmt.Sprintf("%d pages", n)
 }
 
-func preview(args []string) error {
-	if len(args) < 1 || len(args) > 2 {
-		return errors.New("usage: transform preview <file.docx> [out.pdf]")
-	}
-	data, err := os.ReadFile(args[0])
+// build makes the document from the form, by its format's template, and
+// the PDF the tablet will get, drawn page by page for the agent to check.
+// It keeps the user posted on its own.
+func build(path string) error {
+	f, err := readForm(path)
 	if err != nil {
 		return err
 	}
-	out := strings.TrimSuffix(args[0], filepath.Ext(args[0])) + " (preview).pdf"
-	if len(args) == 2 {
-		out = args[1]
+	// The title first: the command center may refuse it, and say why.
+	if err := update(map[string]any{"title": f.Title, "status": "Making the document", "percent": 60}); err != nil {
+		return err
+	}
+	data, err := makeDocx(f, time.Now(), func(page int, box []float64) (image.Image, error) {
+		return cropPage(pagesDir, page, box)
+	})
+	if err != nil {
+		return err
+	}
+	if err := os.WriteFile(resultDocx, data, 0o644); err != nil {
+		return err
 	}
 	pdf, err := do(http.MethodPost, "/transform/preview", data)
 	if err != nil {
 		return err
 	}
-	if err := os.WriteFile(out, pdf, 0o644); err != nil {
+	if err := os.WriteFile(resultPDF, pdf, 0o644); err != nil {
 		return err
 	}
-	fmt.Printf("Saved %s: the PDF the tablet will get for %s. Read it.\n", out, args[0])
-	return nil
-}
-
-func submit(args []string) error {
-	var pos []string
-	name := ""
-	for i := 0; i < len(args); i++ {
-		switch a := args[i]; {
-		case a == "--name" && i+1 < len(args):
-			i++
-			name = args[i]
-		case strings.HasPrefix(a, "--name="):
-			name = strings.TrimPrefix(a, "--name=")
-		case strings.HasPrefix(a, "-"):
-			return fmt.Errorf("unknown option %s", a)
-		default:
-			pos = append(pos, a)
-		}
-	}
-	if len(pos) != 1 {
-		return errors.New("usage: transform submit <file.pdf|file.docx> [--name NAME]")
-	}
-	data, err := os.ReadFile(pos[0])
+	n, err := renderPages(resultPDF, previewDir)
 	if err != nil {
 		return err
 	}
-	resp, err := do(http.MethodPost, "/transform/submit?name="+url.QueryEscape(name), data)
+	if err := update(map[string]any{"status": "Checking the document", "percent": 85}); err != nil {
+		return err
+	}
+	fmt.Printf("Built %s, and %s, the PDF the tablet will get: %s, drawn as %s/page-1.png and on.\n", resultDocx, resultPDF, pages(n), previewDir)
+	if ph := placeholders(f); len(ph) > 0 {
+		fmt.Printf("Placeholders for what the document doesn't give: %s.\n", strings.Join(ph, ", "))
+	}
+	fmt.Println("Read every page of it. If anything is wrong, fix the form and build again; when it is right, run `transform submit`.")
+	return nil
+}
+
+// placeholders lists the fields the template fills with one.
+func placeholders(f *form) []string {
+	var out []string
+	check := func(v, name string) {
+		if strings.TrimSpace(v) == "" {
+			out = append(out, "["+name+"]")
+		}
+	}
+	switch f.Format {
+	case "mla":
+		check(f.Author, "Name")
+		check(f.Instructor, "Instructor")
+		check(f.Course, "Course")
+		check(f.Heading, "Title")
+	case "apa":
+		check(f.Author, "Name")
+		check(f.School, "School")
+		check(f.Course, "Course")
+		check(f.Instructor, "Instructor")
+		check(f.Heading, "Title")
+	}
+	return out
+}
+
+// submit sends the last build, named by the job's title.
+func submit(args []string) error {
+	if len(args) != 0 {
+		return errors.New("usage: transform submit (it submits the last build)")
+	}
+	data, err := os.ReadFile(resultDocx)
+	if err != nil {
+		return errors.New("nothing is built yet: run `transform build <form.json>` first")
+	}
+	resp, err := do(http.MethodPost, "/transform/submit", data)
 	if err != nil {
 		return err
 	}
@@ -362,31 +400,6 @@ func submit(args []string) error {
 	json.Unmarshal(resp, &r)
 	fmt.Printf("Submitted %q. It is going onto the user's tablet, next to the original, and into their files to download (%s). The job is done: say in a sentence what you made.\n", r.Name, strings.Join(r.Files, ", "))
 	return nil
-}
-
-// percent reads a percentage: "40" or "40%".
-func percent(s string) (int, error) {
-	n, err := strconv.Atoi(strings.TrimSuffix(strings.TrimSpace(s), "%"))
-	if err != nil || n < 0 || n > 100 {
-		return 0, fmt.Errorf("%q isn't a percentage from 0 to 100", s)
-	}
-	return n, nil
-}
-
-// status sets the status line, and the percentage if the last word is one.
-func status(args []string) error {
-	if len(args) == 0 {
-		return errors.New(`usage: transform status "<what you're doing>" [percent]`)
-	}
-	change := map[string]any{}
-	if len(args) > 1 {
-		if n, err := percent(args[len(args)-1]); err == nil {
-			change["percent"] = n
-			args = args[:len(args)-1]
-		}
-	}
-	change["status"] = strings.Join(args, " ")
-	return update(change)
 }
 
 // update tells the user what the job is and how it is going.
@@ -419,25 +432,5 @@ func fail(why string) error {
 		return err
 	}
 	fmt.Println("The job is marked as failed, and the user will see why. Nothing more to do.")
-	return nil
-}
-
-func runDocx(args []string) error {
-	if len(args) == 0 || args[0] == "help" {
-		fmt.Print(docx.Help("transform docx"))
-		return nil
-	}
-	if args[0] != "extract" || len(args) > 2 {
-		return errors.New("usage: transform docx [extract [dir]]")
-	}
-	dir := "."
-	if len(args) == 2 {
-		dir = args[1]
-	}
-	n, err := docx.Extract(dir)
-	if err != nil {
-		return err
-	}
-	fmt.Printf("extracted %d files into %s: scripts/ and its LICENSE\n", n, dir)
 	return nil
 }
