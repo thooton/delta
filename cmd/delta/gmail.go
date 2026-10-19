@@ -6,26 +6,16 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"mime/multipart"
 	"net/http"
-	"net/textproto"
 	"net/url"
-	"os"
 	"strings"
-	"sync"
 	"time"
 )
 
-// `delta gmail` reads and sends the user's Gmail with the Gmail API. The
-// login (the user's OAuth client and the refresh token they granted it)
-// lives on the command center (GET/PUT/DELETE /gmail-login). The CLI fetches
-// it on every run, trades the refresh token for an hour-long access token
-// with Google, and calls Gmail itself, so nothing is kept locally.
-//
-// Every id the agent sees is a message id. search shows each conversation by
-// its latest message, read shows the whole conversation, and trash, archive,
-// mark and label act on the whole conversation, as the Gmail app does; reply,
-// forward and attachment work on the one message.
+// `delta gmail login` and `logout` keep the Gmail login (the user's OAuth
+// client and the refresh token they granted it) on the command center
+// (GET/PUT/DELETE /gmail-login), for the phone's Mail app and the SMTP
+// relay. The agent's mail commands are gone: Mail on the phone took over.
 
 var (
 	gmailAPI        = "https://gmail.googleapis.com"
@@ -47,52 +37,25 @@ var peopleScopes = []string{
 	"https://www.googleapis.com/auth/contacts.other.readonly",
 }
 
+const gmailUsage = `usage: delta gmail login <client-secret.json>   save a Gmail login on the command center
+       delta gmail logout                       remove and revoke it
+
+The login is for the phone's Mail app and the SMTP relay; it is set up by
+the user, on a computer with a browser (see AGENTS.md).
+`
+
 func runGmail(args []string) error {
 	if len(args) == 0 || args[0] == "help" || args[0] == "-h" || args[0] == "--help" {
-		fmt.Print(gmailHelp)
+		fmt.Print(gmailUsage)
 		return nil
 	}
-	cmd, args := args[0], args[1:]
-	switch cmd {
-	case "search", "list", "ls", "inbox":
-		return gmailSearchCmd(args)
-	case "read", "show", "open":
-		return gmailReadCmd(args)
-	case "attachment", "attachments":
-		return gmailAttachmentCmd(args)
-	case "send":
-		return gmailSendCmd(args)
-	case "reply":
-		return gmailReplyCmd(args)
-	case "forward", "fwd":
-		return gmailForwardCmd(args)
-	case "send-draft":
-		return gmailSendDraftCmd(args)
-	case "trash", "delete", "rm":
-		return gmailModifyCmd("trash", args)
-	case "untrash", "restore":
-		return gmailModifyCmd("untrash", args)
-	case "archive":
-		return gmailModifyCmd("archive", args)
-	case "unarchive":
-		return gmailModifyCmd("unarchive", args)
-	case "mark":
-		if len(args) == 0 {
-			return errors.New("usage: delta gmail mark <read|unread|starred|unstarred|important|unimportant|spam|not-spam> <id>...")
-		}
-		return gmailModifyCmd(args[0], args[1:])
-	case "label", "unlabel":
-		return gmailLabelCmd(cmd, args)
-	case "labels":
-		return gmailLabelsCmd(args)
-	case "account", "whoami":
-		return gmailAccountCmd(args)
+	switch args[0] {
 	case "login":
-		return gmailLoginCmd(args)
+		return gmailLoginCmd(args[1:])
 	case "logout":
-		return gmailLogoutCmd(args)
+		return gmailLogoutCmd(args[1:])
 	default:
-		return fmt.Errorf("unknown gmail command %q (run `delta gmail help`)", cmd)
+		return fmt.Errorf("unknown gmail command %q: only login and logout remain", args[0])
 	}
 }
 
@@ -165,28 +128,6 @@ func stripURL(err error) error {
 type gmailClient struct {
 	http  *http.Client
 	token string
-	email string
-
-	mu     sync.Mutex
-	labels []gmailLabel // cached by labelList
-	sendAs []gmailSendAs
-}
-
-func newGmailClient() (*gmailClient, error) {
-	login, err := fetchGmailLogin()
-	if err != nil {
-		return nil, err
-	}
-	t, err := requestToken(url.Values{
-		"grant_type":    {"refresh_token"},
-		"refresh_token": {login.RefreshToken},
-		"client_id":     {login.ClientID},
-		"client_secret": {login.ClientSecret},
-	})
-	if err != nil {
-		return nil, err
-	}
-	return &gmailClient{http: &http.Client{Timeout: 5 * time.Minute}, token: t.AccessToken, email: login.Email}, nil
 }
 
 // gmailAPIError is an error response from Gmail.
@@ -211,11 +152,6 @@ func (e *gmailAPIError) Error() string {
 		return "Gmail: too many requests; wait a minute and try again"
 	}
 	return fmt.Sprintf("Gmail: %s (HTTP %d)", msg, e.Code)
-}
-
-func isNotFound(err error) bool {
-	var e *gmailAPIError
-	return errors.As(err, &e) && e.Code == http.StatusNotFound
 }
 
 // do sends a request to the Gmail API (path is relative to
@@ -265,254 +201,4 @@ func (c *gmailClient) do(method, path string, query url.Values, contentType stri
 
 func (c *gmailClient) get(path string, query url.Values, out any) error {
 	return c.do(http.MethodGet, path, query, "", nil, out)
-}
-
-func (c *gmailClient) post(path string, body, out any) error {
-	var rd io.Reader
-	ct := ""
-	if body != nil {
-		data, err := json.Marshal(body)
-		if err != nil {
-			return err
-		}
-		rd, ct = bytes.NewReader(data), "application/json"
-	}
-	return c.do(http.MethodPost, path, nil, ct, rd, out)
-}
-
-// upload sends a raw message with its JSON metadata to a Gmail upload
-// endpoint (messages/send or drafts), which takes messages up to 35 MB.
-func (c *gmailClient) upload(path string, meta any, raw []byte, out any) error {
-	var buf bytes.Buffer
-	mw := multipart.NewWriter(&buf)
-	metaJSON, err := json.Marshal(meta)
-	if err != nil {
-		return err
-	}
-	pw, _ := mw.CreatePart(textproto.MIMEHeader{"Content-Type": {"application/json; charset=UTF-8"}})
-	pw.Write(metaJSON)
-	pw, _ = mw.CreatePart(textproto.MIMEHeader{"Content-Type": {"message/rfc822"}})
-	pw.Write(raw)
-	mw.Close()
-	q := url.Values{"uploadType": {"multipart"}}
-	return c.do(http.MethodPost, "/upload/gmail/v1/users/me"+path, q, "multipart/related; boundary="+mw.Boundary(), &buf, out)
-}
-
-// ---- Gmail's resources ----
-
-type gmailHeader struct {
-	Name  string `json:"name"`
-	Value string `json:"value"`
-}
-
-type gmailPart struct {
-	PartID   string        `json:"partId"`
-	MimeType string        `json:"mimeType"`
-	Filename string        `json:"filename"`
-	Headers  []gmailHeader `json:"headers"`
-	Body     struct {
-		AttachmentID string `json:"attachmentId"`
-		Size         int64  `json:"size"`
-		Data         string `json:"data"`
-	} `json:"body"`
-	Parts []gmailPart `json:"parts"`
-}
-
-// header returns the first header with this name.
-func (p *gmailPart) header(name string) string {
-	if p == nil {
-		return ""
-	}
-	for _, h := range p.Headers {
-		if strings.EqualFold(h.Name, name) {
-			return h.Value
-		}
-	}
-	return ""
-}
-
-type gmailMessage struct {
-	ID           string     `json:"id"`
-	ThreadID     string     `json:"threadId"`
-	LabelIDs     []string   `json:"labelIds"`
-	Snippet      string     `json:"snippet"`
-	InternalDate string     `json:"internalDate"`
-	Payload      *gmailPart `json:"payload"`
-}
-
-func (m *gmailMessage) header(name string) string { return m.Payload.header(name) }
-
-func (m *gmailMessage) hasLabel(id string) bool {
-	for _, l := range m.LabelIDs {
-		if l == id {
-			return true
-		}
-	}
-	return false
-}
-
-// time is when Gmail received (or sent) the message.
-func (m *gmailMessage) time() time.Time {
-	var ms int64
-	fmt.Sscan(m.InternalDate, &ms)
-	return time.UnixMilli(ms)
-}
-
-type gmailThread struct {
-	ID       string         `json:"id"`
-	Snippet  string         `json:"snippet"`
-	Messages []gmailMessage `json:"messages"`
-}
-
-// latest returns the conversation's latest message that isn't a draft (or
-// its latest draft, if that is all it has).
-func (t *gmailThread) latest() *gmailMessage {
-	for i := len(t.Messages) - 1; i >= 0; i-- {
-		if !t.Messages[i].hasLabel("DRAFT") {
-			return &t.Messages[i]
-		}
-	}
-	if len(t.Messages) > 0 {
-		return &t.Messages[len(t.Messages)-1]
-	}
-	return nil
-}
-
-// labelIDs is every label on any message in the conversation.
-func (t *gmailThread) labelIDs() []string {
-	seen := map[string]bool{}
-	var ids []string
-	for _, m := range t.Messages {
-		for _, l := range m.LabelIDs {
-			if !seen[l] {
-				seen[l] = true
-				ids = append(ids, l)
-			}
-		}
-	}
-	return ids
-}
-
-type gmailLabel struct {
-	ID   string `json:"id"`
-	Name string `json:"name"`
-	Type string `json:"type"`
-}
-
-type gmailSendAs struct {
-	Email       string `json:"sendAsEmail"`
-	DisplayName string `json:"displayName"`
-	IsDefault   bool   `json:"isDefault"`
-	IsPrimary   bool   `json:"isPrimary"`
-	Status      string `json:"verificationStatus"`
-}
-
-func (c *gmailClient) message(id, format string) (*gmailMessage, error) {
-	id, err := needMessageID(id)
-	if err != nil {
-		return nil, err
-	}
-	var m gmailMessage
-	q := url.Values{"format": {format}}
-	if format == "metadata" {
-		q["metadataHeaders"] = []string{"Subject", "From", "To", "Date"}
-	}
-	if err := c.get("/messages/"+id, q, &m); isNotFound(err) {
-		return nil, fmt.Errorf("no message with id %s (ids come from `delta gmail search` or `read`)", id)
-	} else if err != nil {
-		return nil, err
-	}
-	return &m, nil
-}
-
-func (c *gmailClient) thread(id, format string) (*gmailThread, error) {
-	var t gmailThread
-	q := url.Values{"format": {format}}
-	if format == "metadata" {
-		q["metadataHeaders"] = []string{"Subject", "From", "To", "Date"}
-	}
-	if err := c.get("/threads/"+url.PathEscape(id), q, &t); err != nil {
-		return nil, err
-	}
-	return &t, nil
-}
-
-func (c *gmailClient) labelList() ([]gmailLabel, error) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	if c.labels == nil {
-		var res struct{ Labels []gmailLabel }
-		if err := c.get("/labels", nil, &res); err != nil {
-			return nil, err
-		}
-		c.labels = append([]gmailLabel{}, res.Labels...)
-	}
-	return c.labels, nil
-}
-
-// sendAsList returns the addresses the user can send from.
-func (c *gmailClient) sendAsList() ([]gmailSendAs, error) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	if c.sendAs == nil {
-		var res struct {
-			SendAs []gmailSendAs `json:"sendAs"`
-		}
-		if err := c.get("/settings/sendAs", nil, &res); err != nil {
-			return nil, err
-		}
-		for _, s := range res.SendAs {
-			if s.Status == "" || s.Status == "accepted" {
-				c.sendAs = append(c.sendAs, s)
-			}
-		}
-		if len(c.sendAs) == 0 {
-			c.sendAs = []gmailSendAs{{Email: c.email, IsDefault: true, IsPrimary: true}}
-		}
-	}
-	return c.sendAs, nil
-}
-
-// isMe reports whether addr is one of the user's own addresses.
-func (c *gmailClient) isMe(addr string) bool {
-	addr = strings.ToLower(addr)
-	if addr == strings.ToLower(c.email) {
-		return true
-	}
-	list, _ := c.sendAsList()
-	for _, s := range list {
-		if strings.ToLower(s.Email) == addr {
-			return true
-		}
-	}
-	return false
-}
-
-// gmailUserLocation is the user's time zone: DELTA_TZ, or this machine's.
-func gmailUserLocation() *time.Location {
-	if tz := os.Getenv("DELTA_TZ"); tz != "" {
-		if loc, err := time.LoadLocation(tz); err == nil {
-			return loc
-		}
-	}
-	return time.Local
-}
-
-// forEach runs fn on each item, a few at a time (Gmail limits how fast one
-// user may make requests), and returns their errors.
-func forEach[T any](items []T, fn func(int, T) error) error {
-	sem := make(chan struct{}, 5)
-	errs := make([]error, len(items))
-	var wg sync.WaitGroup
-	for i, it := range items {
-		wg.Add(1)
-		sem <- struct{}{}
-		go func() {
-			defer wg.Done()
-			defer func() { <-sem }()
-			errs[i] = fn(i, it)
-		}()
-	}
-	wg.Wait()
-	return errors.Join(errs...)
 }

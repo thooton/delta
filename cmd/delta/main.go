@@ -87,8 +87,6 @@ COMMANDS
                                      Check and save a new GitHub token ("-"
                                      reads stdin).
   delta update-cc                    Update the command center (see below).
-  delta gmail ...                    The user's Gmail: search, read, send,
-                                     reply, forward, archive, trash, label.
   delta accounts ...                 The Claude accounts the sessions run
                                      on: list them with their usage, add,
                                      remove.
@@ -100,7 +98,7 @@ COMMANDS
                                      then pick up where it left off. With
                                      no arguments, list them.
 
-  Read "delta gmail help" and "delta accounts help" before using those.
+  Read "delta accounts help" before using that.
   Aliases: ls = list, rm = delete, get = pull.
 
 GITHUB
@@ -128,8 +126,7 @@ BACKUP SESSIONS
   - You are root in a fresh Debian container. Install what you need with
     apt-get (gh is "apt-get install -y gh"). The container keeps its files
     until the user deletes the session, but stops while it is idle.
-  - Gmail is out of reach: for that, tell the user to start a regular (●)
-    session. "delta git" and "delta gh" work as anywhere else.
+  - "delta git" and "delta gh" work as anywhere else.
 
 UPDATING THE COMMAND CENTER
   Push the change to master in thooton/delta, wait for its GitHub Actions

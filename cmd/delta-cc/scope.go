@@ -116,7 +116,7 @@ func agentAllowed(r *http.Request) string {
 	case "canvas", "canvas-upload", "canvas-status":
 		return "Canvas isn't available in this session; the user needs a regular (●) session for Canvas"
 	case "gmail-login":
-		return "Gmail isn't available in this session; the user needs a regular (●) session for Gmail"
+		return "the Gmail login isn't available in this session"
 	case "personal-access-token":
 		return "this session can't change the GitHub token; ask the user to save a new one from a regular (●) session"
 	case "cloud-accounts":
