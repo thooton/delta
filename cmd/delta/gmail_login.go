@@ -90,7 +90,7 @@ func gmailLoginCmd(args []string) error {
 		"client_id":             {clientID},
 		"redirect_uri":          {redirect},
 		"response_type":         {"code"},
-		"scope":                 {gmailScope},
+		"scope":                 {strings.Join(append([]string{gmailScope}, peopleScopes...), " ")},
 		"access_type":           {"offline"},
 		"prompt":                {"consent"},
 		"state":                 {state},
