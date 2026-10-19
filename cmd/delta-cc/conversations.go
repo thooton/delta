@@ -16,7 +16,7 @@ import (
 )
 
 // Conversations carried from one session to another. When a session's
-// account runs out of usage, a client (the retired phone app did) can move the conversation to a new
+// account runs out of usage, the website (as the retired phone app did) can move the conversation to a new
 // session on another account: it reads the old session's whole history from
 // the cloud, writes it out as text and stores it here under a random id. The
 // new session is told the id and saves the conversation to a file with

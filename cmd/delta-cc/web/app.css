@@ -511,6 +511,9 @@ code, pre, textarea.mono { font-family: var(--mono); }
   background: var(--panel);
   border: 1px solid var(--border);
 }
+.banner:not([hidden]) { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+.banner > span { flex: 1 1 260px; }
+.banner .button { flex: none; height: 30px; }
 .composer {
   border: 1px solid var(--border-strong);
   border-radius: 22px;
