@@ -5,6 +5,7 @@
 //
 //	delta-cc [-data DIR] [-addr ADDR] [-max-upload BYTES] [canvas flags]   run the server
 //	delta-cc gen-token [-data DIR]                          create/rotate the auth token
+//	delta-cc smtp-password [-data DIR] [-user NAME]         create/rotate the SMTP relay's login
 //	delta-cc version                                        print the build version
 //	delta-cc test                                           run a self-test
 package main
@@ -39,6 +40,9 @@ func main() {
 		case "gen-token":
 			genToken(args[1:])
 			return
+		case "smtp-password":
+			genSMTPPassword(args[1:])
+			return
 		case "test":
 			if err := selfTest(); err != nil {
 				fmt.Fprintln(os.Stderr, "FAIL:", err)
@@ -67,6 +71,12 @@ Usage:
                                 Generate a new auth token. Only its hash is
                                 stored; the token is printed once. Running
                                 this again rotates the token.
+  delta-cc smtp-password [-data DIR] [-user NAME]
+                                Make a new login for the SMTP relay (default
+                                username delta), replacing any earlier one,
+                                and print the lines for rmfakecloud's
+                                environment file. Only the password's hash is
+                                stored; it is printed once.
   delta-cc version              Print the build version.
   delta-cc test                 Exercise the server against a temporary data
                                 directory. A new binary must pass this before
@@ -95,6 +105,11 @@ reMarkable, through rmfakecloud on this machine (see remarkable.go):
                              JWT_SECRET_KEY the tablet is told to sync after
                              each change
                              (default /opt/delta/rmfakecloud/rmfakecloud.conf)
+
+SMTP relay, sending mail through the user's Gmail (see smtp.go):
+  -smtp-addr ADDR            where it listens; keep it on 127.0.0.1, since it
+                             takes passwords without TLS
+                             (default 127.0.0.1:2525; empty: off)
 
 Canvas relay (see canvas.go):
   -canvas-url URL            Canvas origin (default https://canvas.asu.edu;
@@ -150,6 +165,7 @@ func serve(args []string) {
 	rmData := fs.String("remarkable-data", "/opt/delta/rmfakecloud/data", "rmfakecloud's data directory; empty turns the reMarkable off")
 	rmUser := fs.String("remarkable-user", "sam13703", "the rmfakecloud user whose tablet delta uses")
 	rmEnv := fs.String("remarkable-env", "/opt/delta/rmfakecloud/rmfakecloud.conf", "rmfakecloud's environment file, for its JWT_SECRET_KEY and PORT")
+	smtpAddr := fs.String("smtp-addr", "127.0.0.1:2525", "the SMTP relay's listen address; empty turns it off")
 	agentSetupFile := fs.String("agent-setup", "", "Bash script each new backup session's container runs as root; empty installs the delta CLI")
 	fs.Parse(args)
 	if *agentSetupFile != "" {
@@ -218,6 +234,24 @@ func serve(args []string) {
 		listening += " and " + agentCfg.Socket
 	}
 	log.Printf("command center %s listening on %s (data: %s)", version(), listening, *dataDir)
+	// Like backup sessions, the SMTP relay failing to start leaves the rest
+	// running.
+	relay := newSMTPRelay(*dataDir)
+	if *smtpAddr != "" {
+		if !isLoopback(*smtpAddr) {
+			log.Printf("smtp relay: %s isn't on the loopback interface, so passwords cross the network without TLS", *smtpAddr)
+		}
+		if ln, err := net.Listen("tcp", *smtpAddr); err != nil {
+			log.Printf("smtp relay is off: %v", err)
+		} else {
+			log.Printf("smtp relay listening on %s", ln.Addr())
+			go func() {
+				if err := relay.serve(ln); err != nil {
+					log.Printf("smtp relay stopped: %v", err)
+				}
+			}()
+		}
+	}
 
 	select {
 	case err := <-errc:
@@ -228,6 +262,7 @@ func serve(args []string) {
 		defer cancel()
 		srv.Shutdown(ctx)
 		agentSrv.Shutdown(ctx)
+		relay.shutdown(ctx)
 		log.Print("restarting into updated binary")
 		log.Fatal(reexec())
 	}

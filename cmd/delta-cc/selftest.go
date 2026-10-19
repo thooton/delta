@@ -176,6 +176,9 @@ func selfTest() error {
 	if err := transformCLISelfTest(dir); err != nil {
 		return err
 	}
+	if err := smtpSelfTest(dir); err != nil {
+		return err
+	}
 	if err := secretSelfTest(expect, token, accessTokenStore(dir), "ghp_first", "github_pat_second"); err != nil {
 		return err
 	}
