@@ -320,13 +320,14 @@
     return state.accounts;
   }
 
-  /** The first account, in the listed order, not known to be out. */
-  async function pickAccount() {
+  /** The first account, in the listed order, not known to be out (and not `except`). */
+  async function pickAccount(except) {
     const accounts = await loadAccounts();
     if (!accounts.length) throw new Error('No accounts are set up on the command center yet. Add one with `delta accounts login`.');
     const known = limits();
     let soonest = 0;
     for (const a of accounts) {
+      if (a.id === except) continue;
       if (known[a.id] > Date.now()) { soonest = soonest ? Math.min(soonest, known[a.id]) : known[a.id]; continue; }
       try {
         const until = limitedUntil(await api('/cloud-accounts/' + encodeURIComponent(a.id) + '/usage'));
@@ -340,7 +341,13 @@
       }
       return a.id;
     }
-    throw new Error('Every account is at its usage limit' + (soonest ? ' until ' + when(soonest) : '') + '. A backup session (▲) works meanwhile.');
+    throw new Error((except ? 'Every other account' : 'Every account') + ' is at its usage limit' + (soonest ? ' until ' + when(soonest) : '') + '. A backup session (▲) works meanwhile.');
+  }
+
+  /** Whether another account than `account` isn't known to be out, so a chat can move there. */
+  function canMove(account) {
+    const known = limits();
+    return state.accounts.some((a) => a.id !== account && !(known[a.id] > Date.now()));
   }
 
   // ---------------------------------------------------------------------
@@ -703,6 +710,128 @@
       }
       return false;
     }
+  }
+
+  // ---------------------------------------------------------------------
+  // Carrying a conversation to another account
+  // ---------------------------------------------------------------------
+  //
+  // When a chat's account reaches its usage limit, the chat can move to a new
+  // session on another account. The old session's whole event history is
+  // written out as text (every message, tool call and tool result in full,
+  // nothing shortened), stored on the command center (POST /conversations),
+  // and the new session's first message opens with a <delta-continued> block
+  // naming it for `delta resume`. Pictures the user sent ride along on that
+  // message. This is what the retired phone app did (Carry.java); keep the
+  // block in step with `delta help`.
+
+  /** Every event payload of a cloud session, oldest first. */
+  async function history(chat) {
+    const payloads = [];
+    let cursor = null;
+    for (let page = 0; page < 10000; page++) {
+      const listed = await cloud(chat.account, eventsPath(chat.id) + '?sort_order=asc' +
+        (cursor !== null ? '&cursor=' + encodeURIComponent(cursor) : ''));
+      const data = (listed && listed.data) || [];
+      for (const e of data) {
+        if (!e) continue;
+        // The next page starts after the last sequence number seen.
+        if (e.sequence_num !== undefined && e.sequence_num !== null) cursor = String(e.sequence_num);
+        if (e.payload && typeof e.payload === 'object') payloads.push(e.payload);
+      }
+      if (!data.length || !listed.next_cursor) return payloads;
+    }
+    throw new Error("The chat's history is too long to read");
+  }
+
+  /** Nothing quoted may close the block early. */
+  const carryClean = (text) => text.split(CARRY_CLOSE).join('</delta-continued >');
+
+  /** The whole conversation as text, for `delta resume`, and the pictures the user sent (base64 JPEGs). */
+  function carryText(title, events) {
+    const out = [];
+    const pictures = [];
+    const tools = new Map();
+    const seen = new Set();
+    const said = (who, text) => {
+      if (typeof text !== 'string' || !text.trim()) return;
+      out.push('[' + who + ']\n' + carryClean(text.trim()) + '\n\n');
+    };
+    const picture = (source) => {
+      if (!source || source.type !== 'base64' || !source.data || source.media_type !== 'image/jpeg') return "[a picture, which can't be carried over]";
+      pictures.push(source.data);
+      return '[picture ' + pictures.length + ', attached to the first message]';
+    };
+    const result = (content) => {
+      if (content === null || content === undefined) return '(no output)';
+      if (typeof content === 'string') return content || '(no output)';
+      if (!Array.isArray(content)) return JSON.stringify(content);
+      const text = content.filter((b) => b && typeof b === 'object').map((b) =>
+        b.type === 'text' ? b.text || ''
+          : b.type === 'image' ? "[an image, which can't be carried over; produce it again if you need it]"
+            : JSON.stringify(b)).join('\n');
+      return text || '(no output)';
+    };
+    for (const p of events) {
+      // A subagent's own turns are its working; what it found comes back as
+      // the result of the call that started it.
+      if (p.parent_tool_use_id) continue;
+      if (p.uuid) { if (seen.has(p.uuid)) continue; seen.add(p.uuid); }
+      const content = p.message && p.message.content;
+      if (p.type === 'user') {
+        if (p.isMeta) continue;
+        if (typeof content === 'string') { said('User', stripSetup(content)); continue; }
+        const words = [];
+        for (const b of Array.isArray(content) ? content : []) {
+          if (!b || typeof b !== 'object') continue;
+          if (b.type === 'tool_result') {
+            const name = tools.get(b.tool_use_id);
+            said('Result of ' + (name || 'a tool call') + (b.is_error ? ' (error)' : ''), result(b.content));
+          } else if (b.type === 'text' && typeof b.text === 'string') {
+            words.push(stripSetup(b.text));
+          } else if (b.type === 'image') {
+            words.push(picture(b.source));
+          }
+        }
+        if (words.length) said('User', words.join('\n\n'));
+      } else if (p.type === 'assistant') {
+        for (const b of Array.isArray(content) ? content : []) {
+          if (!b || typeof b !== 'object') continue;
+          if (b.type === 'text') said('You', b.text);
+          else if (b.type === 'thinking') said('You (thinking)', b.thinking);
+          else if (b.type === 'tool_use') {
+            if (b.id && b.name) tools.set(b.id, b.name);
+            said('You called ' + (b.name || 'a tool'), JSON.stringify(b.input || {}));
+          }
+        }
+      }
+    }
+    const name = (title || '').trim().replace(/\n/g, ' ') || 'Untitled';
+    const text = '# ' + name + '\n\n' +
+      'The complete conversation of an earlier Delta session, which stopped because the account it ' +
+      'ran on reached its usage limit: every message, every tool call with its full input, and every ' +
+      'tool result in full, oldest first. "You" is the agent. Pictures the user sent are attached to ' +
+      'the first message of the session that continues it, in the order they are mentioned.\n\n' +
+      out.join('') + '[End of the conversation. Carry on from here.]\n';
+    return { text, pictures };
+  }
+
+  /** The block that opens the new session's first message. */
+  function carryBlock(title, id) {
+    const t = (title || '').trim();
+    return CARRY_OPEN + '\n' +
+      'This conversation continues an earlier session' + (t ? ' ("' + carryClean(t) + '")' : '') +
+      ' that stopped because the account it ran on reached its usage limit; this session runs on ' +
+      'another account. The whole conversation so far, every message, tool call and tool result in ' +
+      'full, is on the command center. Once the Delta CLI is set up, and before anything else, run\n\n' +
+      '    delta resume ' + id + ' conversation.md\n\n' +
+      'which saves it to conversation.md, and read ALL of that file, from the first line to the last, ' +
+      'in parts if need be. ' +
+      'Pictures the user sent earlier are attached to this message, in the order the conversation ' +
+      'mentions them. The old session\'s sandbox did not come along: clone repositories again and redo ' +
+      'any work that was not pushed or saved elsewhere. Then pick up exactly where it left off. ' +
+      'If the user wrote anything new, it follows this block.\n' +
+      CARRY_CLOSE;
   }
 
   // ---------------------------------------------------------------------
@@ -1118,12 +1247,18 @@
     renderComposer();
   }
 
-  async function send() {
+  /**
+   * Sends what is in the composer: to the open chat, or to a new one. With
+   * `move`, the open chat goes on in a new session on another account
+   * instead, and what was typed follows the conversation it carries.
+   */
+  async function send(move) {
     const input = $('#input');
     const typed = input.value.trim();
     const attachments = state.attachments.slice();
-    if (state.busy || (!typed && !attachments.length)) return;
     const chat = state.view === 'chat' ? state.open : null;
+    if (move && (!chat || chat.backup)) return;
+    if (state.busy || (!move && !typed && !attachments.length)) return;
     if (state.view === 'chat' && !chat) return;
     state.busy = true;
     renderComposer();
@@ -1138,7 +1273,13 @@
       const jpegs = pictures.map((p) => p.base64);
       const images = pictures.map((p) => p.dataUrl);
       const id = uuid();
-      if (chat) {
+      if (move) {
+        await moveChat(chat, typed, message, id, jpegs, images, names);
+        input.value = '';
+        state.attachments = [];
+        renderAttachments();
+        autosize();
+      } else if (chat) {
         chat.t.sent(id, typed, images, names);
         input.value = '';
         state.attachments = [];
@@ -1173,9 +1314,14 @@
     }
   }
 
-  async function create(typed, message, id, jpegs, images, names) {
-    const kind = state.kind;
-    const title = titleFor(typed || names[0] || 'Picture');
+  /**
+   * Starts a new chat with the message. `carry` ({title, block, pictures,
+   * except}) makes it the continuation of a moved one: a regular session on
+   * an account other than `except`, whose first message opens with the block.
+   */
+  async function create(typed, message, id, jpegs, images, names, carry) {
+    const kind = carry ? 'cloud' : state.kind;
+    const title = carry ? carry.title : titleFor(typed || names[0] || 'Picture');
     $('#hero').querySelector('h1').textContent = 'Starting…';
     try {
       let chat;
@@ -1183,8 +1329,12 @@
         const made = await api('/agent-sessions', { method: 'POST', json: { title, uuid: id, text: message, images: jpegs } });
         chat = { id: made.id, backup: true, title };
       } else {
-        const account = await pickAccount();
+        const account = await pickAccount(carry && carry.except);
         const env = await environment(account);
+        if (carry) {
+          message = message ? carry.block + '\n\n' + message : carry.block;
+          jpegs = carry.pictures.concat(jpegs);
+        }
         const first = message ? SETUP_BLOCK + '\n\n' + message : SETUP_BLOCK;
         const made = await cloud(account, '/v1/sessions', {
           method: 'POST',
@@ -1200,12 +1350,38 @@
         chat = { id: made.id, backup: false, account, title };
       }
       chat.t = new Transcript();
-      chat.t.sent(id, typed, images, names);
+      if (carry) {
+        chat.t.uuids.add(id);
+        chat.t.note(CARRY_NOTE);
+      }
+      if (!carry || typed || images.length || names.length) chat.t.sent(id, typed, images, names);
+      else chat.t.working = true;
       state.sessions.set(chat.id, chat);
       state.chats.unshift({ id: chat.id, title, status: 'running', updated: Date.now(), backup: chat.backup, account: chat.account, fresh: true });
       location.hash = '#/s/' + chat.id;
     } finally {
       $('#hero').querySelector('h1').textContent = "Let's build";
+    }
+  }
+
+  /** Carries `chat`, whose account is out, to a new session on another account (see carryText). */
+  async function moveChat(chat, typed, message, id, jpegs, images, names) {
+    if (chat.t.limitedUntil > Date.now()) noteLimit(chat.account, chat.t.limitedUntil);
+    const listed = state.chats.find((c) => c.id === chat.id);
+    const title = chatTitle(listed || chat);
+    chat.moving = true;
+    renderComposer();
+    try {
+      const carried = carryText(title, await history(chat));
+      const stored = await api('/conversations', { method: 'POST', body: carried.text, headers: { 'Content-Type': 'text/plain; charset=utf-8' } });
+      if (!stored || !stored.id) throw new Error("The command center didn't store the conversation");
+      await create(typed, message, id, jpegs, images, names,
+        { title, block: carryBlock(title, stored.id), pictures: carried.pictures, except: chat.account });
+    } catch (e) {
+      throw new Error("Couldn't move the chat: " + e.message);
+    } finally {
+      chat.moving = false;
+      renderComposer();
     }
   }
 
@@ -1243,7 +1419,16 @@
     const banner = $('#banner');
     const limited = chat && !chat.backup && chat.t.limitedUntil > Date.now();
     banner.hidden = !limited;
-    if (limited) banner.textContent = "This chat's account has reached its usage limit until " + when(chat.t.limitedUntil) + '. Start a new chat to carry on with another account.';
+    banner.replaceChildren();
+    if (limited) {
+      const movable = canMove(chat.account);
+      banner.append(el('span', {}, "This chat's account has reached its usage limit until " + when(chat.t.limitedUntil) + '.' +
+        (movable ? ' Move the chat to another account to carry on now; anything typed below goes with it.' : ' Every other account is at its limit too.')));
+      if (movable) {
+        banner.append(el('button', { type: 'button', class: 'button primary', disabled: state.busy || !!chat.moving, onclick: () => send(true) },
+          chat.moving ? 'Moving…' : 'Move to another account'));
+      }
+    }
   }
 
   // ---------------------------------------------------------------------
