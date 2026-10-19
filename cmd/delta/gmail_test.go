@@ -639,7 +639,7 @@ func TestGmailLogin(t *testing.T) {
 		t.Fatal("no sign-in address printed")
 	}
 	q := auth.Query()
-	if q.Get("scope") != gmailScope || q.Get("access_type") != "offline" || q.Get("code_challenge_method") != "S256" {
+	if q.Get("scope") != gmailScope+" "+strings.Join(peopleScopes, " ") || q.Get("access_type") != "offline" || q.Get("code_challenge_method") != "S256" {
 		t.Errorf("auth URL = %s", auth)
 	}
 	resp, err := http.Get(q.Get("redirect_uri") + "?" + url.Values{"code": {"the-code"}, "state": {q.Get("state")}, "scope": {gmailScope}}.Encode())

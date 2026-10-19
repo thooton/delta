@@ -38,6 +38,15 @@ var (
 // deleting mail for good.
 const gmailScope = "https://www.googleapis.com/auth/gmail.modify"
 
+// The login also asks to search the people the user might write to, for
+// the Mail app's suggestions as an address is typed: their organization's
+// directory, and the "other contacts" Gmail saves from mail. Both are
+// optional; Gmail works without them.
+var peopleScopes = []string{
+	"https://www.googleapis.com/auth/directory.readonly",
+	"https://www.googleapis.com/auth/contacts.other.readonly",
+}
+
 func runGmail(args []string) error {
 	if len(args) == 0 || args[0] == "help" || args[0] == "-h" || args[0] == "--help" {
 		fmt.Print(gmailHelp)
