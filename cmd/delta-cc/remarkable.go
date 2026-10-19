@@ -96,6 +96,7 @@ func (s *remarkableStore) register(mux *http.ServeMux) {
 	mux.HandleFunc("GET /remarkable", s.list)
 	mux.HandleFunc("GET /remarkable/{id}", s.download)
 	mux.HandleFunc("GET /remarkable/{id}/pages/{n}", s.page)
+	mux.HandleFunc("GET /remarkable/{id}/pdf", s.pdf)
 	mux.HandleFunc("POST /remarkable/documents", s.upload)
 	mux.HandleFunc("POST /remarkable/folders", s.mkdir)
 	mux.HandleFunc("POST /remarkable/sync", s.syncNow)
@@ -382,6 +383,40 @@ func (s *remarkableStore) page(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Length", strconv.Itoa(len(out.PDF)))
 		w.Write(out.PDF)
 	}
+}
+
+// pdf sends a whole document as the tablet shows it, as one PDF, drawn as
+// `delta remarkable get` draws it, for the phone's Tablet app to save to
+// the SD card. X-Handwriting-Only is as for page.
+func (s *remarkableStore) pdf(w http.ResponseWriter, r *http.Request) {
+	it, err := s.find(r.PathValue("id"))
+	if errors.Is(err, errRemarkableMissing) {
+		writeError(w, http.StatusNotFound, err.Error())
+		return
+	} else if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if it.Type == "folder" {
+		writeError(w, http.StatusBadRequest, "that's a folder; it has no pages")
+		return
+	}
+	files, err := s.readFiles(it.ID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	out := remarkable.Render(it.ID, files)
+	if out.PDF == nil {
+		writeError(w, http.StatusNotFound, "nothing is written on it, and the tablet lays out its pages itself")
+		return
+	}
+	if out.Separate {
+		w.Header().Set("X-Handwriting-Only", "true")
+	}
+	w.Header().Set("Content-Type", "application/pdf")
+	w.Header().Set("Content-Length", strconv.Itoa(len(out.PDF)))
+	w.Write(out.PDF)
 }
 
 // readFiles reads document id's files into memory, by name, as

@@ -135,6 +135,13 @@ func selfTestRemarkable(s *remarkableStore, expect func(desc string, want int, m
 	if !bytes.HasPrefix(data, []byte("%PDF-")) || !bytes.Contains(data, []byte("/Count 1")) {
 		return fmt.Errorf("page 1 isn't a one-page PDF")
 	}
+	data, err = expect("whole PDF", 200, "GET", "/remarkable/"+essay+"/pdf", nil)
+	if err != nil {
+		return err
+	}
+	if !bytes.HasPrefix(data, []byte("%PDF-")) || !bytes.Contains(data, []byte("/Count 1")) {
+		return fmt.Errorf("the whole PDF isn't the document's one page")
+	}
 	for _, st := range []struct {
 		desc string
 		want int
@@ -145,6 +152,8 @@ func selfTestRemarkable(s *remarkableStore, expect func(desc string, want int, m
 		{"an unreadable PDF has nothing to show", 404, "/remarkable/" + doc + "/pages/1"},
 		{"a folder has no pages", 400, "/remarkable/" + folder + "/pages/1"},
 		{"no such document's pages", 404, "/remarkable/nope/pages/1"},
+		{"a folder has no PDF", 400, "/remarkable/" + folder + "/pdf"},
+		{"no such document's PDF", 404, "/remarkable/nope/pdf"},
 	} {
 		if _, err := expect(st.desc, st.want, "GET", st.path, nil); err != nil {
 			return err
