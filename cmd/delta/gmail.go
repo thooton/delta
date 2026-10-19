@@ -479,19 +479,9 @@ func (c *gmailClient) isMe(addr string) bool {
 	return false
 }
 
-// gmailUserLocation is the user's time zone: DELTA_TZ, or the one their
-// Canvas profile gave if `delta canvas` has run here, or this machine's.
+// gmailUserLocation is the user's time zone: DELTA_TZ, or this machine's.
 func gmailUserLocation() *time.Location {
-	tz := os.Getenv("DELTA_TZ")
-	if tz == "" {
-		if data, err := os.ReadFile(canvasCachePath()); err == nil {
-			var cache canvasCache
-			if json.Unmarshal(data, &cache) == nil {
-				tz = cache.TimeZone
-			}
-		}
-	}
-	if tz != "" {
+	if tz := os.Getenv("DELTA_TZ"); tz != "" {
 		if loc, err := time.LoadLocation(tz); err == nil {
 			return loc
 		}

@@ -339,7 +339,7 @@ func (s *remarkableStore) writeZip(w http.ResponseWriter, id string) {
 }
 
 // page sends page n of a document as the tablet shows it (handwriting and
-// all, drawn as `delta remarkable get` draws it), as a PDF of that page
+// all, drawn as internal/remarkable draws it), as a PDF of that page
 // alone, so the phone's Tablet app can show one page at a time without
 // fetching the whole document. X-Pages says how many pages there are, also
 // on a 404 for a page past the end; X-Handwriting-Only is "true" when they
@@ -386,7 +386,7 @@ func (s *remarkableStore) page(w http.ResponseWriter, r *http.Request) {
 }
 
 // pdf sends a whole document as the tablet shows it, as one PDF, drawn as
-// `delta remarkable get` draws it, for the phone's Tablet app to save to
+// internal/remarkable draws it, for the phone's Tablet app to save to
 // the SD card. X-Handwriting-Only is as for page.
 func (s *remarkableStore) pdf(w http.ResponseWriter, r *http.Request) {
 	it, err := s.find(r.PathValue("id"))

@@ -123,7 +123,7 @@ func agentAllowed(r *http.Request) string {
 		return "the Claude accounts aren't available in this session; the user manages them from a regular (●) session"
 	case "conversations":
 		// A conversation carried over from a session that ran out of usage
-		// can be resumed here too; storing one is the phone's job.
+		// can be resumed here too; storing one is the client's job.
 		if m == http.MethodGet {
 			return ""
 		}

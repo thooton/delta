@@ -10,9 +10,8 @@ import (
 	"strings"
 )
 
-// The book source login. `delta books` fetches it whenever it has to log in
-// (it keeps the session it gets locally), and `delta books login set` replaces
-// it. It is stored as JSON, readable only by the command center's user.
+// The book source login. Source on the phone fetches it whenever it has to
+// log in (it keeps the session it gets locally). It is stored as JSON, readable only by the command center's user.
 //
 // Routes (all behind the delta bearer token):
 //
@@ -40,7 +39,7 @@ func (b *booksLoginStore) register(mux *http.ServeMux) {
 func (b *booksLoginStore) get(w http.ResponseWriter, r *http.Request) {
 	data, err := os.ReadFile(b.path)
 	if errors.Is(err, os.ErrNotExist) {
-		writeError(w, http.StatusNotFound, "no book login is set; run `delta books login set <email> -` with the user's account")
+		writeError(w, http.StatusNotFound, "no book login is set; PUT the user's account to /books-login")
 		return
 	} else if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())

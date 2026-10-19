@@ -15,7 +15,7 @@ import (
 
 // `delta resume` fetches a conversation carried over from another session.
 // When a session's account runs out of usage and the user moves the
-// conversation to a new session, the phone stores the old session's whole
+// conversation to a new session, the client stores the old session's whole
 // history on the command center under an id, and the new session's first
 // message says to run `delta resume <id> <file>`. It goes to a file rather
 // than the terminal because an agent's shell cuts long output short, and

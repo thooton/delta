@@ -23,18 +23,21 @@ import (
 const helpText = `delta: the CLI for the Delta command center
 
 WHAT THIS IS
-  You are an agent session started from the Delta app on the user's Sonim
-  XP3 flip phone: a Claude Code cloud session, or a backup session (see
-  BACKUP SESSIONS). The app has four tabs: Chats (their sessions),
-  Session (this one), Files (the files on the command center, which they
-  can download, install, open, move into a folder on the phone such as
-  Music or Download, upload from the phone, or delete) and Accounts
+  You are an agent session the user started from the Delta website: a
+  Claude Code cloud session, or a backup session (see BACKUP SESSIONS).
+  The command center is an always-on server that serves the website; this
+  CLI talks to it. The website has the user's chats, Files (the files on
+  the command center, which they can download, upload or delete), Tablet
+  (their reMarkable's documents and its transform jobs) and Accounts
   (their Claude accounts and how much of each one's 5-hour and weekly
   limits is used; see "delta accounts help").
-  The command center is an always-on server; this CLI talks to it.
 
-  FILES FROM THE PHONE: the user can send you files. The app uploads each
-  one to the command center and ends their message with a block like
+  The user also carries a Sonim XP3 flip phone. Its apps (Canvas, Mail,
+  Places, Source for music and ebooks, Tablet and the rest) talk to the
+  command center themselves.
+
+  FILES FROM THE USER: the user can send you files. The website uploads
+  each one to the command center and ends their message with a block like
 
     <delta-files>
     ...
@@ -42,38 +45,26 @@ WHAT THIS IS
     </delta-files>
 
   Fetch each named file with "delta pull <name>" before working on it.
-  The phone shows that block to the user only as "Attached: notes.pdf".
-
-  CONTINUED CONVERSATIONS: when the account a session runs on reaches its
-  usage limit, the user can move the conversation to a new session on
-  another account. Its first message then opens with a <delta-continued>
-  block naming a conversation id. Run "delta resume <id> conversation.md":
-  it saves the whole conversation so far (every message, every tool call
-  and every tool result, in full) to that file. Read ALL of it, from the
-  first line to the last, in parts if need be, before doing anything else.
-  Then pick up exactly where it left off. The old session's sandbox is
-  gone, so clone again and redo anything that wasn't pushed.
+  To hand a file back, "delta push" it: it shows up in Files.
 
   Repositories (see GITHUB):
-    thooton/sonim   The phone's apps, one directory each (the Delta app is
-                    sonim/delta).
-    thooton/delta   Delta itself: command center (cmd/delta-cc) and CLI.
+    thooton/sonim   The phone's apps, one directory each.
+    thooton/delta   Delta itself: command center (cmd/delta-cc), website
+                    (cmd/delta-cc/web) and CLI.
 
-  A typical job: fix a bug in a phone app in sonim, commit and push, then
-  build the release APK and push it named after the app:
+  A typical job: fix a bug in a phone app in sonim. Read sonim's AGENTS.md
+  and the app's own first. Raise the app's version (versionName and
+  versionCode) in the same commit as the fix, then push to master:
 
-    (cd list/android && ./gradlew :app:assembleRelease)
-    delta push list/android/app/build/outputs/apk/release/app-release.apk list.apk
+    delta git push origin HEAD:master
+    delta gh run watch -R thooton/sonim
 
-  (If list.apk is already there, push it as list-2.apk and so on.)
-
-  Always push release builds; debug builds run slowly on the phone. It
-  shows up in the Files tab, and installing it updates the app in place
-  because every build is signed with the key in sonim/signing. Never
-  change or bypass that key. Then tell the user what to install.
-  (The Delta app is delta.apk; a build without its command center login
-  keeps the installed copy's. Its Claude logins are on the command center;
-  see "delta accounts help".)
+  GitHub Actions builds every app and publishes it, and the Updater app on
+  the phone offers the new version once the build is done. There is
+  nothing to upload: don't push APKs to the command center. A change
+  pushed without a version bump never reaches the phone. When the build
+  has passed, tell the user which app to update in Updater. Never change
+  or bypass the signing key in sonim/signing.
 
 SETUP
   Nothing to do: the session's setup script installed this CLI, and the
@@ -84,10 +75,10 @@ SETUP
 
 COMMANDS
   delta set-auth <url> <token>       Verify and save the URL and token.
-  delta push <path> [name]           Upload a file. A name already taken is
-                                     refused: pick a different one.
+  delta push <path> [name]           Upload a file to Files. A name already
+                                     taken is refused: pick a different one.
   delta pull <name> [dest]           Download a file, e.g. one the user
-                                     sent from the phone.
+                                     sent you.
   delta list                         List files.
   delta delete <name>                Delete a file.
   delta git <args>                   Run git with the user's GitHub token.
@@ -96,28 +87,20 @@ COMMANDS
                                      Check and save a new GitHub token ("-"
                                      reads stdin).
   delta update-cc                    Update the command center (see below).
-  delta canvas ...                   The user's Canvas (they are a student).
-  delta music ...                    Purchase and download a song or an album.
-  delta books ...                    Find and download ebooks.
-  delta maps ...                     Find places (restaurants, stores, ...)
-                                     and their hours with Google Maps.
   delta gmail ...                    The user's Gmail: search, read, send,
                                      reply, forward, archive, trash, label.
-  delta remarkable ...               The user's reMarkable tablet: put PDFs
-                                     on it, get back what they wrote.
-  delta docx                         How to make Word documents (.docx).
-  delta docx extract [dir]           Extract the scripts that guide uses.
-  delta accounts ...                 The Claude accounts the phone's
-                                     sessions run on: list them with their
-                                     usage, add, remove.
+  delta accounts ...                 The Claude accounts the sessions run
+                                     on: list them with their usage, add,
+                                     remove.
   delta resume <id> <file>           Save a conversation carried over from
-                                     another session to <file> (see
-                                     CONTINUED CONVERSATIONS). With no
-                                     arguments, list them.
+                                     another session (a <delta-continued>
+                                     block names its id) to <file>, every
+                                     message and tool call in full. Read
+                                     ALL of it before doing anything else,
+                                     then pick up where it left off. With
+                                     no arguments, list them.
 
-  Read "delta canvas|music|books|maps|gmail|remarkable|accounts help" before
-  using those, and
-  "delta docx" before making or editing a Word document.
+  Read "delta gmail help" and "delta accounts help" before using those.
   Aliases: ls = list, rm = delete, get = pull.
 
 GITHUB
@@ -136,18 +119,17 @@ GITHUB
   set-personal-access-token (it can't be read back afterwards).
 
 BACKUP SESSIONS
-  The Chats tab lists two kinds of session: regular ones (marked ●, like
-  Claude Code cloud sessions) and backup ones (marked ▲), which the
-  command center runs itself in a Linux container of their own, for when
-  regular sessions aren't available. You are in a backup session if
-  DELTA_SERVER is a unix:///run/delta/... URL. Then:
+  The website lists two kinds of chat: regular ones (marked ●, Claude
+  Code cloud sessions) and backup ones (marked ▲), which the command
+  center runs itself in a Linux container of their own, for when regular
+  sessions aren't available. You are in a backup session if DELTA_SERVER
+  is a unix:///run/delta/... URL. Then:
 
   - You are root in a fresh Debian container. Install what you need with
     apt-get (gh is "apt-get install -y gh"). The container keeps its files
     until the user deletes the session, but stops while it is idle.
-  - Canvas and Gmail are out of reach: for those, tell the user to start
-    a regular (●) session. "delta git" and "delta gh" work as anywhere
-    else.
+  - Gmail is out of reach: for that, tell the user to start a regular (●)
+    session. "delta git" and "delta gh" work as anywhere else.
 
 UPDATING THE COMMAND CENTER
   Push the change to master in thooton/delta, wait for its GitHub Actions
@@ -159,7 +141,8 @@ UPDATING THE COMMAND CENTER
   official build of itself from the thooton/delta releases, and nothing
   else. The new binary must pass its self-test (cmd/delta-cc/selftest.go; keep it
   up to date) or nothing is installed. If the old and new versions printed
-  match, the build hadn't finished yet.
+  match, the build hadn't finished yet. The website is part of the command
+  center, so a change to it ships the same way.
 
 FILES
   Config is in ~/.config/delta/ ($XDG_CONFIG_HOME). DELTA_SERVER and
@@ -211,20 +194,8 @@ func run(args []string) error {
 			dest = args[1]
 		}
 		return pull(args[0], dest)
-	case "canvas":
-		return runCanvas(args)
-	case "music":
-		return runMusic(args)
-	case "books":
-		return runBooks(args)
-	case "maps":
-		return runMaps(args)
 	case "gmail", "mail", "email":
 		return runGmail(args)
-	case "remarkable", "tablet":
-		return runRemarkable(args)
-	case "docx":
-		return runDocx(args)
 	case "accounts", "account":
 		return runAccounts(args)
 	case "resume":

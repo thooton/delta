@@ -41,7 +41,7 @@ jobs:
             go build -trimpath -ldflags="-s -w" -o cmd/delta-cc/transform-cli/transform-linux-amd64 ./cmd/transform
           cp cmd/delta-cc/transform-cli/transform-linux-amd64 dist/
           for target in linux/amd64 linux/arm64; do
-            # Embeds the `delta music` engine for this platform (if it has one).
+            # Embeds the music engine for this platform (if it has one).
             scripts/fetch-music-engine.sh ${target%/*} ${target#*/}
             GOOS=${target%/*} GOARCH=${target#*/} \
               go build -trimpath -ldflags="-s -w" -o "dist/delta-cc-${target%/*}-${target#*/}" ./cmd/delta-cc

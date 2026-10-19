@@ -1,31 +1,32 @@
-// Delta in a browser: the phone app's Chats, Session, Files and Accounts
-// tabs, laid out like the Codex app. It is served by the command center and
+// Delta in a browser: the chats, Files, Tablet and Accounts, laid out like
+// the Codex app. It is served by the command center and
 // talks to it on the same origin, with the token it asks for at sign-in.
 //
-// Two kinds of session, as on the phone. Regular ones (●) are cloud sessions
+// Two kinds of session. Regular ones (●) are cloud sessions
 // on the user's accounts, reached through the command center's cloud relay
 // (/cloud-accounts/{id}/api/...), which adds the account's access token: the
 // provider's session routes can't be called from a browser, and this way the
 // page never holds a cloud login. Backup ones (▲) are the command center's
 // own (/agent-sessions). Both streams use the same frame format.
 //
-// White-labelled like the app: nothing here names the agent or the model.
-// What a new session is told (SETUP_BLOCK, SETUP_SCRIPT, the environment's
-// name) is word for word what the phone sends (Setup.java in thooton/sonim,
-// agentSetup in agents.go); keep them in step.
+// White-labelled: nothing here names the agent or the model. What a new
+// session is told (SETUP_BLOCK) is word for word what a backup session is
+// told (agentSetup in agents.go), and SETUP_SCRIPT is defaultAgentSetup
+// there; keep them in step. The environment's name hashes SETUP_SCRIPT, so
+// changing the script makes every account a new environment.
 'use strict';
 
 (() => {
   // ---------------------------------------------------------------------
-  // Constants shared with the phone
+  // Constants shared with the command center
   // ---------------------------------------------------------------------
 
   const SETUP_BLOCK = '<delta-setup>\n' +
-    "You were started from the Delta app on the user's Sonim XP3 flip phone. In this app you are Delta: " +
+    'You were started from the Delta website. In it you are Delta: ' +
     'refer to yourself as Delta, and do not bring up the underlying model, its maker or the tool you run in ' +
     'unless the user asks.\n\n' +
-    'Before you start on their message, run `delta help` and read all of its output: it explains Delta ' +
-    "and how to get files, such as rebuilt APKs, onto the user's phone. Do this quietly: do not announce, " +
+    'Before you start on their message, run `delta help` and read all of its output: it explains Delta, ' +
+    'how to get files to the user, and how changes to the apps on their phone reach it. Do this quietly: do not announce, ' +
     'narrate or summarize it, and do not mention it unless it fails in a way that affects their request. ' +
     'Your first words to the user should be about their message.\n' +
     '</delta-setup>';
@@ -225,8 +226,8 @@
 
   /**
    * The account's cloud environment for Delta, made if there is none, found
-   * by the same name the phone gives it (Setup.environmentName). Its setup
-   * script installs the CLI and its variables sign it in here.
+   * by its name (see environmentName). Its setup script installs the CLI and
+   * its variables sign it in here.
    */
   function environment(account) {
     if (!envs[account]) {
@@ -523,13 +524,13 @@
     return { text: t.slice(0, open).trim(), files };
   }
 
-  /** As Attached.wrap in the app: what was typed, then a block naming the files. */
+  /** What was typed, then a block naming the files. */
   function wrapFiles(typed, names) {
     const text = typed.trim();
     if (!names.length) return text;
     const one = names.length === 1;
     return (text ? text + '\n\n' : '') + FILES_OPEN + '\n' +
-      (one ? 'The user sent you this file' : 'The user sent you these files') + ' from their phone. ' +
+      (one ? 'The user sent you this file' : 'The user sent you these files') + '. ' +
       (one ? 'It is' : 'They are') + ' on the command center; fetch ' + (one ? 'it' : 'each one') +
       ' with `delta pull <name>`:\n' + names.map((n) => '- ' + n + '\n').join('') + FILES_CLOSE;
   }

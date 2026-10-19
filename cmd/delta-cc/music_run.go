@@ -27,7 +27,7 @@ import (
 	"time"
 )
 
-// `delta music` downloads music from the Soulseek network, and the command
+// POST /music downloads music from the Soulseek network, and the command
 // center does the downloading: agents usually run in sandboxes that can't
 // reach the network. The work is done by an engine bundled into this binary
 // (an unmodified sockseek release, see scripts/fetch-music-engine.sh), which

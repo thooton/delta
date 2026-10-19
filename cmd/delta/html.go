@@ -4,12 +4,11 @@ import (
 	"fmt"
 	"html"
 	"net/url"
-	"os"
 	"regexp"
 	"strings"
 )
 
-// link is a hyperlink, image or embed found in Canvas HTML.
+// link is a hyperlink, image or embed found in HTML.
 type link struct {
 	kind, text, href string
 }
@@ -18,10 +17,9 @@ var (
 	attrPattern  = regexp.MustCompile(`([a-zA-Z_:][-a-zA-Z0-9_:.]*)\s*(?:=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'>]+)))?`)
 	spacePattern = regexp.MustCompile(`[ \t\r\n\f]+`)
 	blankLines   = regexp.MustCompile(`\n{3,}`)
-	filePattern  = regexp.MustCompile(`/files/(\d+)`)
 )
 
-// htmlToText renders Canvas HTML as Markdown, the same format the agent
+// htmlToText renders HTML as Markdown, the same format the agent
 // writes back (see markdownToHTML). Links are kept inline as [text](url) and
 // also returned, so files and pages referenced in
 // instructions can be fetched. Relative URLs are resolved against base.
@@ -283,93 +281,4 @@ func tagName(tag string) string {
 		end = len(tag)
 	}
 	return strings.ToLower(tag[:end])
-}
-
-func firstNonEmpty(ss ...string) string {
-	for _, s := range ss {
-		if s != "" {
-			return s
-		}
-	}
-	return ""
-}
-
-// printHTML prints Canvas HTML as text, followed by a list of the files it
-// links to so they can be downloaded.
-func (c *canvasClient) printHTML(heading, body string) {
-	if strings.TrimSpace(body) == "" {
-		return
-	}
-	text, links := htmlToText(body, c.base)
-	if text == "" && len(links) == 0 {
-		return
-	}
-	if heading != "" {
-		fmt.Printf("\n%s:\n", heading)
-	}
-	fmt.Println(indent(text, "  "))
-	printFileLinks(links)
-}
-
-func printFileLinks(links []link) {
-	seen := map[string]bool{}
-	var files []string
-	for _, l := range links {
-		if m := filePattern.FindStringSubmatch(l.href); m != nil && !seen[m[1]] {
-			seen[m[1]] = true
-			label := l.text
-			if label == "" {
-				label = l.kind
-			}
-			files = append(files, fmt.Sprintf("  file %s  %q", m[1], label))
-		}
-	}
-	if len(files) > 0 {
-		fmt.Println("\n  Linked Canvas files (download with `delta canvas download <file-id>`):")
-		for _, f := range files {
-			fmt.Println("  " + f)
-		}
-	}
-}
-
-func indent(s, prefix string) string {
-	if s == "" {
-		return s
-	}
-	return prefix + strings.ReplaceAll(s, "\n", "\n"+prefix)
-}
-
-// bodyFromOpts reads content from --text or --text-file (Markdown; .html
-// files are sent as-is) or --html, returning HTML.
-func bodyFromOpts(o *opts, required bool) (string, error) {
-	n := 0
-	var body string
-	if v := o.vals["text"]; len(v) > 0 {
-		n++
-		body = markdownToHTML(strings.Join(v, "\n\n"))
-	}
-	if v := o.str("html"); v != "" {
-		n++
-		body = v
-	}
-	if p := o.str("text-file"); p != "" {
-		n++
-		data, err := os.ReadFile(p)
-		if err != nil {
-			return "", err
-		}
-		lower := strings.ToLower(p)
-		if strings.HasSuffix(lower, ".html") || strings.HasSuffix(lower, ".htm") {
-			body = string(data)
-		} else {
-			body = markdownToHTML(string(data))
-		}
-	}
-	if n > 1 {
-		return "", fmt.Errorf("use only one of --text, --text-file and --html")
-	}
-	if required && strings.TrimSpace(body) == "" {
-		return "", fmt.Errorf("no content: give --text \"...\", --text-file PATH, or --html \"...\"")
-	}
-	return body, nil
 }

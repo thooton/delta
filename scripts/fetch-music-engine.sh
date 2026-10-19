@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Puts the download engine behind `delta music` into
+# Puts the music download engine into
 # cmd/delta-cc/music-engine/, where the next `go build ./cmd/delta-cc` embeds
 # it: the command center does the downloading. The engine is an unmodified
 # release of sockseek (https://github.com/fiso64/sockseek, AGPL-3.0), pinned

@@ -284,7 +284,7 @@ var cloudRelayHeaders = []string{"Accept", "Content-Type", "Anthropic-Beta", "X-
 
 const (
 	cloudRelayMaxBody = 64 << 20
-	// As the phone sends them (Cloud.java in the app).
+	// As Claude Code sends them.
 	cloudRelayUserAgent = "claude-code/2.1.263"
 )
 
