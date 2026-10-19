@@ -42,6 +42,9 @@ COMMANDS
                              follows them and puts the result on the
                              tablet next to it, and into the files. Only
                              when the user asks for a transform job.
+    --formats LIST           What it makes besides a PDF, which it always
+                             makes: any of docx, md, txt, jpg, as the
+                             user asks ("docx,txt"). Default: a PDF only.
   transforms                 List the transform jobs and how they went.
   sync                       Tell the tablet to sync now (every change here
                              already does).

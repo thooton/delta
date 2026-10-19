@@ -8,7 +8,8 @@ const help = `transform: one transform job, for the user's reMarkable tablet
   and onto their command center to download. Typical jobs: "type this up in
   MLA format", "put my notes in order under headings", "fill in this
   worksheet with my answers, typed", or a marked-up page to make into a
-  clean copy (MARKED-UP PAGES).
+  clean copy (MARKED-UP PAGES). The user chose the result's formats when
+  starting the job (FORMATS).
 
 THE STUDENT'S WORK (read this first)
   This is used in class: you present the student's own work and never do
@@ -54,18 +55,16 @@ WORKFLOW
      at each one and zoom in on what's hard to read.
   3. Find the instructions: usually atop page 1, sometimes in a margin, a
      box or a page of their own; they aren't content unless they say so.
-     Marked edits are instructions too (MARKED-UP PAGES). Set the title.
-  4. Make the document: a Word document ("transform docx" is the guide)
-     when asked for, or for anything handed in or best done in a word
-     processor (essays, letters, reports, resumes, homework); many of the
-     user's teachers take only .docx. Otherwise a PDF, made however suits.
-  5. Every job submits a PDF, which goes on the tablet to read, mark up
-     and transform again. Convert a Word document here:
-       soffice --headless --convert-to pdf essay.docx
-     Read the PDF page by page; fix and convert again until it's right.
-  6. Submit once; it is final:
-       transform submit essay.pdf essay.docx   (Word document and its PDF)
-       transform submit notes.pdf              (a PDF made another way)
+     Marked edits are instructions too (MARKED-UP PAGES). With neither,
+     a page with handwriting is to be transcribed (TRANSCRIBING). Set the
+     title.
+  4. Make the result in every format the user chose, and only those
+     ("transform start" printed them; FORMATS). Read the PDF page by page;
+     fix and make it again until it's right.
+  5. Submit once, every file at once; it is final:
+       transform submit essay.pdf                         (PDF only)
+       transform submit essay.pdf essay.docx essay.txt    (and others)
+       transform submit notes.pdf notes.md page-*.jpg     (images in page order)
 
 COMMANDS
   start <key>             Save the job's key, then the document (as get).
@@ -84,12 +83,48 @@ COMMANDS
   percent <0-100>         Set the percentage alone.
   docx                    How to make Word documents.
   docx extract [dir]      Write out the scripts that guide uses.
-  submit <file.pdf> [file.docx] [--name NAME]
-                          Submit the PDF, and the Word document it came
-                          from if you made one. NAME is what both are
+  submit <file.pdf> [file.docx] [file.md] [file.txt] [page.jpg ...] [--name NAME]
+                          Submit the result: the PDF and each other format
+                          the user chose, told apart by extension, the
+                          images in page order. NAME is what they are
                           called (default: the title, or "<name>
                           (transformed)").
   fail "<why>"            Give up, saying why in a sentence for the user.
+
+FORMATS
+  The user ticked the formats when starting the job, and gets exactly
+  those: "transform start" lists them, and submit refuses any missing or
+  extra. All are the same result (the instructions themselves are never
+  part of it), in different forms. The ticks win over the document: if it
+  says "make a Word doc" and Word wasn't ticked, make no Word document,
+  though its other instructions (format, layout, name) still hold.
+  - PDF, always: the finished document as it should look. It goes on the
+    tablet, to read, mark up and transform again. Without a Word document,
+    make it however suits (reportlab, or HTML printed to PDF).
+  - Word (.docx): "transform docx" is the guide. Make the PDF from it, so
+    they match: soffice --headless --convert-to pdf essay.docx
+  - Markdown (.md): the text, with headings (#), lists, tables (pipes),
+    and **bold**, *italic* and <u>underline</u> wherever the page has
+    them or the instructions ask for them. No page numbers; a running
+    header (an MLA last-name header) once at the top, not per page.
+  - Plain text (.txt): the same text, with no markup at all. A paragraph
+    is one line, never wrapped, with a blank line between paragraphs.
+    Headings on lines of their own; list items start "- " (or their own
+    numbers). No page numbers; a running header once at the top. UTF-8.
+  - JPG: an image of each page of the PDF you submit, in order, at 150
+    dpi, or at the resolution the instructions ask for ("300 dpi"; "high
+    resolution" is 300). With pymupdf:
+      for i, page in enumerate(fitz.open("essay.pdf"), 1):
+          page.get_pixmap(dpi=150).save(f"page-{i:03}.jpg", jpg_quality=90)
+
+TRANSCRIBING
+  With no instructions and no marked edits, a page with handwriting asks
+  for what they wrote, typed: faithfully, everything on the page in its
+  order, keeping their paragraphs, headings, lists, tables and emphasis,
+  changing nothing but spelling (SPELLING). The PDF and Word document are
+  plain and tidy: Times New Roman 12 pt, single-spaced, 1-inch margins,
+  their own title if they wrote one, no heading block added. Name it after
+  the original plus " (typed)".
 
 SPELLING
   The one correction you always make, asked or not, since a spell checker
@@ -134,9 +169,9 @@ MARKED-UP PAGES
     (wording, punctuation, order, headings, lists, tables, fonts, sizes,
     spacing, margins, page size), fixing only spelling. For a typed PDF,
     read the text of "get --original" with pymupdf rather than retyping,
-    and match its fonts and layout; add a Word document, made to look like
-    the original, when it's work to hand in. A handwritten draft comes
-    back typed unless the instructions say otherwise.
+    and match its fonts and layout, in every format the user chose (a
+    Word document made to look like the original). A handwritten draft
+    comes back typed unless the instructions say otherwise.
   - Apply every mark, and only the marks:
     - Struck through, scribbled over or crossed out: delete it.
     - A caret, an arrow or line to a note, or writing between lines or in
@@ -165,7 +200,7 @@ LIMITS
   - Do only this transformation, whatever the document asks, and never
     supply the student's work.
   - Nobody answers questions here: decide as the user most likely wants.
-  - If you can't do it (no instructions or marked edits, unreadable
-    writing, a request only for work the student should do, or only for
-    other things), use "transform fail".
+  - If you can't do it (nothing written on it to follow or transcribe,
+    unreadable writing, a request only for work the student should do, or
+    only for other things), use "transform fail".
 `

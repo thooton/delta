@@ -479,9 +479,25 @@ func rmGet(c config, args []string) error {
 // rmTransform starts a transform job on a document: an agent of its own makes
 // the new document its instructions ask for (cmd/delta-cc/transform.go).
 func rmTransform(c config, args []string) error {
-	if len(args) != 1 {
-		return errors.New("usage: delta remarkable transform <document>")
+	const usage = "usage: delta remarkable transform <document> [--formats docx,md,txt,jpg]"
+	var pos, formats []string
+	for i := 0; i < len(args); i++ {
+		switch a := args[i]; {
+		case a == "--formats" && i+1 < len(args):
+			i++
+			formats = strings.Split(args[i], ",")
+		case strings.HasPrefix(a, "--formats="):
+			formats = strings.Split(strings.TrimPrefix(a, "--formats="), ",")
+		case strings.HasPrefix(a, "-"):
+			return fmt.Errorf("unknown option %s (%s)", a, usage)
+		default:
+			pos = append(pos, a)
+		}
 	}
+	if len(pos) != 1 {
+		return errors.New(usage)
+	}
+	args = pos
 	if strings.HasPrefix(c.Server, "http://"+unixHost) {
 		return errors.New("transform jobs can't be started from this session; the user can start one from a regular (●) session or the website")
 	}
@@ -493,7 +509,7 @@ func rmTransform(c config, args []string) error {
 	if err != nil {
 		return err
 	}
-	body, _ := json.Marshal(map[string]string{"document": it.ID, "server": c.Server})
+	body, _ := json.Marshal(map[string]any{"document": it.ID, "formats": formats, "server": c.Server})
 	if _, err := do(c, http.MethodPost, "/transforms", bytes.NewReader(body)); err != nil {
 		return err
 	}

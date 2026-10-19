@@ -17,6 +17,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -160,9 +161,31 @@ func do(method, path string, body []byte) ([]byte, error) {
 }
 
 type job struct {
-	Name  string `json:"name"`
-	Type  string `json:"type"`
-	Pages int    `json:"pages"`
+	Name    string   `json:"name"`
+	Type    string   `json:"type"`
+	Pages   int      `json:"pages"`
+	Formats []string `json:"formats"`
+}
+
+// formatNames are the formats a job makes, as the user is told of them.
+var formatNames = map[string]string{
+	"pdf":  "PDF",
+	"docx": "Word document",
+	"md":   "Markdown",
+	"txt":  "plain text",
+	"jpg":  "JPG images of the pages",
+}
+
+// formatsInWords lists formats: "PDF, Markdown and plain text".
+func formatsInWords(formats []string) string {
+	var names []string
+	for _, f := range formats {
+		names = append(names, formatNames[f])
+	}
+	if len(names) < 2 {
+		return strings.Join(names, "")
+	}
+	return strings.Join(names[:len(names)-1], ", ") + " and " + names[len(names)-1]
 }
 
 func jobInfo(k string) (job, error) {
@@ -195,6 +218,9 @@ func start(k string) error {
 		return err
 	}
 	fmt.Printf("This job transforms %q, a %s on the user's tablet.\n", j.Name, kindName(j.Type))
+	if len(j.Formats) > 0 {
+		fmt.Printf("The user asked for: %s. Make exactly these (FORMATS in `transform help`).\n", formatsInWords(j.Formats))
+	}
 	if err := save(".", false); err != nil {
 		return err
 	}
@@ -312,6 +338,8 @@ func pages(n int) string {
 	return fmt.Sprintf("%d pages", n)
 }
 
+const submitUsage = "usage: transform submit <file.pdf> [file.docx] [file.md] [file.txt] [page images.jpg ...] [--name NAME]"
+
 func submit(args []string) error {
 	var pos []string
 	name := ""
@@ -328,51 +356,71 @@ func submit(args []string) error {
 			pos = append(pos, a)
 		}
 	}
-	const usage = "usage: transform submit <file.pdf> [file.docx] [--name NAME]"
-	if len(pos) < 1 || len(pos) > 2 {
-		return errors.New(usage)
+	if len(pos) < 1 {
+		return errors.New(submitUsage)
 	}
-	var pdf, doc []byte
-	var pdfPath, docPath string
+	// Each file's format, from its extension; the images in page order.
+	paths := map[string][]string{}
 	for _, path := range pos {
-		data, err := os.ReadFile(path)
-		if err != nil {
-			return err
+		f := strings.ToLower(strings.TrimPrefix(filepath.Ext(path), "."))
+		if f == "jpeg" {
+			f = "jpg"
 		}
-		switch {
-		case bytes.HasPrefix(data, []byte("%PDF-")) && pdf == nil:
-			pdf, pdfPath = data, path
-		case bytes.HasPrefix(data, []byte("PK")) && strings.EqualFold(filepath.Ext(path), ".docx") && doc == nil:
-			doc, docPath = data, path
-		default:
-			return fmt.Errorf("%s isn't a PDF or a .docx (%s)", path, usage)
+		if _, ok := formatNames[f]; !ok {
+			return fmt.Errorf("%s isn't a .pdf, .docx, .md, .txt or .jpg (%s)", path, submitUsage)
 		}
+		if f != "jpg" && len(paths[f]) > 0 {
+			return fmt.Errorf("submit one .%s, not several", f)
+		}
+		paths[f] = append(paths[f], path)
 	}
-	if pdf == nil {
-		out := strings.TrimSuffix(docPath, filepath.Ext(docPath)) + ".pdf"
-		return fmt.Errorf("submit the PDF with the Word document: it goes on the tablet. Convert it here (soffice --headless --convert-to pdf --outdir %q %q), read %s to check it, then: transform submit %q %q",
-			filepath.Dir(out), docPath, out, out, docPath)
-	}
-	var body bytes.Buffer
-	form := multipart.NewWriter(&body)
-	for _, f := range []struct {
-		field, path string
-		data        []byte
-	}{{"pdf", pdfPath, pdf}, {"docx", docPath, doc}} {
-		if f.data == nil {
-			continue
+	sort.SliceStable(paths["jpg"], func(a, b int) bool { return naturalLess(paths["jpg"][a], paths["jpg"][b]) })
+	if len(paths["pdf"]) == 0 {
+		if docs := paths["docx"]; len(docs) > 0 {
+			out := strings.TrimSuffix(docs[0], filepath.Ext(docs[0])) + ".pdf"
+			return fmt.Errorf("submit the PDF with the Word document: it goes on the tablet. Convert it here (soffice --headless --convert-to pdf --outdir %q %q), read %s to check it, then submit it with the rest",
+				filepath.Dir(out), docs[0], out)
 		}
-		part, err := form.CreateFormFile(f.field, filepath.Base(f.path))
-		if err != nil {
-			return err
-		}
-		part.Write(f.data)
+		return errors.New("submit a PDF: it goes on the tablet (" + submitUsage + ")")
 	}
-	form.Close()
 	k, err := key()
 	if err != nil {
 		return err
 	}
+	// The command center checks too; this says it before sending anything.
+	if j, err := jobInfo(k); err == nil && len(j.Formats) > 0 {
+		want := map[string]bool{}
+		for _, f := range j.Formats {
+			want[f] = true
+			if len(paths[f]) == 0 {
+				return fmt.Errorf("the user asked for %s: make the %s too, and submit everything at once", formatsInWords(j.Formats), formatNames[f])
+			}
+		}
+		for f := range paths {
+			if !want[f] {
+				return fmt.Errorf("the user asked only for %s: leave out the %s", formatsInWords(j.Formats), formatNames[f])
+			}
+		}
+	}
+	var body bytes.Buffer
+	form := multipart.NewWriter(&body)
+	for _, f := range []string{"pdf", "docx", "md", "txt", "jpg"} {
+		for _, path := range paths[f] {
+			data, err := os.ReadFile(path)
+			if err != nil {
+				return err
+			}
+			if f == "pdf" && !bytes.HasPrefix(data, []byte("%PDF-")) {
+				return fmt.Errorf("%s isn't a PDF", path)
+			}
+			part, err := form.CreateFormFile(f, filepath.Base(path))
+			if err != nil {
+				return err
+			}
+			part.Write(data)
+		}
+	}
+	form.Close()
 	resp, err := callAs(k, http.MethodPost, "/transform/submit?name="+url.QueryEscape(name), form.FormDataContentType(), body.Bytes())
 	if err != nil {
 		return err
@@ -384,6 +432,38 @@ func submit(args []string) error {
 	json.Unmarshal(resp, &r)
 	fmt.Printf("Submitted %q. The PDF is going onto the user's tablet, next to the original, and everything into their files to download (%s). The job is done: say in a sentence what you made.\n", r.Name, strings.Join(r.Files, ", "))
 	return nil
+}
+
+// naturalLess orders names as people number them: "page 2" before "page 10".
+func naturalLess(a, b string) bool {
+	for a != "" && b != "" {
+		da, db := digits(a), digits(b)
+		if da != "" && db != "" {
+			na, nb := strings.TrimLeft(da, "0"), strings.TrimLeft(db, "0")
+			if len(na) != len(nb) {
+				return len(na) < len(nb)
+			}
+			if na != nb {
+				return na < nb
+			}
+			a, b = a[len(da):], b[len(db):]
+			continue
+		}
+		if a[0] != b[0] {
+			return a[0] < b[0]
+		}
+		a, b = a[1:], b[1:]
+	}
+	return len(a) < len(b)
+}
+
+// digits is the run of digits s starts with.
+func digits(s string) string {
+	n := 0
+	for n < len(s) && s[n] >= '0' && s[n] <= '9' {
+		n++
+	}
+	return s[:n]
 }
 
 // percent reads a percentage: "40" or "40%".
