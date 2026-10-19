@@ -130,6 +130,7 @@ Every endpoint requires the bearer token, except the website's `GET /` and `GET 
 | GET | `/remarkable` | The reMarkable's documents and folders, as `[{"id", "name", "type", "parent", "pages", "size", "modified"}]`. `type` is `folder`, `pdf`, `epub` or `notebook`; `parent` is `""` at the top level and `"trash"` in the trash. |
 | GET | `/remarkable/{id}` | A document's files, as a zip (the tablet's `.rmdoc`). |
 | GET | `/remarkable/{id}/pages/{n}` | Page `n` (from 1) of a document as the tablet shows it, drawn as `delta remarkable get` draws it, as a one-page PDF. `X-Pages` says how many pages there are (on a 404 past the end too), and `X-Handwriting-Only: true` that they are the handwriting alone (an EPUB, or a PDF that couldn't be read). 404 with `X-Pages: 0` when there is nothing to show. For Tablet on the phone. |
+| GET | `/remarkable/{id}/pdf` | The whole document as the tablet shows it, as one PDF, drawn as `delta remarkable get` draws it; `X-Handwriting-Only` as for a page. 404 when there is nothing to draw (an EPUB with nothing written on it). For Tablet on the phone, which saves it to the SD card. |
 | POST | `/remarkable/documents` | Puts the body, a PDF or EPUB, on the tablet. Query: `name`, `parent` (a folder's id, or empty). Returns 201 and `{"id"}`. |
 | POST | `/remarkable/folders` | Takes `{"name", "parent"}` and makes a folder. Returns 201 and `{"id"}`. |
 | POST | `/remarkable/sync` | Tells the tablet to sync now (every change already does). 503 with the reason when it can't be told. |
