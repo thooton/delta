@@ -21,29 +21,25 @@ import (
 )
 
 // `delta accounts` manages the cloud accounts on the command center: the
-// Claude subscriptions the phone's sessions run on. The command center keeps
-// their logins and renews them; the phone fetches access tokens from it and
-// rotates between the accounts as their usage limits run out. Nothing here
-// keeps a login: `login` and `add` hand theirs to the command center, which
-// checks it before saving it.
+// Claude subscriptions the website's sessions run on. The command center
+// keeps their logins and renews them; the website reaches the sessions
+// through it and rotates between the accounts as their usage limits run
+// out. Nothing here keeps a login: `login` and `add` hand theirs to the
+// command center, which checks it before saving it.
 
-const accountsHelpText = `delta accounts: the cloud accounts the phone's sessions run on
+const accountsHelpText = `delta accounts: the cloud accounts the sessions run on
 
-The sessions the phone starts (this one included) run on the user's Claude
-subscriptions. Their logins are kept on the command center, which renews
-them; the phone fetches a short-lived token from it when it needs one. The
-phone starts each new session on the first account in the list that hasn't
-reached its usage limit. When an account runs out in the middle of a
-conversation, the phone offers to move the conversation to a new session on
-another account (a message the user sends instead waits on the phone until
-the limit lifts). The whole conversation so far is stored on the command
-center, and the new session's first message starts with a
-<delta-continued> block naming it for "delta resume <id> <file>".
+The sessions the website starts (this one included) run on the user's
+Claude subscriptions. Their logins are kept on the command center, which
+renews them; no session or browser ever holds one. The website starts each
+new session on the first account in the list that hasn't reached its usage
+limit. When an account runs out in the middle of a conversation, the
+website says until when.
 
 COMMANDS
-  delta accounts                List the accounts, in the order the phone
-                                tries them, with how much of each one's
-                                5-hour and weekly limits is used.
+  delta accounts                List the accounts, in the order the
+                                website tries them, with how much of each
+                                one's 5-hour and weekly limits is used.
   delta accounts login          Add an account (or renew one whose login
                                 stopped working). Prints an address to open
                                 in a browser; sign in there with the account

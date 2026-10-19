@@ -3,8 +3,8 @@ package main
 import "path/filepath"
 
 // The Google Maps Platform API key (with the Places API (New) enabled) that
-// `delta maps` uses. The CLI fetches it on every run and calls Google itself;
-// the command center only keeps it. `delta maps key set` replaces it.
+// Places on the phone uses. The app fetches it on every run and calls Google
+// itself; the command center only keeps it.
 //
 // Routes (all behind the delta bearer token):
 //
@@ -18,6 +18,6 @@ func mapsKeyStore(dataDir string) *secretStore {
 		route:   "/maps-key",
 		field:   "key",
 		what:    "key",
-		missing: "no Google Maps API key is set; ask the user for one and run `delta maps key set -`",
+		missing: "no Google Maps API key is set; ask the user for one and PUT it to /maps-key",
 	}
 }

@@ -30,7 +30,7 @@ READING
                             Save a message's attachments (all, or the
                             numbers read lists) into the current
                             directory or dir. --push also uploads each to
-                            the command center, for the user's Files tab.
+                            the command center, for the user's Files.
   labels                    List the labels.
   account                   The account, its unread count and the
                             addresses it can send from.

@@ -1,6 +1,6 @@
 // Package remarkable reads the documents of the user's reMarkable tablet and
-// draws them as PDF, looking as they do on the tablet. `delta remarkable get`
-// and the transform CLI both use it.
+// draws them as PDF, looking as they do on the tablet. The command center and
+// the transform CLI both use it.
 package remarkable
 
 import (

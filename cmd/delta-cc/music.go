@@ -10,7 +10,7 @@ import (
 	"strings"
 )
 
-// The music downloading configuration, which every `delta music` run hands
+// The music downloading configuration, which every music run hands
 // to the download engine (see music_run.go). It is an INI-style file: "key =
 // value" lines, "#" comments, and "[profile]" sections. It never holds a
 // login: the command center keeps its own account in music-login.json, so

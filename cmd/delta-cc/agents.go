@@ -23,13 +23,13 @@ import (
 )
 
 // Backup sessions: agent sessions the command center runs itself, for when
-// the phone's usual (cloud) sessions aren't available.
+// the usual (cloud) sessions aren't available.
 //
 // Each session gets its own container, a plain Linux box made from
 // -agent-image. The command center runs the agent itself (agents_loop.go):
 // it talks to the model (agents_model.go) and gives it four tools, read,
 // write, edit and bash, which run in the container (agents_tools.go). What
-// happens is recorded as the same stream-json frames the phone already reads
+// happens is recorded as the same stream-json frames the website already reads
 // from cloud sessions. The conversation is saved step by step, so a turn
 // that a command center update cuts short carries on when the new one starts.
 //
@@ -38,7 +38,7 @@ import (
 // DELTA_TOKEN set to the agent socket mounted at /run/delta and a token made
 // for that container alone (see scope.go for what that token may do). The
 // session's first message only tells the agent who it is and to read
-// `delta help`, as the phone's cloud sessions are told.
+// `delta help`, as cloud sessions are told.
 //
 // Containers are stopped after -agent-idle without activity; the next
 // message starts them again.
@@ -628,21 +628,22 @@ func randomUUID() (string, error) {
 
 // defaultAgentSetup is the setup script a new container runs when
 // -agent-setup names none: it installs the delta CLI, as a cloud
-// environment's setup script does (Setup.SCRIPT in the app).
+// environment's setup script does (SETUP_SCRIPT in web/app.js).
 const defaultAgentSetup = `#!/bin/bash
 set -eo pipefail
 curl -fsSL https://github.com/thooton/delta/releases/download/latest/install.sh | sh
 `
 
 // agentSetup is the start of a backup session's first message, word for
-// word what Setup.wrap puts ahead of a cloud session's in the app. The
-// phone never shows it: the session's stream records only what was typed.
+// word what the website puts ahead of a cloud session's (SETUP_BLOCK in
+// web/app.js). The website never shows it: the session's stream records
+// only what was typed.
 const agentSetup = "<delta-setup>\n" +
-	"You were started from the Delta app on the user's Sonim XP3 flip phone. In this app you are Delta: " +
+	"You were started from the Delta website. In it you are Delta: " +
 	"refer to yourself as Delta, and do not bring up the underlying model, its maker or the tool you run in " +
 	"unless the user asks.\n\n" +
-	"Before you start on their message, run `delta help` and read all of its output: it explains Delta " +
-	"and how to get files, such as rebuilt APKs, onto the user's phone. Do this quietly: do not announce, " +
+	"Before you start on their message, run `delta help` and read all of its output: it explains Delta, " +
+	"how to get files to the user, and how changes to the apps on their phone reach it. Do this quietly: do not announce, " +
 	"narrate or summarize it, and do not mention it unless it fails in a way that affects their request. " +
 	"Your first words to the user should be about their message.\n" +
 	"</delta-setup>"
