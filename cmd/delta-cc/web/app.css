@@ -741,3 +741,17 @@ code, pre, textarea.mono { font-family: var(--mono); }
   .row { flex-wrap: wrap; row-gap: 4px; }
   .row .actions { flex-basis: 100%; flex-wrap: wrap; padding-left: 36px; }
 }
+
+/* Tablet: the formats a transform job makes. */
+dialog.formats {
+  background: var(--panel);
+  color: var(--text);
+  border: 1px solid var(--border-strong);
+  border-radius: 10px;
+  padding: 16px 18px;
+  min-width: 240px;
+}
+dialog.formats::backdrop { background: rgba(0, 0, 0, 0.5); }
+dialog.formats p { margin: 0 0 10px; font-weight: 600; }
+dialog.formats .format { display: block; padding: 4px 0; }
+dialog.formats .actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 12px; }

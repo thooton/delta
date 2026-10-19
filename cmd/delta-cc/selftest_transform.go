@@ -85,8 +85,8 @@ func transformSelfTest(expect func(desc string, want int, method, path, tok stri
 		return err
 	}
 	const server = "https://cc.example/delta"
-	startJob := func(desc string) (transformJob, string, error) {
-		body, _ := json.Marshal(map[string]string{"document": doc, "server": server})
+	startJob := func(desc string, formats ...string) (transformJob, string, error) {
+		body, _ := json.Marshal(map[string]any{"document": doc, "server": server, "formats": formats})
 		data, err := expect(desc, 201, "POST", "/transforms", token, body)
 		if err != nil {
 			return transformJob{}, "", err
@@ -107,9 +107,23 @@ func transformSelfTest(expect func(desc string, want int, method, path, tok stri
 		}
 		return j, key, nil
 	}
-	first, key, err := startJob("start a transform job")
+	first, key, err := startJob("start a transform job", "md", "DOCX", "jpg", "txt")
 	if err != nil {
 		return err
+	}
+	if !slices.Equal(first.Formats, []string{"pdf", "docx", "md", "txt", "jpg"}) {
+		return fmt.Errorf("the job's formats: got %v", first.Formats)
+	}
+	fake.mu.Lock()
+	raw, _ := json.Marshal(fake.sessions[len(fake.sessions)-1])
+	fake.mu.Unlock()
+	if !strings.Contains(string(raw), "a Word document (.docx), Markdown (.md), plain text (.txt) and JPG images") {
+		return fmt.Errorf("the session isn't told the formats: %s", raw)
+	}
+	if data, err := expect("a job's key gets its formats", 200, "GET", "/transform/job", key, nil); err != nil {
+		return err
+	} else if !strings.Contains(string(data), `"formats":["pdf","docx","md","txt","jpg"]`) {
+		return fmt.Errorf("the job's formats: got %s", data)
 	}
 	fake.mu.Lock()
 	envs := fake.envs
@@ -133,6 +147,7 @@ func transformSelfTest(expect func(desc string, want int, method, path, tok stri
 	f, _ := zw.Create("word/document.xml")
 	f.Write([]byte("<w:document/>"))
 	zw.Close()
+	jpg := []byte("\xff\xd8\xff\xe0 a page")
 	steps := []struct {
 		desc, method, path string
 		want               int
@@ -151,6 +166,11 @@ func transformSelfTest(expect func(desc string, want int, method, path, tok stri
 		{"the PDF in a form is a PDF", "POST", "/transform/submit", 400, selfTestForm("pdf", []byte("hello"), "docx", docx.Bytes())},
 		{"the Word document is one", "POST", "/transform/submit", 400, selfTestForm("pdf", stub, "docx", []byte("hello"))},
 		{"a name the tablet can't take is refused", "POST", "/transform/submit?name=a%0Ab", 400, stub},
+		{"every format asked for is submitted", "POST", "/transform/submit", 400, selfTestForm("pdf", stub, "docx", docx.Bytes())},
+		{"only formats a job makes", "POST", "/transform/submit", 400, selfTestForm("pdf", stub, "gif", jpg)},
+		{"an image is a JPG", "POST", "/transform/submit", 400, selfTestForm("pdf", stub, "docx", docx.Bytes(), "md", []byte("# Essay"), "txt", []byte("Essay"), "jpg", []byte("GIF89a"))},
+		{"text is UTF-8", "POST", "/transform/submit", 400, selfTestForm("pdf", stub, "docx", docx.Bytes(), "md", []byte("# Essay"), "txt", []byte{0xff, 0xfe}, "jpg", jpg)},
+		{"one of each but images", "POST", "/transform/submit", 400, selfTestForm("pdf", stub, "docx", docx.Bytes(), "md", []byte("# Essay"), "md", []byte("# Again"), "txt", []byte("Essay"), "jpg", jpg)},
 		{"a status needs something in it", "POST", "/transform/status", 400, []byte(`{}`)},
 		{"a title can't have em dashes", "POST", "/transform/status", 400, []byte(`{"title":"Essay — final"}`)},
 		{"a title can't have arrows", "POST", "/transform/status", 400, []byte(`{"title":"Notes -> essay"}`)},
@@ -188,7 +208,8 @@ func transformSelfTest(expect func(desc string, want int, method, path, tok stri
 	if zr, err := zip.NewReader(bytes.NewReader(data), int64(len(data))); err != nil || !slices.ContainsFunc(zr.File, func(f *zip.File) bool { return f.Name == doc+".pdf" }) {
 		return fmt.Errorf("the job's document: %v", err)
 	}
-	data, err = expect("submit a PDF and its Word document", 200, "POST", "/transform/submit?name=Essay.docx", key, selfTestForm("pdf", stub, "docx", docx.Bytes()))
+	data, err = expect("submit every format", 200, "POST", "/transform/submit?name=Essay.docx", key,
+		selfTestForm("pdf", stub, "docx", docx.Bytes(), "md", []byte("# Essay"), "txt", []byte("Essay"), "jpg", jpg, "jpg", jpg))
 	if err != nil {
 		return err
 	}
@@ -197,14 +218,14 @@ func transformSelfTest(expect func(desc string, want int, method, path, tok stri
 		Files        []string
 	}
 	json.Unmarshal(data, &result)
-	if result.Name != "Essay" || !slices.Equal(result.Files, []string{"Essay.pdf", "Essay.docx"}) {
+	if result.Name != "Essay" || !slices.Equal(result.Files, []string{"Essay.pdf", "Essay.docx", "Essay.md", "Essay.txt", "Essay 1.jpg", "Essay 2.jpg"}) {
 		return fmt.Errorf("submit: got %s", data)
 	}
 	got, err := rm.find(result.Tablet)
 	if err != nil || got.Name != "Essay" || got.Parent != folder || got.Type != "pdf" {
 		return fmt.Errorf("the result on the tablet: %+v (%v)", got, err)
 	}
-	for name, want := range map[string][]byte{"Essay.pdf": stub, "Essay.docx": docx.Bytes()} {
+	for name, want := range map[string][]byte{"Essay.pdf": stub, "Essay.docx": docx.Bytes(), "Essay.md": []byte("# Essay"), "Essay 2.jpg": jpg} {
 		if saved, err := os.ReadFile(filepath.Join(filesDir, name)); err != nil || !bytes.Equal(saved, want) {
 			return fmt.Errorf("%s in Files: %v", name, err)
 		}
@@ -223,6 +244,9 @@ func transformSelfTest(expect func(desc string, want int, method, path, tok stri
 	}
 	fake.mu.Unlock()
 	if _, err := expect("title the second job", 200, "POST", "/transform/status", key, []byte(`{"title":"Study guide"}`)); err != nil {
+		return err
+	}
+	if _, err := expect("a format not asked for is refused", 400, "POST", "/transform/submit", key, selfTestForm("pdf", stub, "docx", docx.Bytes())); err != nil {
 		return err
 	}
 	data, err = expect("submit a PDF without a name", 200, "POST", "/transform/submit", key, stub)
@@ -265,6 +289,7 @@ func transformSelfTest(expect func(desc string, want int, method, path, tok stri
 	}{
 		{"a folder can't be transformed", 400, `{"document":"` + folder + `","server":"` + server + `"}`},
 		{"a missing document can't be transformed", 404, `{"document":"nope","server":"` + server + `"}`},
+		{"only formats a job makes", 400, `{"document":"` + doc + `","server":"` + server + `","formats":["gif"]}`},
 		{"the server must be https", 400, `{"document":"` + doc + `","server":"http://cc.example"}`},
 	} {
 		if _, err := expect(s.desc, s.want, "POST", "/transforms", token, []byte(s.body)); err != nil {
