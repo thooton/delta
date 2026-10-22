@@ -18,9 +18,8 @@ import (
 // travels in its first message. It is accepted only on the agent socket,
 // which is reachable from inside the session containers and nowhere else, so
 // a copy that leaks out of a transcript is useless. Even there it is limited
-// to what a backup agent needs (agentAllowed): the user's Canvas, Gmail and
-// Claude accounts stay out of its reach, and it can't change the command
-// center's settings.
+// to what a backup agent needs (agentAllowed): the user's Canvas and Gmail
+// stay out of its reach, and it can't change the command center's settings.
 //
 // A transform job's key (see transform.go) is made for that job and travels
 // in its cloud session's first message. It reaches the job's own routes
@@ -120,7 +119,7 @@ func agentAllowed(r *http.Request) string {
 	case "personal-access-token":
 		return "this session can't change the GitHub token; ask the user to save a new one from a regular (●) session"
 	case "cloud-accounts":
-		return "the Claude accounts aren't available in this session; the user manages them from a regular (●) session"
+		return ""
 	case "conversations":
 		// A conversation carried over from a session that ran out of usage
 		// can be resumed here too; storing one is the client's job.
