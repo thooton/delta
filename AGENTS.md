@@ -334,7 +334,7 @@ The worker signs in with a secret of its own (`Authorization: Bearer delta_short
 sudo -u delta /opt/delta/delta-cc shorthand-secret -data /opt/delta/data
 ```
 
-For each line of the page (found by the OCR model's segmenter, column by column) the worker returns the Grascii its OCR model (Topaz-61M) read, the dictionary's candidates for each outline (fuzzy for outlines not in it, `exact: false`), the English its Grascii-to-English model made of the line, and the line's box. `transform help` (its SHORTHAND section) tells the agent to take the English as the text and to check doubtful words against the outlines and their candidates.
+For each line of the page (found by the OCR model's segmenter, column by column) the worker returns the Grascii its OCR model (Topaz-61M) read, the dictionary's candidates for each outline (fuzzy for outlines not in it, `exact: false`), the English its Grascii-to-English model made of the line, and the line's box. `transform help` (its SHORTHAND section) tells the agent that both parts are guesses (the English gets about a fifth to a third of the words wrong on real pages), to treat the English as a guide rather than the text, and to check doubtful words against the outlines, their candidates and the page image.
 
 ## Updating the command center
 
