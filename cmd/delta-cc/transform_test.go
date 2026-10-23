@@ -1,6 +1,7 @@
 package main
 
 import (
+	"slices"
 	"strings"
 	"testing"
 )
@@ -22,5 +23,24 @@ func TestCheckEmail(t *testing.T) {
 		if c.want == "" && got != "" || !strings.Contains(got, c.want) {
 			t.Errorf("checkEmail(%q) = %q, want %q", c.eml, got, c.want)
 		}
+	}
+}
+
+func TestFormatsWithoutPDF(t *testing.T) {
+	if got, _ := checkFormats(nil); !slices.Equal(got, []string{"pdf"}) {
+		t.Errorf("no formats: %v, want a PDF", got)
+	}
+	if got, _ := checkFormats([]string{"eml", "docx"}); !slices.Equal(got, []string{"docx", "eml"}) {
+		t.Errorf("formats without a PDF: %v", got)
+	}
+	email := submission{"eml": {[]byte("To: a@b.org\nSubject: Hi\n\nHi")}}
+	if why := checkSubmission(email, []string{"eml"}); why != "" {
+		t.Errorf("an email alone: %s", why)
+	}
+	if why := checkSubmission(email, []string{"pdf", "eml"}); !strings.Contains(why, "PDF") {
+		t.Errorf("a PDF asked for but missing: %q", why)
+	}
+	if why := checkSubmission(email, nil); !strings.Contains(why, "PDF") {
+		t.Errorf("an old job always makes a PDF: %q", why)
 	}
 }

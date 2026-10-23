@@ -18,6 +18,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -41,12 +42,12 @@ import (
 // (the /transform/ routes), and to ignore anything in the document asking
 // for more than the transformation.
 //
-// The user picks the formats when starting a job (transformFormats): always
-// a PDF, and any of a Word document, Markdown, plain text, an email (.eml,
+// The user picks the formats when starting a job (transformFormats): a PDF
+// (ticked to begin with), and any of a Word document, Markdown, plain text, an email (.eml,
 // for Mail on the phone to open as a message) and JPG images of the
 // result's pages. The agent makes exactly those, in its own session
 // (where it can check the PDF, and where any font it used is installed),
-// and submit refuses anything else. The PDF goes on the tablet, for marking
+// and submit refuses anything else. A PDF goes on the tablet, for marking
 // up again; everything goes in Files, for the phone to download. Submitting,
 // or failing, ends the job and its key.
 //
@@ -54,8 +55,8 @@ import (
 //
 //	GET    /transforms        The jobs, newest first.
 //	POST   /transforms        {"document", "formats"?, "server"?}: start one on a tablet document.
-//	                          formats are what to make, from transformFormats (default and always:
-//	                          "pdf"). server is this command center's address as the session will
+//	                          formats are what to make, from transformFormats (default:
+//	                          "pdf", the one that goes on the tablet). server is this command center's address as the session will
 //	                          reach it (default: https:// and the request's host).
 //	DELETE /transforms/{id}   Forget one; a running job's key stops working.
 //
@@ -82,16 +83,19 @@ const (
 )
 
 // transformFormats are the formats a job can make, in the order they are
-// listed and saved. Every job makes a PDF, which goes on the tablet.
+// listed and saved. A PDF, if the job makes one, goes on the tablet.
 var transformFormats = []string{"pdf", "docx", "md", "txt", "eml", "jpg"}
 
 // maxTransformImages is more pages than any result has.
 const maxTransformImages = 500
 
-// checkFormats puts the formats asked for in order, with "pdf" added, or
-// says why it can't.
+// checkFormats puts the formats asked for in order ("pdf" when none are),
+// or says why it can't.
 func checkFormats(asked []string) ([]string, error) {
-	want := map[string]bool{"pdf": true}
+	want := map[string]bool{}
+	if len(asked) == 0 {
+		want["pdf"] = true
+	}
 	for _, f := range asked {
 		f = strings.ToLower(strings.TrimPrefix(strings.TrimSpace(f), "."))
 		if f == "jpeg" {
@@ -518,7 +522,7 @@ fc-cache -f "$fonts" >/dev/null 2>&1 || true
 // is hidden on the phone and the website, which show the line after it.
 func transformPrompt(name, key string, formats []string) string {
 	return `<delta-setup>
-This session runs one transform job for the user. On a document on their reMarkable tablet, they wrote instructions saying how to turn it into a new document: for example, "type this up in MLA format". Edits marked on the pages (words crossed out, insertions and corrections written in) are instructions too: they ask for the same document, clean, with the revisions applied. Your job is to make that new document and submit it. It then goes onto their tablet, next to the original.
+This session runs one transform job for the user. On a document on their reMarkable tablet, they wrote instructions saying how to turn it into a new document: for example, "type this up in MLA format". Edits marked on the pages (words crossed out, insertions and corrections written in) are instructions too: they ask for the same document, clean, with the revisions applied. Your job is to make that new document and submit it. A PDF of it, if they asked for one, then goes onto their tablet, next to the original.
 
 First run ` + "`transform start " + key + "`" + `. It saves the document here as a PDF, drawn as it looks on the tablet, with the user's handwriting over the pages. Then run ` + "`transform help`" + ` and read all of its output before you go on.
 
@@ -757,11 +761,15 @@ func checkSubmission(got submission, formats []string) string {
 		return got[f][0]
 	}
 	pdf, docx := one("pdf"), one("docx")
+	// A job from before there was a choice always made a PDF.
+	wantsPDF := formats == nil || slices.Contains(formats, "pdf")
 	switch {
-	case pdf == nil && docx != nil:
+	case wantsPDF && pdf == nil && docx != nil:
 		return "submit the PDF of the Word document with it: convert it to PDF in your session, check it, and submit both"
-	case pdf == nil || !bytes.HasPrefix(pdf, []byte("%PDF-")):
+	case wantsPDF && pdf == nil:
 		return "submit a PDF, with the other formats the job asks for"
+	case pdf != nil && !bytes.HasPrefix(pdf, []byte("%PDF-")):
+		return "the PDF isn't a PDF"
 	case docx != nil && !isDocx(docx):
 		return "the Word document isn't a .docx"
 	}
@@ -843,7 +851,6 @@ func (t *transformService) submit(w http.ResponseWriter, r *http.Request, j *tra
 	if !ok {
 		return
 	}
-	pdf := got["pdf"][0]
 	name := strings.TrimSpace(r.URL.Query().Get("name"))
 	for _, f := range transformFormats {
 		name = strings.TrimSuffix(name, "."+f)
@@ -860,18 +867,23 @@ func (t *transformService) submit(w http.ResponseWriter, r *http.Request, j *tra
 		return
 	}
 
-	// Next to the original, wherever it is now.
-	parent := ""
-	if doc, err := t.rm.find(j.Document); err == nil && doc.Parent != remarkableTrash {
-		parent = doc.Parent
-	}
-	tablet, err := t.rm.add(name, parent, pdf)
-	if err != nil && parent != "" {
-		tablet, err = t.rm.add(name, "", pdf)
-	}
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "couldn't put it on the tablet: "+err.Error())
-		return
+	// A PDF goes on the tablet, next to the original, wherever it is now.
+	tablet := ""
+	if len(got["pdf"]) > 0 {
+		pdf := got["pdf"][0]
+		parent := ""
+		if doc, err := t.rm.find(j.Document); err == nil && doc.Parent != remarkableTrash {
+			parent = doc.Parent
+		}
+		var err error
+		tablet, err = t.rm.add(name, parent, pdf)
+		if err != nil && parent != "" {
+			tablet, err = t.rm.add(name, "", pdf)
+		}
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "couldn't put it on the tablet: "+err.Error())
+			return
+		}
 	}
 	base := remarkable.SafeFileName(name)
 	if strings.HasPrefix(base, ".") {

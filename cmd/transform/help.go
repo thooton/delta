@@ -4,8 +4,8 @@ const help = `transform: one transform job, for the user's reMarkable tablet
 
   The user, a student, wrote instructions by hand on a document on their
   reMarkable (an e-ink tablet) saying how to turn it into a new document.
-  You make it and submit it; it goes onto the tablet next to the original,
-  and onto their command center to download. Typical jobs: "type this up in
+  You make it and submit it; it goes onto their command center to download,
+  and its PDF, if they chose one, onto the tablet next to the original. Typical jobs: "type this up in
   MLA format", "put my notes in order under headings", "fill in this
   worksheet with my answers, typed", or a marked-up page to make into a
   clean copy (MARKED-UP PAGES). The user chose the result's formats when
@@ -59,13 +59,14 @@ WORKFLOW
      a page with handwriting is to be transcribed (TRANSCRIBING). Set the
      title.
   4. Make the result in every format the user chose, and only those
-     ("transform start" printed them; FORMATS). Read the PDF page by page;
-     fix and make it again until it's right.
+     ("transform start" printed them; FORMATS). Make a PDF even when it
+     wasn't chosen, to check: read it page by page; fix and make it again
+     until it's right.
   5. Submit once, every file at once; it is final:
        transform submit essay.pdf                         (PDF only)
        transform submit essay.pdf essay.docx essay.txt    (and others)
        transform submit notes.pdf notes.md page-*.jpg     (images in page order)
-       transform submit email.pdf email.eml               (an email)
+       transform submit email.eml                         (an email alone)
 
 COMMANDS
   start <key>             Save the job's key, then the document (as get).
@@ -84,10 +85,9 @@ COMMANDS
   percent <0-100>         Set the percentage alone.
   docx                    How to make Word documents.
   docx extract [dir]      Write out the scripts that guide uses.
-  submit <file.pdf> [file.docx] [file.md] [file.txt] [file.eml] [page.jpg ...]
+  submit [file.pdf] [file.docx] [file.md] [file.txt] [file.eml] [page.jpg ...]
          [--name NAME]
-                          Submit the result: the PDF and each other format
-                          the user chose, told apart by extension, the
+                          Submit the result: each format the user chose, told apart by extension, the
                           images in page order. NAME is what they are
                           called (default: the title, or "<name>
                           (transformed)").
@@ -100,9 +100,11 @@ FORMATS
   part of it), in different forms. The ticks win over the document: if it
   says "make a Word doc" and Word wasn't ticked, make no Word document,
   though its other instructions (format, layout, name) still hold.
-  - PDF, always: the finished document as it should look. It goes on the
-    tablet, to read, mark up and transform again. Without a Word document,
-    make it however suits (reportlab, or HTML printed to PDF).
+  - PDF (ticked unless the user unticked it): the finished document as it
+    should look. It goes on the tablet, to read, mark up and transform
+    again. Without a Word document, make it however suits (reportlab, or
+    HTML printed to PDF). Not chosen, make it anyway to check your work,
+    but don't submit it.
   - Word (.docx): "transform docx" is the guide. Make the PDF from it, so
     they match: soffice --headless --convert-to pdf essay.docx
   - Markdown (.md): the text, with headings (#), lists, tables (pipes),

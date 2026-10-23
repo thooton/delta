@@ -17,6 +17,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -339,7 +340,7 @@ func pages(n int) string {
 	return fmt.Sprintf("%d pages", n)
 }
 
-const submitUsage = "usage: transform submit <file.pdf> [file.docx] [file.md] [file.txt] [file.eml] [page images.jpg ...] [--name NAME]"
+const submitUsage = "usage: transform submit [file.pdf] [file.docx] [file.md] [file.txt] [file.eml] [page images.jpg ...] [--name NAME]"
 
 func submit(args []string) error {
 	var pos []string
@@ -376,7 +377,14 @@ func submit(args []string) error {
 		paths[f] = append(paths[f], path)
 	}
 	sort.SliceStable(paths["jpg"], func(a, b int) bool { return naturalLess(paths["jpg"][a], paths["jpg"][b]) })
-	if len(paths["pdf"]) == 0 {
+	k, err := key()
+	if err != nil {
+		return err
+	}
+	// The command center checks too; this says it before sending anything.
+	// A job from before there was a choice always makes a PDF.
+	j, jobErr := jobInfo(k)
+	if (jobErr != nil || len(j.Formats) == 0 || slices.Contains(j.Formats, "pdf")) && len(paths["pdf"]) == 0 {
 		if docs := paths["docx"]; len(docs) > 0 {
 			out := strings.TrimSuffix(docs[0], filepath.Ext(docs[0])) + ".pdf"
 			return fmt.Errorf("submit the PDF with the Word document: it goes on the tablet. Convert it here (soffice --headless --convert-to pdf --outdir %q %q), read %s to check it, then submit it with the rest",
@@ -384,12 +392,7 @@ func submit(args []string) error {
 		}
 		return errors.New("submit a PDF: it goes on the tablet (" + submitUsage + ")")
 	}
-	k, err := key()
-	if err != nil {
-		return err
-	}
-	// The command center checks too; this says it before sending anything.
-	if j, err := jobInfo(k); err == nil && len(j.Formats) > 0 {
+	if jobErr == nil && len(j.Formats) > 0 {
 		want := map[string]bool{}
 		for _, f := range j.Formats {
 			want[f] = true
@@ -431,7 +434,11 @@ func submit(args []string) error {
 		Files []string `json:"files"`
 	}
 	json.Unmarshal(resp, &r)
-	fmt.Printf("Submitted %q. The PDF is going onto the user's tablet, next to the original, and everything into their files to download (%s). The job is done: say in a sentence what you made.\n", r.Name, strings.Join(r.Files, ", "))
+	onto := "Everything is going"
+	if len(paths["pdf"]) > 0 {
+		onto = "The PDF is going onto the user's tablet, next to the original, and everything"
+	}
+	fmt.Printf("Submitted %q. %s into their files to download (%s). The job is done: say in a sentence what you made.\n", r.Name, onto, strings.Join(r.Files, ", "))
 	return nil
 }
 

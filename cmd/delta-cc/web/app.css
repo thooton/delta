@@ -757,4 +757,5 @@ dialog.formats {
 dialog.formats::backdrop { background: rgba(0, 0, 0, 0.5); }
 dialog.formats p { margin: 0 0 10px; font-weight: 600; }
 dialog.formats .format { display: block; padding: 4px 0; }
+dialog.formats .format .note { margin-left: 8px; color: var(--muted); font-size: 12px; }
 dialog.formats .actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 12px; }
