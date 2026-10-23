@@ -160,6 +160,7 @@ func transformSelfTest(expect func(desc string, want int, method, path, tok stri
 		{"a job's key can't start jobs", "POST", "/transforms", 403, []byte(`{"document":"` + doc + `"}`)},
 		{"a job's key isn't the delta token", "GET", "/auth", 403, nil},
 		{"there is no preview", "POST", "/transform/preview", 404, stub},
+		{"a job's key reaches the shorthand reader (offline here)", "POST", "/transform/shorthand", 503, []byte("\x89PNG\r\n\x1a\n a page")},
 		{"submit takes PDFs only", "POST", "/transform/submit", 400, []byte("hello")},
 		{"a Word document comes with its PDF", "POST", "/transform/submit", 400, docx.Bytes()},
 		{"a Word document alone in a form too", "POST", "/transform/submit", 400, selfTestForm("docx", docx.Bytes())},
