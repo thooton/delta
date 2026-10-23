@@ -1718,24 +1718,29 @@
     }));
   }
 
-  // The formats a job can make, as on the phone: a PDF always, the rest
-  // unticked each time.
+  // The formats a job can make, as on the phone: the PDF, which goes on the
+  // tablet, ticked to begin with, the rest unticked each time.
   const FORMATS = [['pdf', 'PDF'], ['docx', 'Word (.docx)'], ['md', 'Markdown (.md)'], ['txt', 'Text (.txt)'], ['eml', 'Email (.eml)'], ['jpg', 'Images (.jpg)']];
 
   // pickFormats asks which formats to make; null when cancelled.
   function pickFormats(name) {
     return new Promise(resolve => {
       const boxes = FORMATS.map(([value, label]) => {
-        const box = el('input', { type: 'checkbox', value, checked: value === 'pdf', disabled: value === 'pdf' });
-        return { box, row: el('label', { class: 'format' }, box, ' ', label) };
+        const box = el('input', { type: 'checkbox', value, checked: value === 'pdf' });
+        const note = value === 'pdf' ? el('span', { class: 'note' }, 'to tablet') : '';
+        return { box, row: el('label', { class: 'format' }, box, ' ', label, note) };
       });
+      const start = el('button', { class: 'button primary', value: 'start' }, el('span', {}, 'Start'));
+      // Nothing ticked, nothing to make.
+      const ready = () => { start.disabled = !boxes.some(b => b.box.checked); };
+      boxes.forEach(b => b.box.addEventListener('change', ready));
       const dialog = el('dialog', { class: 'formats' },
         el('form', { method: 'dialog' },
           el('p', {}, 'Transform “' + name + '”'),
           boxes.map(b => b.row),
           el('div', { class: 'actions' },
             el('button', { class: 'button', value: 'cancel' }, el('span', {}, 'Cancel')),
-            el('button', { class: 'button primary', value: 'start' }, el('span', {}, 'Start')))));
+            start)));
       dialog.addEventListener('close', () => {
         dialog.remove();
         resolve(dialog.returnValue === 'start' ? boxes.filter(b => b.box.checked).map(b => b.box.value) : null);

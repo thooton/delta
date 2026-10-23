@@ -107,7 +107,7 @@ func transformSelfTest(expect func(desc string, want int, method, path, tok stri
 		}
 		return j, key, nil
 	}
-	first, key, err := startJob("start a transform job", "md", "DOCX", "jpg", "txt")
+	first, key, err := startJob("start a transform job", "md", "DOCX", "jpg", "txt", "pdf")
 	if err != nil {
 		return err
 	}
@@ -267,11 +267,12 @@ func transformSelfTest(expect func(desc string, want int, method, path, tok stri
 		desc string
 		body []byte
 	}{
-		{"an email's headers parse", selfTestForm("pdf", stub, "eml", []byte("not an email"))},
-		{"an email has a subject", selfTestForm("pdf", stub, "eml", []byte("To: a@b.org\n\nHi"))},
-		{"an email has no From", selfTestForm("pdf", stub, "eml", []byte("From: a@b.org\nSubject: Hi\n\nHi"))},
-		{"an email's addresses are addresses", selfTestForm("pdf", stub, "eml", []byte("To: Ms. Rivera\nSubject: Hi\n\nHi"))},
-		{"an email is plain text", selfTestForm("pdf", stub, "eml", []byte("Subject: Hi\nContent-Type: text/html\n\n<p>Hi"))},
+		{"an email's headers parse", selfTestForm("eml", []byte("not an email"))},
+		{"an email has a subject", selfTestForm("eml", []byte("To: a@b.org\n\nHi"))},
+		{"an email has no From", selfTestForm("eml", []byte("From: a@b.org\nSubject: Hi\n\nHi"))},
+		{"an email's addresses are addresses", selfTestForm("eml", []byte("To: Ms. Rivera\nSubject: Hi\n\nHi"))},
+		{"a PDF not asked for is refused", selfTestForm("pdf", stub, "eml", []byte("Subject: Hi\n\nHi"))},
+		{"an email is plain text", selfTestForm("eml", []byte("Subject: Hi\nContent-Type: text/html\n\n<p>Hi"))},
 	} {
 		if _, err := expect(s.desc, 400, "POST", "/transform/submit", key, s.body); err != nil {
 			return err
