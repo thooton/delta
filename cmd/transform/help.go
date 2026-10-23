@@ -141,9 +141,11 @@ SHORTHAND
       transform shorthand p1.png > p1.txt
       transform shorthand p1.png --region 0,600,1275,400   (x,y,w,h: part of a page)
       transform shorthand line.png --line                  (an image of one line)
-  A page takes 1 to 10 minutes, so give the command a 10-minute timeout
-  or run it in the background. The reader takes one image at a time, so
-  read pages one after another, not all at once:
+  A page takes a few minutes. Just run the command and wait: it submits
+  the image, then checks every few seconds until the reading is done,
+  printing a progress line ("still reading after ... s") to stderr about
+  every 30 s, and gives up by itself after 12 minutes. The reader takes
+  one image at a time, so read pages one after another, not all at once:
       for f in p*.png; do transform shorthand "$f" > "$f.txt"; done
   It finds the lines (top to bottom, column by column) and transcribes
   them: an OCR model reads the strokes, a dictionary gives each outline's

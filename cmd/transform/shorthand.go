@@ -1,9 +1,11 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/url"
 	"os"
@@ -40,9 +42,17 @@ type shorthandResult struct {
 
 const shorthandUsage = "usage: transform shorthand <image.png|.jpg> [--line] [--region x,y,w,h] [--json]"
 
-// shorthandClient waits as long as the command center does (10 minutes):
-// the worker's post-edit takes minutes.
-var shorthandClient = &http.Client{Timeout: 11 * time.Minute}
+// A reading takes minutes (the worker's post-edit), longer than the proxy in
+// front of the command center lets one request wait, so it is submitted, and
+// then polled for with short requests until it is done.
+var (
+	shorthandSubmit             = &http.Client{Timeout: 90 * time.Second} // the upload; it is answered at once
+	shorthandPoll               = &http.Client{Timeout: 30 * time.Second} // each poll; it is answered at once
+	shorthandEvery              = 4 * time.Second                         // between polls
+	shorthandProgress           = 30 * time.Second                        // between progress lines while waiting
+	shorthandGiveUp             = 12 * time.Minute                        // the command center itself gives up at 10
+	shorthandStatus   io.Writer = os.Stderr                               // where progress lines go
+)
 
 func shorthand(args []string) error {
 	var pos []string
@@ -83,7 +93,7 @@ func shorthand(args []string) error {
 	if len(q) > 0 {
 		path += "?" + q.Encode()
 	}
-	data, err := callWith(shorthandClient, k, http.MethodPost, path, "application/octet-stream", image)
+	data, err := readShorthand(k, path, image)
 	if err != nil {
 		if strings.Contains(err.Error(), "shorthand service offline") {
 			return errors.New("shorthand service offline: the shorthand reader isn't connected right now. Read the shorthand from the page images yourself, as best you can")
@@ -100,6 +110,100 @@ func shorthand(args []string) error {
 	}
 	fmt.Print(formatShorthand(pos[0], r))
 	return nil
+}
+
+// readShorthand submits image to the shorthand reader at path (with its
+// query) and polls until the reading is done, returning the result. Only a
+// poll is retried, and only when it failed in passing (no answer, or a 5xx
+// such as the proxy's 524); the reading is never submitted twice.
+func readShorthand(k, path string, image []byte) ([]byte, error) {
+	data, err := callWith(shorthandSubmit, k, http.MethodPost, path, "application/octet-stream", image)
+	if err != nil {
+		return nil, err
+	}
+	var sub struct {
+		ID string `json:"id"`
+	}
+	if json.Unmarshal(data, &sub) != nil || sub.ID == "" {
+		return nil, fmt.Errorf("the shorthand reader's answer to the submission isn't readable: %.200s", data)
+	}
+	poll, _, _ := strings.Cut(path, "?")
+	poll += "/" + url.PathEscape(sub.ID)
+	start := time.Now()
+	fmt.Fprintf(shorthandStatus, "transform shorthand: submitted (reading %s); this takes a few minutes, and a progress line comes every %d s.\n", sub.ID, int(shorthandProgress/time.Second))
+	var said time.Time
+	lastState, failed := "", ""
+	for {
+		if time.Since(start) > shorthandGiveUp {
+			msg := fmt.Sprintf("the shorthand reader didn't finish within %d minutes", int(shorthandGiveUp/time.Minute))
+			if failed != "" {
+				msg += " (the last poll failed: " + failed + ")"
+			}
+			return nil, errors.New(msg + "; try a smaller region, or read the shorthand from the page images yourself")
+		}
+		time.Sleep(shorthandEvery)
+		status, data, err := shorthandGet(k, poll)
+		switch {
+		case err != nil:
+			failed = err.Error()
+			continue
+		case status >= 500:
+			failed = fmt.Sprintf("HTTP %d", status)
+			continue
+		case status != http.StatusOK:
+			var e struct{ Error string }
+			if json.Unmarshal(data, &e) == nil && e.Error != "" {
+				return nil, errors.New(e.Error)
+			}
+			return nil, fmt.Errorf("the command center answered HTTP %d", status)
+		}
+		var st struct {
+			Status  string          `json:"status"`
+			State   string          `json:"state"`
+			Result  json.RawMessage `json:"result"`
+			Error   string          `json:"error"`
+			Code    int             `json:"code"`
+			Seconds int             `json:"seconds"`
+		}
+		if err := json.Unmarshal(data, &st); err != nil {
+			failed = "an unreadable answer"
+			continue
+		}
+		failed = ""
+		switch st.Status {
+		case "done":
+			return st.Result, nil
+		case "error":
+			if st.Error == "" {
+				st.Error = fmt.Sprintf("the shorthand reader failed (%d)", st.Code)
+			}
+			return nil, errors.New(st.Error)
+		}
+		if st.State != lastState || time.Since(said) >= shorthandProgress {
+			fmt.Fprintf(shorthandStatus, "transform shorthand: still %s after %d s...\n", st.State, int(time.Since(start).Seconds()))
+			said, lastState = time.Now(), st.State
+		}
+	}
+}
+
+// shorthandGet makes one short poll, returning its status and body.
+func shorthandGet(k, path string) (int, []byte, error) {
+	base, err := server()
+	if err != nil {
+		return 0, nil, err
+	}
+	req, err := http.NewRequest(http.MethodGet, base+path, bytes.NewReader(nil))
+	if err != nil {
+		return 0, nil, err
+	}
+	req.Header.Set("Authorization", "Bearer "+k)
+	resp, err := shorthandPoll.Do(req)
+	if err != nil {
+		return 0, nil, err
+	}
+	defer resp.Body.Close()
+	data, err := io.ReadAll(io.LimitReader(resp.Body, 16<<20))
+	return resp.StatusCode, data, err
 }
 
 // formatShorthand lays out a result for the agent, line by line: the
