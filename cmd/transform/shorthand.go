@@ -104,7 +104,8 @@ func formatShorthand(name string, r shorthandResult) string {
 		plural = ""
 	}
 	fmt.Fprintf(&b, "Shorthand in %s (%dx%d px): %d line%s, read in %.1f s.\n\n", name, r.Image.Width, r.Image.Height, n, plural, r.Seconds)
-	b.WriteString("ENGLISH (the Grascii-to-English model's guess at each line: expect errors, often in a fifth to a third of the words)\n")
+	b.WriteString("ENGLISH (the Grascii-to-English model's guess at each line; expect errors, often in a\n")
+	b.WriteString("fifth to a third of the words)\n")
 	for i, ln := range r.Lines {
 		fmt.Fprintf(&b, "%3d  %s\n", i+1, ln.English)
 	}
