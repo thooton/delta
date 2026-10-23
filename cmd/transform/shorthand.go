@@ -104,12 +104,13 @@ func formatShorthand(name string, r shorthandResult) string {
 		plural = ""
 	}
 	fmt.Fprintf(&b, "Shorthand in %s (%dx%d px): %d line%s, read in %.1f s.\n\n", name, r.Image.Width, r.Image.Height, n, plural, r.Seconds)
-	b.WriteString("ENGLISH (the Grascii-to-English model's reading of each line)\n")
+	b.WriteString("ENGLISH (the Grascii-to-English model's guess at each line: expect errors, often in a fifth to a third of the words)\n")
 	for i, ln := range r.Lines {
 		fmt.Fprintf(&b, "%3d  %s\n", i+1, ln.English)
 	}
-	b.WriteString("\nGRASCII (the strokes as read, each outline with the dictionary's words, likeliest first;\n")
-	b.WriteString("~ marks an outline not in the dictionary, whose words are those of similar outlines)\n")
+	b.WriteString("\nGRASCII (the strokes the reader guessed, each outline with the dictionary's words, likeliest first;\n")
+	b.WriteString("~ marks an outline not in the dictionary, whose words are those of similar outlines; the strokes\n")
+	b.WriteString("are a guess too, so check both parts against each other and the page image)\n")
 	for i, ln := range r.Lines {
 		var parts []string
 		for _, o := range ln.Outlines {

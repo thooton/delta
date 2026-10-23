@@ -141,25 +141,26 @@ SHORTHAND
       transform shorthand p1.png --region 0,600,1275,400   (x,y,w,h: part of a page)
       transform shorthand line.png --line                  (an image of one line)
   The reader finds the lines (top to bottom, column by column) and gives
-  two things for each:
-  - ENGLISH: a model's reading of the line. It is a draft, not a
-    transcription: expect errors, especially in names, numbers and rare
-    words. Use it as the text, but check any word that doesn't fit.
-  - GRASCII: the strokes the reader saw, in Grascii (an ASCII spelling of
-    Gregg's sounds: K-A-T is "cat"; = before an outline marks a capital),
-    each outline followed by the dictionary's words for it, likeliest
-    first. Outlines are ambiguous by design (T-U is to/two/too), and the
-    stroke reading has errors of its own; ~ marks an outline that isn't
-    in the dictionary, whose words are those of similar outlines.
-  Use them together: take the English, and check any word that doesn't
-  fit the sentence or the rest of the document against that line's
-  outlines and their words, choosing what fits the context and the
-  strokes. Look at the page image (the line's box is given) when both
-  disagree. Shorthand drops small words and endings, so restore only
-  what the strokes and grammar plainly call for; it is still their
-  writing (THE STUDENT'S WORK), transcribed. The user's own writing is
-  messier than the books the reader learned from, so expect more errors
-  there, especially in names, numbers and rare words.
+  two things for each. Both are guesses from models, not a transcription:
+  - ENGLISH: the Grascii-to-English model's guess at the line. On real
+    pages it gets about a fifth to a third of the words wrong, and more
+    in names, numbers and rare words: take it as a guide to what the line
+    probably says, never as the text itself.
+  - GRASCII: the strokes the OCR model guessed, in Grascii (an ASCII
+    spelling of Gregg's sounds: K-A-T is "cat"; = before an outline marks
+    a capital), each outline followed by the dictionary's words for it,
+    likeliest first. Outlines are ambiguous by design (T-U is to/two/too),
+    and the stroke reading has errors of its own; ~ marks an outline that
+    isn't in the dictionary, whose words are those of similar outlines.
+  Use them together: neither is right on its own. Start from the English,
+  but weigh every doubtful word against its outlines and dictionary
+  words, the rest of the sentence and document, and the page image (each
+  line's box is given), and write what those support rather than what
+  either output says most confidently. Shorthand drops small words and
+  endings, so restore only what the strokes and grammar plainly call for;
+  it is still their writing (THE STUDENT'S WORK), transcribed. The user's
+  own writing is messier than the books the reader learned from, so
+  expect still more errors there.
   If it says "shorthand service offline", the reader (a computer of the
   user's) isn't connected: read it yourself as best you can, and if you
   can't, fail the job saying the shorthand reader was offline.
