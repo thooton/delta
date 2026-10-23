@@ -86,10 +86,11 @@ COMMANDS
                           Set the status line, and the percentage (0-100).
   percent <0-100>         Set the percentage alone.
   shorthand <image> [--line] [--region x,y,w,h] [--json]
-                          Read Gregg shorthand in a PNG or JPG of a page
-                          (SHORTHAND): the English, and the strokes with
-                          dictionary words. --line: the image is one
-                          line. --region: read only that box, in pixels.
+                          Transcribe Gregg shorthand in a PNG or JPG of a
+                          page (SHORTHAND): each line's English, and the
+                          strokes it was read from. Takes minutes.
+                          --line: the image is one line. --region: read
+                          only that box, in pixels.
   docx                    How to make Word documents.
   docx extract [dir]      Write out the scripts that guide uses.
   submit [file.pdf] [file.docx] [file.md] [file.txt] [file.eml] [page.jpg ...]
@@ -133,34 +134,43 @@ FORMATS
 SHORTHAND
   The user sometimes writes in Gregg shorthand (Anniversary edition): rows
   of small curves, hooks, circles and strokes in place of letters. Don't
-  try to read it by eye; "transform shorthand" runs models built for it.
-  Render the page to an image first (150 dpi suits a whole page; render a
-  small region at 200-300 dpi), then read it:
+  try to read it by eye, or decode it yourself; "transform shorthand"
+  transcribes it. Render the page to an image first (150 dpi suits a
+  whole page; render a small region at 200-300 dpi), then read it:
       python3 -c 'import fitz; fitz.open("Notes.pdf")[0].get_pixmap(dpi=150).save("p1.png")'
-      transform shorthand p1.png
+      transform shorthand p1.png > p1.txt
       transform shorthand p1.png --region 0,600,1275,400   (x,y,w,h: part of a page)
       transform shorthand line.png --line                  (an image of one line)
-  The reader finds the lines (top to bottom, column by column) and gives
-  two things for each. Both are guesses from models, not a transcription:
-  - ENGLISH: the Grascii-to-English model's guess at the line. On real
-    pages it gets about a fifth to a third of the words wrong, and more
-    in names, numbers and rare words: take it as a guide to what the line
-    probably says, never as the text itself.
-  - GRASCII: the strokes the OCR model guessed, in Grascii (an ASCII
-    spelling of Gregg's sounds: K-A-T is "cat"; = before an outline marks
-    a capital), each outline followed by the dictionary's words for it,
-    likeliest first. Outlines are ambiguous by design (T-U is to/two/too),
-    and the stroke reading has errors of its own; ~ marks an outline that
-    isn't in the dictionary, whose words are those of similar outlines.
-  Use them together: neither is right on its own. Start from the English,
-  but weigh every doubtful word against its outlines and dictionary
-  words, the rest of the sentence and document, and the page image (each
-  line's box is given), and write what those support rather than what
-  either output says most confidently. Shorthand drops small words and
-  endings, so restore only what the strokes and grammar plainly call for;
-  it is still their writing (THE STUDENT'S WORK), transcribed. The user's
-  own writing is messier than the books the reader learned from, so
-  expect still more errors there.
+  A page takes 1 to 10 minutes, so give the command a 10-minute timeout
+  or run it in the background. The reader takes one image at a time, so
+  read pages one after another, not all at once:
+      for f in p*.png; do transform shorthand "$f" > "$f.txt"; done
+  It finds the lines (top to bottom, column by column) and transcribes
+  them: an OCR model reads the strokes, a dictionary gives each outline's
+  words, a second model drafts the English, and a language model weighs
+  all three with the context and writes each line as it would be printed.
+  For each line you get:
+  - the English: the transcription. Take it as the text. On book pages
+    about one word in eight is still wrong, more in names, numbers and
+    rare words, and more again in the user's own, messier writing.
+  - under it, the strokes it was read from, in Grascii (an ASCII spelling
+    of Gregg's sounds: K-A-T is "cat"; = marks a capital), and the line's
+    box on the page. ~ marks an outline the dictionary doesn't have,
+    usually a misread stroke, with the words of similar outlines.
+  Check it lightly, don't redo it: read it through, and look again only
+  where a word makes no sense, the grammar breaks, or a ~ outline sits;
+  there, weigh the ~ outline's words, the rest of the sentence and the
+  page image, and fix it if they clearly point to another word. Keep its
+  words otherwise; it is still their writing (THE STUDENT'S WORK).
+  Lines marked "salvaged" were finished in a hurry, when the language
+  model ran long: check those a little more closely.
+  Lines marked "draft" (or a header saying DRAFT ONLY) didn't get the
+  language model: theirs is a rough guess with a fifth to a third of
+  the words wrong. Each of their outlines has the dictionary's words
+  (likeliest first; outlines are ambiguous by design, T-U is
+  to/two/too): work those lines out from the guess, the words, the
+  context and the image, restoring only what the strokes and grammar
+  plainly call for.
   If it says "shorthand service offline", the reader (a computer of the
   user's) isn't connected: read it yourself as best you can, and if you
   can't, fail the job saying the shorthand reader was offline.

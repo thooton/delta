@@ -35,8 +35,10 @@ import (
 //
 // For one image (a page, a line, or a region of either) the worker returns,
 // line by line, the Grascii its OCR model read (the strokes, in ASCII), the
-// dictionary's candidate words for each outline, and the English its
-// Grascii-to-English model made of the line.
+// dictionary's candidate words for each outline, the draft English its
+// Grascii-to-English model made of the line, and the finished English:
+// DeepSeek's post-edit of all three (postedited true), or the draft where
+// that failed or is off.
 //
 // The worker signs in with its own secret, made by `delta-cc
 // shorthand-secret` (only its hash is kept, in shorthandSecretFile). It
@@ -73,11 +75,13 @@ const (
 	shorthandSecretStart = "delta_shorthand_"
 	shorthandPoll        = 25 * time.Second // how long a worker's poll waits for a request
 	shorthandSeen        = 60 * time.Second // a worker that polled this recently is online
-	shorthandWait        = 4 * time.Minute  // how long a caller waits for its result
-	shorthandWork        = 3 * time.Minute  // how long a worker may take over one request
-	maxShorthandImage    = 25 << 20
-	maxShorthandResult   = 8 << 20
-	maxShorthandQueue    = 16
+	// The worker's DeepSeek post-edit takes 1-5 minutes a page, and the worker
+	// stops it at 9 (POSTEDIT_DEADLINE, 540 s), so a reading can take nearly 10.
+	shorthandWait      = 10 * time.Minute // how long a caller waits for its result
+	shorthandWork      = 10 * time.Minute // how long a worker may take over one request
+	maxShorthandImage  = 25 << 20
+	maxShorthandResult = 8 << 20
+	maxShorthandQueue  = 16
 )
 
 const shorthandOffline = "shorthand service offline: the computer that reads shorthand isn't connected right now"

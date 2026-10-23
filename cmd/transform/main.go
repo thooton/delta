@@ -124,6 +124,12 @@ func call(k, method, path string, body []byte) ([]byte, error) {
 
 // callAs is call with the body's Content-Type.
 func callAs(k, method, path, contentType string, body []byte) ([]byte, error) {
+	return callWith(client, k, method, path, contentType, body)
+}
+
+// callWith is callAs through c, for a request that may take longer than
+// client allows.
+func callWith(c *http.Client, k, method, path, contentType string, body []byte) ([]byte, error) {
 	base, err := server()
 	if err != nil {
 		return nil, err
@@ -136,7 +142,7 @@ func callAs(k, method, path, contentType string, body []byte) ([]byte, error) {
 	if contentType != "" {
 		req.Header.Set("Content-Type", contentType)
 	}
-	resp, err := client.Do(req)
+	resp, err := c.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("couldn't reach the command center: %w", err)
 	}

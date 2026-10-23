@@ -8,16 +8,20 @@ import (
 	"net/url"
 	"os"
 	"strings"
+	"time"
 )
 
 // shorthandResult is what the command center's shorthand reader returns
 // (see cmd/delta-cc/shorthand.go and the worker in the topaz project).
 type shorthandResult struct {
 	Lines []struct {
-		Grascii  string `json:"grascii"`
-		English  string `json:"english"`
-		Box      []int  `json:"box"`
-		Outlines []struct {
+		Grascii    string `json:"grascii"`
+		English    string `json:"english"` // the finished line: DeepSeek's, or the draft
+		Draft      string `json:"draft"`   // the Grascii-to-English model's
+		Postedited *bool  `json:"postedited"`
+		Postedit   string `json:"postedit"` // "done", "salvaged" (answered from cut-off reasoning) or "draft"
+		Box        []int  `json:"box"`
+		Outlines   []struct {
 			Outline string   `json:"outline"`
 			Words   []string `json:"words"`
 			Exact   *bool    `json:"exact"`
@@ -27,10 +31,18 @@ type shorthandResult struct {
 		Width  int `json:"width"`
 		Height int `json:"height"`
 	} `json:"image"`
-	Seconds float64 `json:"seconds"`
+	Seconds  float64 `json:"seconds"`
+	Postedit *struct {
+		Model  string   `json:"model"`
+		Errors []string `json:"errors"`
+	} `json:"postedit"`
 }
 
 const shorthandUsage = "usage: transform shorthand <image.png|.jpg> [--line] [--region x,y,w,h] [--json]"
+
+// shorthandClient waits as long as the command center does (10 minutes):
+// the worker's post-edit takes minutes.
+var shorthandClient = &http.Client{Timeout: 11 * time.Minute}
 
 func shorthand(args []string) error {
 	var pos []string
@@ -71,7 +83,7 @@ func shorthand(args []string) error {
 	if len(q) > 0 {
 		path += "?" + q.Encode()
 	}
-	data, err := callAs(k, http.MethodPost, path, "application/octet-stream", image)
+	data, err := callWith(shorthandClient, k, http.MethodPost, path, "application/octet-stream", image)
 	if err != nil {
 		if strings.Contains(err.Error(), "shorthand service offline") {
 			return errors.New("shorthand service offline: the shorthand reader isn't connected right now. Read the shorthand from the page images yourself, as best you can")
@@ -90,8 +102,19 @@ func shorthand(args []string) error {
 	return nil
 }
 
-// formatShorthand lays out a result for the agent: the English of every
-// line first, then each line's Grascii with the dictionary's candidates.
+// formatShorthand lays out a result for the agent, line by line: the
+// finished English, and under it the strokes it was read from, compactly.
+//
+// The worker's DeepSeek post-edit has already weighed the strokes, the
+// dictionary's words and the draft together (about one word in eight wrong
+// on book pages, against one in four for the draft), so the agent gets its
+// line as the transcription, to check lightly rather than redo. What it
+// needs for that check is where the reading is doubtful: the outlines the
+// dictionary doesn't know (~), with the words of similar outlines. Every
+// other outline's dictionary words are left out, since the post-edit has
+// already chosen among them. A line the post-edit didn't finish (it failed,
+// or is off) is marked "draft", and gets every outline's words, as before,
+// because the agent has to finish that one itself.
 func formatShorthand(name string, r shorthandResult) string {
 	var b strings.Builder
 	n := len(r.Lines)
@@ -103,23 +126,54 @@ func formatShorthand(name string, r shorthandResult) string {
 	if n == 1 {
 		plural = ""
 	}
-	fmt.Fprintf(&b, "Shorthand in %s (%dx%d px): %d line%s, read in %.1f s.\n\n", name, r.Image.Width, r.Image.Height, n, plural, r.Seconds)
-	b.WriteString("ENGLISH (the Grascii-to-English model's guess at each line; expect errors, often in a\n")
-	b.WriteString("fifth to a third of the words)\n")
-	for i, ln := range r.Lines {
-		fmt.Fprintf(&b, "%3d  %s\n", i+1, ln.English)
+	drafts := 0
+	for _, ln := range r.Lines {
+		if ln.Postedited == nil || !*ln.Postedited {
+			drafts++
+		}
 	}
-	b.WriteString("\nGRASCII (the strokes the reader guessed, each outline with the dictionary's words, likeliest first;\n")
-	b.WriteString("~ marks an outline not in the dictionary, whose words are those of similar outlines; the strokes\n")
-	b.WriteString("are a guess too, so check both parts against each other and the page image)\n")
+	fmt.Fprintf(&b, "Shorthand in %s (%dx%d px): %d line%s, read in %.0f s.\n", name, r.Image.Width, r.Image.Height, n, plural, r.Seconds)
+	switch {
+	case drafts == 0:
+		b.WriteString("TRANSCRIBED: each line's English is finished (a language model read the strokes, the\n")
+		b.WriteString("dictionary's words and a draft together). Use it as the text; check it lightly (see SHORTHAND).\n")
+	case drafts == n:
+		b.WriteString("DRAFT ONLY: the finishing step didn't run, so each line's English is the Grascii-to-English\n")
+		b.WriteString("model's rough guess (a fifth to a third of the words wrong). Work out each line from it, the\n")
+		b.WriteString("outlines' dictionary words and the page image (see SHORTHAND).\n")
+	default:
+		fmt.Fprintf(&b, "TRANSCRIBED, but %d line%s marked \"draft\" only have the rough Grascii-to-English guess (a fifth\n", drafts, map[bool]string{true: "", false: "s"}[drafts == 1])
+		b.WriteString("to a third of the words wrong): work those out from the outlines' words and the image (see SHORTHAND).\n")
+	}
+	for _, ln := range r.Lines {
+		if ln.Postedit == "salvaged" && ln.Postedited != nil && *ln.Postedited {
+			b.WriteString("Lines marked \"salvaged\" were finished in a hurry (the model ran long): check them a little closer.\n")
+			break
+		}
+	}
+	b.WriteString("Under each line: its strokes (Grascii); ~ marks an outline not in the dictionary, the likeliest\n")
+	b.WriteString("misreading, with the words of similar outlines.\n\n")
 	for i, ln := range r.Lines {
+		draft := ln.Postedited == nil || !*ln.Postedited
+		mark := ""
+		if draft && drafts < n {
+			mark = "draft: "
+		} else if !draft && ln.Postedit == "salvaged" {
+			mark = "salvaged: "
+		}
+		text := ln.English
+		if strings.TrimSpace(text) == "" {
+			text = "(no English)"
+		}
+		fmt.Fprintf(&b, "%3d  %s%s\n", i+1, mark, text)
 		var parts []string
 		for _, o := range ln.Outlines {
 			p := o.Outline
-			if o.Exact != nil && !*o.Exact {
+			fuzzy := o.Exact != nil && !*o.Exact
+			if fuzzy {
 				p = "~" + p
 			}
-			if len(o.Words) > 0 {
+			if len(o.Words) > 0 && (fuzzy || draft) {
 				p += " (" + strings.Join(o.Words, "/") + ")"
 			}
 			parts = append(parts, p)
@@ -131,7 +185,7 @@ func formatShorthand(name string, r shorthandResult) string {
 		if len(ln.Box) == 4 {
 			box = fmt.Sprintf("  [x %d-%d, y %d-%d]", ln.Box[0], ln.Box[2], ln.Box[1], ln.Box[3])
 		}
-		fmt.Fprintf(&b, "%3d  %s%s\n", i+1, strings.Join(parts, " "), box)
+		fmt.Fprintf(&b, "     %s%s\n", strings.Join(parts, " "), box)
 	}
 	return b.String()
 }
