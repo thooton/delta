@@ -18,8 +18,9 @@ import (
 // shorthandSelfTest checks the shorthand reader's relay with a stand-in
 // worker: that it says it is offline until a worker polls, that only the
 // worker's secret reaches the worker routes (and reaches nothing else), and
-// that a request reaches the worker, with its image and region, and its
-// result or error comes back to the caller.
+// that a reading reaches the worker, with its image and region, and its
+// result or error comes back to the caller, who submits it and then polls
+// for it.
 func shorthandSelfTest(expect func(desc string, want int, method, path, tok string, body []byte) ([]byte, error), base, token, dir string) error {
 	png := []byte("\x89PNG\r\n\x1a\n a page of shorthand")
 	const secret = shorthandSecretStart + "selftest"
@@ -133,14 +134,59 @@ func shorthandSelfTest(expect func(desc string, want int, method, path, tok stri
 		}
 	}
 
+	// read submits a reading and polls for it until it is no longer pending.
+	read := func(desc, path string) (string, map[string]json.RawMessage, error) {
+		data, err := expect(desc+": submitted", 202, "POST", path, token, png)
+		if err != nil {
+			return "", nil, err
+		}
+		var sub struct {
+			ID     string `json:"id"`
+			Status string `json:"status"`
+		}
+		if json.Unmarshal(data, &sub) != nil || sub.ID == "" || sub.Status != "pending" {
+			return "", nil, fmt.Errorf("%s: the submission came back as %s", desc, data)
+		}
+		for i := 0; i < 250; i++ {
+			data, err := expect(desc+": polled", 200, "GET", "/shorthand/"+sub.ID, token, nil)
+			if err != nil {
+				return "", nil, err
+			}
+			var st map[string]json.RawMessage
+			if err := json.Unmarshal(data, &st); err != nil {
+				return "", nil, fmt.Errorf("%s: a poll came back as %s", desc, data)
+			}
+			if string(st["status"]) != `"pending"` {
+				return sub.ID, st, nil
+			}
+			time.Sleep(20 * time.Millisecond)
+		}
+		return "", nil, fmt.Errorf("%s: still pending after 5 s", desc)
+	}
+	same := func(a, b []byte) bool {
+		var x, y bytes.Buffer
+		return json.Compact(&x, a) == nil && json.Compact(&y, b) == nil && bytes.Equal(x.Bytes(), y.Bytes())
+	}
+
 	result := `{"lines":[{"grascii":"I-L G T-U TH M-A-T","english":"I'll go to the mat.","outlines":[{"outline":"I-L","words":["while","I will"],"exact":true}]}]}`
 	answer <- result
-	data, err := expect("a reading reaches the worker and comes back", 200, "POST", "/shorthand?mode=line&region=1,2,30,40", token, png)
+	id, st, err := read("a reading reaches the worker and comes back", "/shorthand?mode=line&region=1,2,30,40")
 	if err != nil {
 		return err
 	}
-	if strings.TrimSpace(string(data)) != result {
-		return fmt.Errorf("the reading came back as %s", data)
+	if string(st["status"]) != `"done"` || !same(st["result"], []byte(result)) {
+		return fmt.Errorf("the reading came back as %v", st)
+	}
+	if data, err := expect("a result is kept for its caller", 200, "GET", "/shorthand/"+id, token, nil); err != nil {
+		return err
+	} else if !strings.Contains(string(data), `"done"`) {
+		return fmt.Errorf("the kept result came back as %s", data)
+	}
+	if _, err := expect("a reading never submitted isn't there", 404, "GET", "/shorthand/0123", token, nil); err != nil {
+		return err
+	}
+	if _, err := expect("a reading is fetched with the token", 401, "GET", "/shorthand/"+id, "", nil); err != nil {
+		return err
 	}
 	t := <-got
 	if t.err != nil {
@@ -150,10 +196,10 @@ func shorthandSelfTest(expect func(desc string, want int, method, path, tok stri
 		return fmt.Errorf("the worker got %+v", t.job)
 	}
 	answer <- `{"error":"the image can't be read","status":400}`
-	if data, err := expect("the worker's refusal reaches the caller", 400, "POST", "/shorthand", token, png); err != nil {
+	if _, st, err := read("the worker's refusal reaches the caller", "/shorthand"); err != nil {
 		return err
-	} else if !strings.Contains(string(data), "can't be read") {
-		return fmt.Errorf("the refusal came back as %s", data)
+	} else if string(st["status"]) != `"error"` || string(st["code"]) != "400" || !strings.Contains(string(st["error"]), "can't be read") {
+		return fmt.Errorf("the refusal came back as %v", st)
 	}
 	<-got
 	answer <- `{"reloaded":true,"g2e":"state/best"}`

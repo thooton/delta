@@ -28,10 +28,13 @@ import (
 //
 // The reader can't be reached from here, so it reaches out instead: its
 // worker long-polls the command center for requests and posts each result
-// back. A request waits on the command center until the worker answers, so
-// to the caller it is one HTTP call. When no worker has polled lately the
-// request is refused at once with "shorthand service offline", and the
-// agent reads the shorthand itself.
+// back. A reading takes minutes, longer than the proxy in front of the
+// command center (Cloudflare, ~100 s) lets one HTTP request wait, so it is
+// asynchronous: the caller submits the image and gets an id at once, then
+// polls the id with short requests until the result is there. Results are
+// kept shorthandKeep after they come, for whoever submitted them only. When
+// no worker has polled lately a reading is refused at once with "shorthand
+// service offline", and the agent reads the shorthand itself.
 //
 // For one image (a page, a line, or a region of either) the worker returns,
 // line by line, the Grascii its OCR model read (the strokes, in ASCII), the
@@ -46,21 +49,28 @@ import (
 //
 // Routes, for a transform job's key:
 //
-//	POST /transform/shorthand  Body: an image (PNG, JPEG, WebP or BMP). Query: mode (page,
-//	                           the default, or line: the image is one line), region
-//	                           (x,y,w,h in the image's pixels: read only that part).
-//	                           Responds with the worker's result (see shorthandResult in
-//	                           the worker), 503 when it is offline or busy, 504 when it
-//	                           doesn't answer in time.
+//	POST /transform/shorthand       Body: an image (PNG, JPEG, WebP or BMP). Query: mode
+//	                                (page, the default, or line: the image is one line),
+//	                                region (x,y,w,h in the image's pixels: read only that
+//	                                part). 202 and {"id", "status": "pending"} at once; 503
+//	                                when the reader is offline or busy.
+//	GET  /transform/shorthand/{id}  Always quick. 200 and {"status": "pending", "state":
+//	                                "queued" or "reading", "seconds"}, {"status": "done",
+//	                                "result"} (see shorthandResult in the worker), or
+//	                                {"status": "error", "code", "error"} (code 502 when the
+//	                                worker failed or lost it, 503 offline, 504 when it took
+//	                                over shorthandWait, 400 for an image it can't read).
+//	                                404 for an id this key didn't submit, or one forgotten.
 //
 // For the delta token:
 //
-//	POST /shorthand            The same.
+//	POST /shorthand, GET /shorthand/{id}  The same, for readings the token submitted.
 //	GET  /shorthand            {"online", "last_seen", "queued", "reading", "worker"}: whether
 //	                           a worker is connected, and what it said about itself.
 //	POST /shorthand/reload     {"g2e"?}: the worker reloads its models, switching the
 //	                           Grascii-to-English model to that checkpoint (a subfolder of
-//	                           its repository, e.g. "state/best") if one is given.
+//	                           its repository, e.g. "state/best") if one is given. This one
+//	                           waits for the worker's answer (a reload takes seconds).
 //
 // For the worker's secret:
 //
@@ -77,11 +87,13 @@ const (
 	shorthandSeen        = 60 * time.Second // a worker that polled this recently is online
 	// The worker's DeepSeek post-edit takes 1-5 minutes a page, and the worker
 	// stops it at 9 (POSTEDIT_DEADLINE, 540 s), so a reading can take nearly 10.
-	shorthandWait      = 10 * time.Minute // how long a caller waits for its result
+	shorthandWait      = 10 * time.Minute // how long a reading may take, queued and read
 	shorthandWork      = 10 * time.Minute // how long a worker may take over one request
+	shorthandKeep      = 30 * time.Minute // how long a result is kept for its caller to fetch
 	maxShorthandImage  = 25 << 20
 	maxShorthandResult = 8 << 20
 	maxShorthandQueue  = 16
+	maxShorthandKept   = 32 // finished readings kept at most (the oldest go first)
 )
 
 const shorthandOffline = "shorthand service offline: the computer that reads shorthand isn't connected right now"
@@ -94,10 +106,13 @@ type shorthandJob struct {
 	Region []int  `json:"region,omitempty"`
 	G2E    string `json:"g2e,omitempty"`
 
-	done    chan shorthandAnswer
-	worker  string    // the worker that took it
-	taken   time.Time // when
-	created time.Time
+	done     chan shorthandAnswer // a reload's caller waits on it; nil for a reading
+	owner    string               // who submitted a reading, and alone may fetch it
+	answer   *shorthandAnswer     // a reading's result, once it came
+	finished time.Time            // when
+	worker   string               // the worker that took it
+	taken    time.Time            // when
+	created  time.Time
 }
 
 type shorthandAnswer struct {
@@ -111,9 +126,10 @@ type shorthandService struct {
 	mu      sync.Mutex
 	queue   []*shorthandJob
 	taken   map[string]*shorthandJob
-	changed chan struct{} // closed, and replaced, whenever a request is queued
-	polling int           // workers waiting in a poll now
-	seen    time.Time     // when a worker last polled or answered
+	reads   map[string]*shorthandJob // readings by id, until shorthandKeep after they finish
+	changed chan struct{}            // closed, and replaced, whenever a request is queued
+	polling int                      // workers waiting in a poll now
+	seen    time.Time                // when a worker last polled or answered
 	info    json.RawMessage
 }
 
@@ -121,6 +137,7 @@ func newShorthandService(dataDir string) *shorthandService {
 	return &shorthandService{
 		secretPath: filepath.Join(dataDir, shorthandSecretFile),
 		taken:      map[string]*shorthandJob{},
+		reads:      map[string]*shorthandJob{},
 		changed:    make(chan struct{}),
 	}
 }
@@ -128,8 +145,10 @@ func newShorthandService(dataDir string) *shorthandService {
 // register puts the job's and the delta token's routes on mux, behind
 // requireAuth.
 func (s *shorthandService) register(mux *http.ServeMux, jobs *transformService) {
-	mux.HandleFunc("POST /transform/shorthand", jobs.forJob(func(w http.ResponseWriter, r *http.Request, _ *transformJob) { s.read(w, r) }))
-	mux.HandleFunc("POST /shorthand", s.read)
+	mux.HandleFunc("POST /transform/shorthand", jobs.forJob(func(w http.ResponseWriter, r *http.Request, j *transformJob) { s.read(w, r, "job:"+j.ID) }))
+	mux.HandleFunc("GET /transform/shorthand/{id}", jobs.forJob(func(w http.ResponseWriter, r *http.Request, j *transformJob) { s.poll(w, r, "job:"+j.ID) }))
+	mux.HandleFunc("POST /shorthand", func(w http.ResponseWriter, r *http.Request) { s.read(w, r, "token") })
+	mux.HandleFunc("GET /shorthand/{id}", func(w http.ResponseWriter, r *http.Request) { s.poll(w, r, "token") })
 	mux.HandleFunc("GET /shorthand", s.status)
 	mux.HandleFunc("POST /shorthand/reload", s.reload)
 }
@@ -213,15 +232,74 @@ func (s *shorthandService) online() bool {
 func (s *shorthandService) stranded(id string) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.online() {
-		return false
-	}
+	return !s.online() && s.queued(id)
+}
+
+// queued says whether the request id is waiting for a worker. s.mu must be
+// held.
+func (s *shorthandService) queued(id string) bool {
 	for _, j := range s.queue {
 		if j.ID == id {
 			return true
 		}
 	}
 	return false
+}
+
+// finish ends job with answer a: a reading keeps it for its caller to
+// fetch, a reload's caller gets it. s.mu must be held.
+func (s *shorthandService) finish(job *shorthandJob, a shorthandAnswer) {
+	delete(s.taken, job.ID)
+	for i, j := range s.queue {
+		if j.ID == job.ID {
+			s.queue = append(s.queue[:i], s.queue[i+1:]...)
+			break
+		}
+	}
+	if job.done != nil {
+		select {
+		case job.done <- a:
+		default:
+		}
+		return
+	}
+	if job.answer == nil {
+		job.answer, job.finished, job.Image = &a, time.Now(), nil
+	}
+}
+
+// expire ends readings that went stale (queued with no worker, or taken or
+// waiting too long) and forgets results kept long enough. s.mu must be held.
+func (s *shorthandService) expire() {
+	online := s.online()
+	var kept []*shorthandJob
+	for id, j := range s.reads {
+		switch {
+		case j.answer != nil && time.Since(j.finished) > shorthandKeep:
+			delete(s.reads, id)
+			continue
+		case j.answer != nil:
+		case !online && s.queued(id):
+			s.finish(j, shorthandAnswer{http.StatusServiceUnavailable, errorJSON(shorthandOffline)})
+		case time.Since(j.created) > shorthandWait:
+			s.finish(j, shorthandAnswer{http.StatusGatewayTimeout, errorJSON("the shorthand reader didn't answer in time; try a smaller region, or read it yourself")})
+		case !j.taken.IsZero() && time.Since(j.taken) > shorthandWork:
+			s.finish(j, shorthandAnswer{http.StatusBadGateway, errorJSON("the shorthand reader lost this request; try again")})
+		}
+		if j.answer != nil {
+			kept = append(kept, j)
+		}
+	}
+	for len(kept) > maxShorthandKept { // drop the oldest results
+		old := 0
+		for i, j := range kept {
+			if j.finished.Before(kept[old].finished) {
+				old = i
+			}
+		}
+		delete(s.reads, kept[old].ID)
+		kept = append(kept[:old], kept[old+1:]...)
+	}
 }
 
 // parseRegion reads "x,y,w,h" (whole pixels, w and h above 0).
@@ -256,7 +334,7 @@ func isShorthandImage(data []byte) bool {
 	return false
 }
 
-func (s *shorthandService) read(w http.ResponseWriter, r *http.Request) {
+func (s *shorthandService) read(w http.ResponseWriter, r *http.Request, owner string) {
 	mode := r.URL.Query().Get("mode")
 	if mode == "" {
 		mode = "page"
@@ -279,7 +357,41 @@ func (s *shorthandService) read(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "the body must be a PNG, JPEG, WebP or BMP image (render a PDF's page to PNG first)")
 		return
 	}
-	s.ask(w, r, &shorthandJob{Kind: "read", Image: image, Mode: mode, Region: region})
+	job := &shorthandJob{Kind: "read", Image: image, Mode: mode, Region: region, owner: owner}
+	if !s.enqueue(w, job) {
+		return
+	}
+	writeJSON(w, http.StatusAccepted, map[string]string{"id": job.ID, "status": "pending"})
+}
+
+// poll answers with the state of a reading owner submitted: pending, or its
+// result or error.
+func (s *shorthandService) poll(w http.ResponseWriter, r *http.Request, owner string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.expire()
+	j, ok := s.reads[r.PathValue("id")]
+	if !ok || j.owner != owner {
+		writeError(w, http.StatusNotFound, fmt.Sprintf("no such shorthand reading (results are kept %d minutes after they come)", int(shorthandKeep/time.Minute)))
+		return
+	}
+	if j.answer == nil {
+		state := "reading"
+		if j.taken.IsZero() {
+			state = "queued"
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"status": "pending", "state": state, "seconds": int(time.Since(j.created).Seconds())})
+		return
+	}
+	if j.answer.status == http.StatusOK {
+		writeJSON(w, http.StatusOK, map[string]any{"status": "done", "result": json.RawMessage(j.answer.body)})
+		return
+	}
+	var e struct {
+		Error string `json:"error"`
+	}
+	json.Unmarshal(j.answer.body, &e)
+	writeJSON(w, http.StatusOK, map[string]any{"status": "error", "code": j.answer.status, "error": e.Error})
 }
 
 func (s *shorthandService) reload(w http.ResponseWriter, r *http.Request) {
@@ -300,28 +412,39 @@ func (s *shorthandService) reload(w http.ResponseWriter, r *http.Request) {
 	s.ask(w, r, &shorthandJob{Kind: "reload", G2E: g})
 }
 
-// ask queues job for the worker and answers with its result.
-func (s *shorthandService) ask(w http.ResponseWriter, r *http.Request, job *shorthandJob) {
+// enqueue gives job an id and queues it for the worker; a reading is kept
+// in s.reads too. It answers w itself, and returns false, when it can't.
+func (s *shorthandService) enqueue(w http.ResponseWriter, job *shorthandJob) bool {
 	id := make([]byte, 12)
 	rand.Read(id)
 	job.ID = hex.EncodeToString(id)
-	job.done = make(chan shorthandAnswer, 1)
 	job.created = time.Now()
 	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.expire()
 	if !s.online() {
-		s.mu.Unlock()
 		writeError(w, http.StatusServiceUnavailable, shorthandOffline)
-		return
+		return false
 	}
 	if len(s.queue) >= maxShorthandQueue {
-		s.mu.Unlock()
 		writeError(w, http.StatusServiceUnavailable, "the shorthand reader is busy; try again in a minute")
-		return
+		return false
 	}
 	s.queue = append(s.queue, job)
+	if job.done == nil {
+		s.reads[job.ID] = job
+	}
 	close(s.changed)
 	s.changed = make(chan struct{})
-	s.mu.Unlock()
+	return true
+}
+
+// ask queues job (a reload) for the worker and answers with its result.
+func (s *shorthandService) ask(w http.ResponseWriter, r *http.Request, job *shorthandJob) {
+	job.done = make(chan shorthandAnswer, 1)
+	if !s.enqueue(w, job) {
+		return
+	}
 
 	timer := time.NewTimer(shorthandWait)
 	defer timer.Stop()
@@ -351,7 +474,7 @@ func (s *shorthandService) ask(w http.ResponseWriter, r *http.Request, job *shor
 	}
 }
 
-// forget drops a request whose caller stopped waiting.
+// forget drops a reload whose caller stopped waiting.
 func (s *shorthandService) forget(id string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -397,10 +520,9 @@ func (s *shorthandService) next(w http.ResponseWriter, r *http.Request) {
 	// A worker reads one request at a time, so one it took and hasn't
 	// answered by its next poll is lost (it failed to post the result), as
 	// is one taken too long ago (its worker stopped).
-	for id, j := range s.taken {
+	for _, j := range s.taken {
 		if req.Worker != "" && j.worker == req.Worker || time.Since(j.taken) > shorthandWork {
-			delete(s.taken, id)
-			j.done <- shorthandAnswer{http.StatusBadGateway, errorJSON("the shorthand reader lost this request; try again")}
+			s.finish(j, shorthandAnswer{http.StatusBadGateway, errorJSON("the shorthand reader lost this request; try again")})
 		}
 	}
 	s.polling++
@@ -428,12 +550,16 @@ func (s *shorthandService) next(w http.ResponseWriter, r *http.Request) {
 	}
 	s.polling--
 	s.seen = time.Now()
+	var send shorthandJob
+	if job != nil {
+		send = *job // a copy: finish may drop the job's image once it's answered
+	}
 	s.mu.Unlock()
 	if job == nil {
 		w.WriteHeader(http.StatusNoContent)
 		return
 	}
-	writeJSON(w, http.StatusOK, job)
+	writeJSON(w, http.StatusOK, &send)
 }
 
 func (s *shorthandService) result(w http.ResponseWriter, r *http.Request) {
@@ -461,13 +587,14 @@ func (s *shorthandService) result(w http.ResponseWriter, r *http.Request) {
 	s.mu.Lock()
 	s.seen = time.Now()
 	job, ok := s.taken[r.PathValue("id")]
-	delete(s.taken, r.PathValue("id"))
+	if ok {
+		s.finish(job, shorthandAnswer{status, data})
+	}
 	s.mu.Unlock()
 	if !ok {
-		writeError(w, http.StatusNotFound, "no such request (its caller stopped waiting)")
+		writeError(w, http.StatusNotFound, "no such request (it timed out, or its caller stopped waiting)")
 		return
 	}
-	job.done <- shorthandAnswer{status, data}
 	writeJSON(w, http.StatusOK, map[string]bool{"delivered": true})
 }
 
