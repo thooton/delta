@@ -142,8 +142,9 @@ SHORTHAND
       transform shorthand line.png --line                  (an image of one line)
   The reader finds the lines (top to bottom, column by column) and gives
   two things for each:
-  - ENGLISH: a model's reading of the line. It is usually right (about 1
-    word in 10 to 5 wrong): use it as the text.
+  - ENGLISH: a model's reading of the line. It is a draft, not a
+    transcription: expect errors, especially in names, numbers and rare
+    words. Use it as the text, but check any word that doesn't fit.
   - GRASCII: the strokes the reader saw, in Grascii (an ASCII spelling of
     Gregg's sounds: K-A-T is "cat"; = before an outline marks a capital),
     each outline followed by the dictionary's words for it, likeliest
