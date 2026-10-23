@@ -1720,7 +1720,7 @@
 
   // The formats a job can make, as on the phone: a PDF always, the rest
   // unticked each time.
-  const FORMATS = [['pdf', 'PDF'], ['docx', 'Word (.docx)'], ['md', 'Markdown (.md)'], ['txt', 'Text (.txt)'], ['jpg', 'Images (.jpg)']];
+  const FORMATS = [['pdf', 'PDF'], ['docx', 'Word (.docx)'], ['md', 'Markdown (.md)'], ['txt', 'Text (.txt)'], ['eml', 'Email (.eml)'], ['jpg', 'Images (.jpg)']];
 
   // pickFormats asks which formats to make; null when cancelled.
   function pickFormats(name) {

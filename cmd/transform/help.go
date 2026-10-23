@@ -65,6 +65,7 @@ WORKFLOW
        transform submit essay.pdf                         (PDF only)
        transform submit essay.pdf essay.docx essay.txt    (and others)
        transform submit notes.pdf notes.md page-*.jpg     (images in page order)
+       transform submit email.pdf email.eml               (an email)
 
 COMMANDS
   start <key>             Save the job's key, then the document (as get).
@@ -83,7 +84,8 @@ COMMANDS
   percent <0-100>         Set the percentage alone.
   docx                    How to make Word documents.
   docx extract [dir]      Write out the scripts that guide uses.
-  submit <file.pdf> [file.docx] [file.md] [file.txt] [page.jpg ...] [--name NAME]
+  submit <file.pdf> [file.docx] [file.md] [file.txt] [file.eml] [page.jpg ...]
+         [--name NAME]
                           Submit the result: the PDF and each other format
                           the user chose, told apart by extension, the
                           images in page order. NAME is what they are
@@ -111,11 +113,37 @@ FORMATS
     is one line, never wrapped, with a blank line between paragraphs.
     Headings on lines of their own; list items start "- " (or their own
     numbers). No page numbers; a running header once at the top. UTF-8.
+  - Email (.eml): the email they drafted, which Mail on their phone opens
+    as a new message to check and send (EMAIL).
   - JPG: an image of each page of the PDF you submit, in order, at 150
     dpi, or at the resolution the instructions ask for ("300 dpi"; "high
     resolution" is 300). With pymupdf:
       for i, page in enumerate(fitz.open("essay.pdf"), 1):
           page.get_pixmap(dpi=150).save(f"page-{i:03}.jpg", jpg_quality=90)
+
+EMAIL
+  The user drafts emails by hand on the tablet to send from their phone:
+  typically "To:", maybe "Cc:", a subject, then the message. The .eml is
+  that draft, transcribed (their words, as TRANSCRIBING and SPELLING say):
+  - To, Cc and Bcc: the addresses they wrote, with the names they gave
+    ("Ms. Rivera <rivera@school.org>"). Never guess an address: someone
+    named without one is left out, and the phone's Mail lets them add
+    them. Read addresses letter by letter; they can't be spell-checked.
+  - Subject: as they wrote it, or empty if they wrote none (always
+    include the header). No From or Date: Mail adds them.
+  - The body: plain text, as they wrote it: greeting, paragraphs, sign-off.
+    A paragraph is one line, never wrapped, with a blank line between.
+    No instructions, no headers repeated in it.
+  Write it with Python's email package, which encodes it properly:
+      from email.message import EmailMessage
+      m = EmailMessage()
+      m["To"] = "Ms. Rivera <rivera@school.org>"
+      m["Subject"] = "Late homework"
+      m["X-Unsent"] = "1"       # opens as a draft in desktop mail apps
+      m.set_content(body)       # text/plain, UTF-8
+      open("email.eml", "wb").write(bytes(m))
+  The PDF is the same email laid out to read: To, Cc and Subject at the
+  top, a rule, then the message, in a plain 12 pt font.
 
 TRANSCRIBING
   With no instructions and no marked edits, a page with handwriting asks

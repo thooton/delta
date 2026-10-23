@@ -14,6 +14,7 @@ import (
 	"log"
 	"mime"
 	"net/http"
+	"net/mail"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -41,8 +42,9 @@ import (
 // for more than the transformation.
 //
 // The user picks the formats when starting a job (transformFormats): always
-// a PDF, and any of a Word document, Markdown, plain text and JPG images of
-// the result's pages. The agent makes exactly those, in its own session
+// a PDF, and any of a Word document, Markdown, plain text, an email (.eml,
+// for Mail on the phone to open as a message) and JPG images of the
+// result's pages. The agent makes exactly those, in its own session
 // (where it can check the PDF, and where any font it used is installed),
 // and submit refuses anything else. The PDF goes on the tablet, for marking
 // up again; everything goes in Files, for the phone to download. Submitting,
@@ -64,7 +66,7 @@ import (
 //	POST /transform/status    {"title"?, "status"?, "percent"?}: what the agent calls the job (a few
 //	                          words), what it is doing, and how far along it is, for the user.
 //	POST /transform/submit    Body: a PDF, or multipart/form-data with a part for each format the
-//	                          job asks for: "pdf", "docx", "md", "txt", and "jpg" once per page, in
+//	                          job asks for: "pdf", "docx", "md", "txt", "eml", and "jpg" once per page, in
 //	                          order. Query: name. Ends the job.
 //	POST /transform/fail      {"reason"}. Ends the job.
 //
@@ -81,7 +83,7 @@ const (
 
 // transformFormats are the formats a job can make, in the order they are
 // listed and saved. Every job makes a PDF, which goes on the tablet.
-var transformFormats = []string{"pdf", "docx", "md", "txt", "jpg"}
+var transformFormats = []string{"pdf", "docx", "md", "txt", "eml", "jpg"}
 
 // maxTransformImages is more pages than any result has.
 const maxTransformImages = 500
@@ -119,6 +121,7 @@ var formatNames = map[string]string{
 	"docx": "a Word document (.docx)",
 	"md":   "Markdown (.md)",
 	"txt":  "plain text (.txt)",
+	"eml":  "an email (.eml)",
 	"jpg":  "JPG images of the PDF's pages (.jpg, one per page)",
 }
 
@@ -681,8 +684,8 @@ func isDocx(data []byte) bool {
 	return false
 }
 
-// submission is what the agent submitted, by format: "pdf", "docx", "md"
-// and "txt" once, and "jpg" once per page, in order.
+// submission is what the agent submitted, by format: "pdf", "docx", "md",
+// "txt" and "eml" once, and "jpg" once per page, in order.
 type submission map[string][][]byte
 
 // submitted reads what the agent submitted: a PDF as the whole body, or a
@@ -767,6 +770,11 @@ func checkSubmission(got submission, formats []string) string {
 			return "the ." + f + " file must be UTF-8 text, and not empty"
 		}
 	}
+	if data := one("eml"); data != nil {
+		if why := checkEmail(data); why != "" {
+			return why
+		}
+	}
 	if len(got["jpg"]) > maxTransformImages {
 		return fmt.Sprintf("submit at most %d images", maxTransformImages)
 	}
@@ -799,6 +807,33 @@ func checkSubmission(got submission, formats []string) string {
 		return "the user asked for " + describeFormats(formats) + ": submit them all at once; missing: " + strings.Join(missing, ", ")
 	case len(extra) > 0:
 		return "the user asked only for " + describeFormats(formats) + "; don't submit " + strings.Join(extra, ", ")
+	}
+	return ""
+}
+
+// checkEmail says what is wrong with an .eml, or "": a message Mail on the
+// phone opens to send, so its headers must parse, with a Subject and a
+// plain-text body, and no From (Mail sends from the user's address).
+func checkEmail(data []byte) string {
+	msg, err := mail.ReadMessage(bytes.NewReader(data))
+	if err != nil {
+		return "the .eml isn't an email message (headers, a blank line, then the body): " + err.Error()
+	}
+	if _, ok := msg.Header["Subject"]; !ok {
+		return "the .eml needs a Subject header (empty if they wrote none)"
+	}
+	if msg.Header.Get("From") != "" {
+		return "leave From out of the .eml: Mail sends it from the user's own address"
+	}
+	for _, field := range []string{"To", "Cc", "Bcc"} {
+		if v := msg.Header.Get(field); v != "" {
+			if _, err := mail.ParseAddressList(v); err != nil {
+				return fmt.Sprintf("the .eml's %s isn't a list of email addresses (%v): leave out anyone whose address they didn't write", field, err)
+			}
+		}
+	}
+	if mt, _, _ := mime.ParseMediaType(msg.Header.Get("Content-Type")); mt != "" && mt != "text/plain" {
+		return "the .eml's body must be plain text (Content-Type: text/plain), not " + mt
 	}
 	return ""
 }
