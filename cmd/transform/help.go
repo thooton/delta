@@ -52,7 +52,9 @@ WORKFLOW
   1. "transform start <key>" (already run) saved the document here as
      "<name>.pdf". Set the status to reading it, at 5%.
   2. Read every page: handwriting is strokes with no text layer, so look
-     at each one and zoom in on what's hard to read.
+     at each one and zoom in on what's hard to read. Pages written in
+     Gregg shorthand (rows of small curves, hooks and circles, not
+     letters) have a reader of their own: SHORTHAND.
   3. Find the instructions: usually atop page 1, sometimes in a margin, a
      box or a page of their own; they aren't content unless they say so.
      Marked edits are instructions too (MARKED-UP PAGES). With neither,
@@ -83,6 +85,11 @@ COMMANDS
   status "<what you're doing>" [percent]
                           Set the status line, and the percentage (0-100).
   percent <0-100>         Set the percentage alone.
+  shorthand <image> [--line] [--region x,y,w,h] [--json]
+                          Read Gregg shorthand in a PNG or JPG of a page
+                          (SHORTHAND): the English, and the strokes with
+                          dictionary words. --line: the image is one
+                          line. --region: read only that box, in pixels.
   docx                    How to make Word documents.
   docx extract [dir]      Write out the scripts that guide uses.
   submit [file.pdf] [file.docx] [file.md] [file.txt] [file.eml] [page.jpg ...]
@@ -122,6 +129,39 @@ FORMATS
     resolution" is 300). With pymupdf:
       for i, page in enumerate(fitz.open("essay.pdf"), 1):
           page.get_pixmap(dpi=150).save(f"page-{i:03}.jpg", jpg_quality=90)
+
+SHORTHAND
+  The user sometimes writes in Gregg shorthand (Anniversary edition): rows
+  of small curves, hooks, circles and strokes in place of letters. Don't
+  try to read it by eye; "transform shorthand" runs models built for it.
+  Render the page to an image first (150 dpi suits a whole page; render a
+  small region at 200-300 dpi), then read it:
+      python3 -c 'import fitz; fitz.open("Notes.pdf")[0].get_pixmap(dpi=150).save("p1.png")'
+      transform shorthand p1.png
+      transform shorthand p1.png --region 0,600,1275,400   (x,y,w,h: part of a page)
+      transform shorthand line.png --line                  (an image of one line)
+  The reader finds the lines (top to bottom, column by column) and gives
+  two things for each:
+  - ENGLISH: a model's reading of the line. It is usually right (about 1
+    word in 10 to 5 wrong): use it as the text.
+  - GRASCII: the strokes the reader saw, in Grascii (an ASCII spelling of
+    Gregg's sounds: K-A-T is "cat"; = before an outline marks a capital),
+    each outline followed by the dictionary's words for it, likeliest
+    first. Outlines are ambiguous by design (T-U is to/two/too), and the
+    stroke reading has errors of its own; ~ marks an outline that isn't
+    in the dictionary, whose words are those of similar outlines.
+  Use them together: take the English, and check any word that doesn't
+  fit the sentence or the rest of the document against that line's
+  outlines and their words, choosing what fits the context and the
+  strokes. Look at the page image (the line's box is given) when both
+  disagree. Shorthand drops small words and endings, so restore only
+  what the strokes and grammar plainly call for; it is still their
+  writing (THE STUDENT'S WORK), transcribed. The user's own writing is
+  messier than the books the reader learned from, so expect more errors
+  there, especially in names, numbers and rare words.
+  If it says "shorthand service offline", the reader (a computer of the
+  user's) isn't connected: read it yourself as best you can, and if you
+  can't, fail the job saying the shorthand reader was offline.
 
 EMAIL
   The user drafts emails by hand on the tablet to send from their phone:

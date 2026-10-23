@@ -176,6 +176,9 @@ func selfTest() error {
 	if err := transformCLISelfTest(dir); err != nil {
 		return err
 	}
+	if err := shorthandSelfTest(expect, ts.URL, token, dir); err != nil {
+		return fmt.Errorf("shorthand: %w", err)
+	}
 	if err := smtpSelfTest(dir); err != nil {
 		return err
 	}

@@ -69,6 +69,8 @@ func run(args []string) error {
 			return err
 		}
 		return update(map[string]any{"percent": n})
+	case "shorthand":
+		return shorthand(rest)
 	case "submit":
 		return submit(rest)
 	case "fail":

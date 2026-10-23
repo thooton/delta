@@ -6,6 +6,7 @@
 //	delta-cc [-data DIR] [-addr ADDR] [-max-upload BYTES] [canvas flags]   run the server
 //	delta-cc gen-token [-data DIR]                          create/rotate the auth token
 //	delta-cc smtp-password [-data DIR] [-user NAME]         create/rotate the SMTP relay's login
+//	delta-cc shorthand-secret [-data DIR]                   create/rotate the shorthand worker's secret
 //	delta-cc version                                        print the build version
 //	delta-cc test                                           run a self-test
 package main
@@ -43,6 +44,9 @@ func main() {
 		case "smtp-password":
 			genSMTPPassword(args[1:])
 			return
+		case "shorthand-secret":
+			genShorthandSecret(args[1:])
+			return
 		case "test":
 			if err := selfTest(); err != nil {
 				fmt.Fprintln(os.Stderr, "FAIL:", err)
@@ -77,6 +81,11 @@ Usage:
                                 and print the lines for rmfakecloud's
                                 environment file. Only the password's hash is
                                 stored; it is printed once.
+  delta-cc shorthand-secret [-data DIR]
+                                Make a new secret for the shorthand reader's
+                                worker (see shorthand.go), replacing any
+                                earlier one at once. Only its hash is stored;
+                                it is printed once.
   delta-cc version              Print the build version.
   delta-cc test                 Exercise the server against a temporary data
                                 directory. A new binary must pass this before
@@ -343,10 +352,14 @@ func newHandler(tokenHash []byte, filesDir string, maxUpload int64, u *updater, 
 	agents.register(publicMux)
 	transforms := newTransformService(dataDir, filesDir, remarkable, cloud, maxUpload)
 	transforms.register(publicMux)
+	shorthand := newShorthandService(dataDir)
+	shorthand.register(publicMux, transforms)
 	// Transform sessions fetch their CLI and fonts before they have a key.
 	open := http.NewServeMux()
 	open.HandleFunc("GET /transform/cli", serveTransformCLI)
 	open.HandleFunc("GET /transform/fonts/{name}", newTransformFontStore(dataDir).serve)
+	// The shorthand reader's worker signs in with a secret of its own.
+	shorthand.registerWorker(open)
 	open.Handle("/", requireAuth(tokenHash, transforms, publicMux))
 	return withWebsite(open), requireAgentToken(agents.validToken, mux)
 }
