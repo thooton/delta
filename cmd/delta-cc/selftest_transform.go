@@ -259,9 +259,23 @@ func transformSelfTest(expect func(desc string, want int, method, path, tok stri
 		return fmt.Errorf("a result without a name isn't named after the title: %s", data)
 	}
 
-	third, key, err := startJob("start a third")
+	third, key, err := startJob("start a third", "eml")
 	if err != nil {
 		return err
+	}
+	for _, s := range []struct {
+		desc string
+		body []byte
+	}{
+		{"an email's headers parse", selfTestForm("pdf", stub, "eml", []byte("not an email"))},
+		{"an email has a subject", selfTestForm("pdf", stub, "eml", []byte("To: a@b.org\n\nHi"))},
+		{"an email has no From", selfTestForm("pdf", stub, "eml", []byte("From: a@b.org\nSubject: Hi\n\nHi"))},
+		{"an email's addresses are addresses", selfTestForm("pdf", stub, "eml", []byte("To: Ms. Rivera\nSubject: Hi\n\nHi"))},
+		{"an email is plain text", selfTestForm("pdf", stub, "eml", []byte("Subject: Hi\nContent-Type: text/html\n\n<p>Hi"))},
+	} {
+		if _, err := expect(s.desc, 400, "POST", "/transform/submit", key, s.body); err != nil {
+			return err
+		}
 	}
 	if _, err := expect("fail without a reason", 400, "POST", "/transform/fail", key, []byte(`{}`)); err != nil {
 		return err

@@ -173,6 +173,7 @@ var formatNames = map[string]string{
 	"docx": "Word document",
 	"md":   "Markdown",
 	"txt":  "plain text",
+	"eml":  "email",
 	"jpg":  "JPG images of the pages",
 }
 
@@ -338,7 +339,7 @@ func pages(n int) string {
 	return fmt.Sprintf("%d pages", n)
 }
 
-const submitUsage = "usage: transform submit <file.pdf> [file.docx] [file.md] [file.txt] [page images.jpg ...] [--name NAME]"
+const submitUsage = "usage: transform submit <file.pdf> [file.docx] [file.md] [file.txt] [file.eml] [page images.jpg ...] [--name NAME]"
 
 func submit(args []string) error {
 	var pos []string
@@ -367,7 +368,7 @@ func submit(args []string) error {
 			f = "jpg"
 		}
 		if _, ok := formatNames[f]; !ok {
-			return fmt.Errorf("%s isn't a .pdf, .docx, .md, .txt or .jpg (%s)", path, submitUsage)
+			return fmt.Errorf("%s isn't a .pdf, .docx, .md, .txt, .eml or .jpg (%s)", path, submitUsage)
 		}
 		if f != "jpg" && len(paths[f]) > 0 {
 			return fmt.Errorf("submit one .%s, not several", f)
@@ -404,7 +405,7 @@ func submit(args []string) error {
 	}
 	var body bytes.Buffer
 	form := multipart.NewWriter(&body)
-	for _, f := range []string{"pdf", "docx", "md", "txt", "jpg"} {
+	for _, f := range []string{"pdf", "docx", "md", "txt", "eml", "jpg"} {
 		for _, path := range paths[f] {
 			data, err := os.ReadFile(path)
 			if err != nil {
