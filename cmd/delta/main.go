@@ -49,6 +49,9 @@ WHAT THIS IS
 
   Repositories (see GITHUB):
     thooton/sonim   The phone's apps, one directory each.
+    thooton/tablet  The reMarkable tablet's apps (AppLoad apps: QML and a
+                    Go backend), one directory each, among them Updater,
+                    which installs the others on the tablet.
     thooton/delta   Delta itself: command center (cmd/delta-cc), website
                     (cmd/delta-cc/web) and CLI.
 
@@ -65,6 +68,13 @@ WHAT THIS IS
   pushed without a version bump never reaches the phone. When the build
   has passed, tell the user which app to update in Updater. Never change
   or bypass the signing key in sonim/signing.
+
+  A tablet app is the same: read tablet's AGENTS.md and the app's own,
+  raise "version" in the app's app/manifest.json in the same commit, push
+  to master and watch the build (-R thooton/tablet). Nothing reaches the
+  tablet from here: when the build has passed, tell the user to open
+  Updater on the tablet and update the app (or GET a new one). A new app
+  in tablet's layout appears there on its own.
 
 SETUP
   Nothing to do: the session's setup script installed this CLI, and the
