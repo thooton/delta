@@ -161,6 +161,9 @@ func selfTest() error {
 	if err := booksSelfTest(expect, token); err != nil {
 		return err
 	}
+	if err := otpSelfTest(expect, token); err != nil {
+		return err
+	}
 	if err := gmailSelfTest(expect, token, dir); err != nil {
 		return err
 	}
@@ -435,6 +438,72 @@ func secretSelfTest(expect func(desc string, want int, method, path, tok string,
 		if err := json.Unmarshal(data, &got); err != nil || got[s.field] != v {
 			return fmt.Errorf("read %s: got %s, want %q", s.route, data, v)
 		}
+	}
+	return nil
+}
+
+// otpSelfTest checks that two-factor accounts can be added (one, then a list
+// with a duplicate in it), are tidied and given defaults, are refused when
+// malformed, and can be removed.
+func otpSelfTest(expect func(desc string, want int, method, path, tok string, body []byte) ([]byte, error), token string) error {
+	if _, err := expect("two-factor accounts require the token", 401, "GET", "/otp", "", nil); err != nil {
+		return err
+	}
+	data, err := expect("no two-factor accounts yet", 200, "GET", "/otp", token, nil)
+	if err != nil {
+		return err
+	}
+	if strings.TrimSpace(string(data)) != "[]" {
+		return fmt.Errorf("two-factor accounts: want [], got %s", data)
+	}
+	for _, bad := range []string{
+		`{}`,
+		`{"issuer": "GitHub", "secret": "not base32!"}`,
+		`{"issuer": "GitHub", "secret": "JBSWY3DPEHPK3PXP", "algorithm": "MD5"}`,
+		`{"issuer": "GitHub", "secret": "JBSWY3DPEHPK3PXP", "digits": 4}`,
+		`{"secret": "JBSWY3DPEHPK3PXP"}`,
+		`[]`,
+	} {
+		if _, err := expect(fmt.Sprintf("two-factor account %s is refused", bad), 400, "POST", "/otp", token, []byte(bad)); err != nil {
+			return err
+		}
+	}
+	if _, err := expect("add a two-factor account", 201, "POST", "/otp", token,
+		[]byte(`{"issuer": " GitHub ", "account": "sam", "secret": "jbsw y3dp ehpk 3pxp=="}`)); err != nil {
+		return err
+	}
+	data, err = expect("add two-factor accounts", 201, "POST", "/otp", token, []byte(`[
+		{"issuer": "GitHub", "account": "again", "secret": "JBSWY3DPEHPK3PXP"},
+		{"issuer": "AWS", "account": "root", "secret": "GEZDGNBVGY3TQOJQ", "algorithm": "sha256", "digits": 8, "period": 60}
+	]`))
+	if err != nil {
+		return err
+	}
+	var got []otpAccount
+	if err := json.Unmarshal(data, &got); err != nil || len(got) != 2 {
+		return fmt.Errorf("two-factor accounts: want 2 (the duplicate secret skipped), got %s", data)
+	}
+	first, second := got[0], got[1]
+	if first.Issuer != "GitHub" || first.Account != "sam" || first.Secret != "JBSWY3DPEHPK3PXP" ||
+		first.Algorithm != "SHA1" || first.Digits != 6 || first.Period != 30 || first.ID == "" {
+		return fmt.Errorf("two-factor account not tidied with defaults: %+v", first)
+	}
+	if second.Algorithm != "SHA256" || second.Digits != 8 || second.Period != 60 {
+		return fmt.Errorf("two-factor account lost its settings: %+v", second)
+	}
+	if _, err := expect("remove a two-factor account", 200, "DELETE", "/otp/"+first.ID, token, nil); err != nil {
+		return err
+	}
+	if _, err := expect("remove it again", 404, "DELETE", "/otp/"+first.ID, token, nil); err != nil {
+		return err
+	}
+	data, err = expect("two-factor accounts after removal", 200, "GET", "/otp", token, nil)
+	if err != nil {
+		return err
+	}
+	got = nil
+	if err := json.Unmarshal(data, &got); err != nil || len(got) != 1 || got[0].ID != second.ID {
+		return fmt.Errorf("two-factor accounts after removal: %s", data)
 	}
 	return nil
 }

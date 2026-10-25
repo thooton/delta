@@ -33,8 +33,9 @@ WHAT THIS IS
   limits is used; see "delta accounts help").
 
   The user also carries a Sonim XP3 flip phone. Its apps (Canvas, Mail,
-  Places, Source for music and ebooks, Tablet and the rest) talk to the
-  command center themselves.
+  Places, Source for music and ebooks, Tablet, Authenticator and the rest)
+  talk to the command center themselves. Authenticator's two-factor
+  secrets are kept on the command center (GET/POST /otp, DELETE /otp/{id}).
 
   FILES FROM THE USER: the user can send you files. The website uploads
   each one to the command center and ends their message with a block like

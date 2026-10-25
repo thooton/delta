@@ -334,6 +334,7 @@ func newHandler(tokenHash []byte, filesDir string, maxUpload int64, u *updater, 
 	accessTokenStore(dataDir).register(mux)
 	newGitHubRelay(dataDir).register(mux)
 	mapsKeyStore(dataDir).register(mux)
+	(&otpStore{path: filepath.Join(dataDir, otpFile)}).register(mux)
 	if canvas != nil {
 		canvas.register(mux)
 	} else {
