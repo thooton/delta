@@ -117,6 +117,14 @@ func selfTest() error {
 		}
 	}
 
+	page, err := expect("the website", 200, "GET", "/", "", nil)
+	if err != nil {
+		return err
+	}
+	if !bytes.Contains(page, []byte(`src="web/app.js?v=`)) || !bytes.Contains(page, []byte(`href="web/app.css?v=`)) {
+		return fmt.Errorf("the website's script and styles don't carry the build's version, so a cache could serve the last build's")
+	}
+
 	if err := selfTestRemarkable(remarkable, func(desc string, want int, method, path string, body []byte) ([]byte, error) {
 		return expect(desc, want, method, path, token, body)
 	}); err != nil {
