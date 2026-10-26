@@ -120,6 +120,7 @@ Every endpoint requires the bearer token, except the website's `GET /` and `GET 
 | DELETE | `/gmail-login` | Removes it. |
 | GET | `/otp` | The two-factor accounts, oldest first, as `[{"id", "issuer", "account", "secret", "algorithm", "digits", "period", "added"}]`. For Authenticator on the phone. |
 | POST | `/otp` | Adds one account (`{"issuer", "account", "secret", "algorithm"?, "digits"?, "period"?}`) or a list of them. One whose secret is already there is skipped. 201 with every account. |
+| PUT | `/otp/{id}` | Changes one (the same fields as POST; an empty `secret` keeps the one it has, and one another account has is refused). Answers with every account. |
 | DELETE | `/otp/{id}` | Removes one; answers with the accounts left. |
 | GET | `/remarkable` | The reMarkable's documents and folders, as `[{"id", "name", "type", "parent", "pages", "size", "modified"}]`. `type` is `folder`, `pdf`, `epub` or `notebook`; `parent` is `""` at the top level and `"trash"` in the trash. |
 | GET | `/remarkable/{id}` | A document's files, as a zip (the tablet's `.rmdoc`). |

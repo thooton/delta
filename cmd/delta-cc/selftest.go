@@ -444,7 +444,7 @@ func secretSelfTest(expect func(desc string, want int, method, path, tok string,
 
 // otpSelfTest checks that two-factor accounts can be added (one, then a list
 // with a duplicate in it), are tidied and given defaults, are refused when
-// malformed, and can be removed.
+// malformed, can be changed, and can be removed.
 func otpSelfTest(expect func(desc string, want int, method, path, tok string, body []byte) ([]byte, error), token string) error {
 	if _, err := expect("two-factor accounts require the token", 401, "GET", "/otp", "", nil); err != nil {
 		return err
@@ -490,6 +490,23 @@ func otpSelfTest(expect func(desc string, want int, method, path, tok string, bo
 	}
 	if second.Algorithm != "SHA256" || second.Digits != 8 || second.Period != 60 {
 		return fmt.Errorf("two-factor account lost its settings: %+v", second)
+	}
+	data, err = expect("change a two-factor account", 200, "PUT", "/otp/"+second.ID, token,
+		[]byte(`{"issuer": "Amazon Web Services", "account": "admin", "algorithm": "SHA256", "digits": 8, "period": 60}`))
+	if err != nil {
+		return err
+	}
+	got = nil
+	if err := json.Unmarshal(data, &got); err != nil || len(got) != 2 || got[1].Issuer != "Amazon Web Services" ||
+		got[1].Account != "admin" || got[1].Secret != "GEZDGNBVGY3TQOJQ" || got[1].ID != second.ID || got[1].Digits != 8 {
+		return fmt.Errorf("two-factor account not changed (its secret kept): %s", data)
+	}
+	if _, err := expect("change a secret to another account's", 400, "PUT", "/otp/"+second.ID, token,
+		[]byte(`{"issuer": "AWS", "secret": "JBSWY3DPEHPK3PXP"}`)); err != nil {
+		return err
+	}
+	if _, err := expect("change a missing two-factor account", 404, "PUT", "/otp/nope", token, []byte(`{"issuer": "AWS"}`)); err != nil {
+		return err
 	}
 	if _, err := expect("remove a two-factor account", 200, "DELETE", "/otp/"+first.ID, token, nil); err != nil {
 		return err

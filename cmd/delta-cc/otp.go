@@ -33,6 +33,10 @@ import (
 //	                   (a Google Authenticator export carries several). An
 //	                   account whose secret is already there is left as it
 //	                   is. Answers 201 with every account, as GET does.
+//	PUT    /otp/{id}   Changes one: the same fields as POST, with an empty
+//	                   secret keeping the one it has. A secret another
+//	                   account already has is refused. Answers with every
+//	                   account.
 //	DELETE /otp/{id}   Removes one, and answers with the accounts left.
 //
 // The secret is Base32 (RFC 4648), stored upper case without spaces or
@@ -65,6 +69,7 @@ type otpStore struct {
 func (o *otpStore) register(mux *http.ServeMux) {
 	mux.HandleFunc("GET /otp", o.list)
 	mux.HandleFunc("POST /otp", o.add)
+	mux.HandleFunc("PUT /otp/{id}", o.update)
 	mux.HandleFunc("DELETE /otp/{id}", o.remove)
 }
 
@@ -136,6 +141,59 @@ func (o *otpStore) add(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusCreated, accounts)
+}
+
+func (o *otpStore) update(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	data, err := io.ReadAll(http.MaxBytesReader(w, r.Body, maxOTPBody))
+	if err != nil {
+		writeError(w, http.StatusRequestEntityTooLarge, fmt.Sprintf("an account exceeds %d bytes", maxOTPBody))
+		return
+	}
+	var given otpAccount
+	if err := json.Unmarshal(data, &given); err != nil {
+		writeError(w, http.StatusBadRequest, `expected {"issuer", "account", "secret"?, "algorithm"?, "digits"?, "period"?}`)
+		return
+	}
+
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	accounts, err := o.load()
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	at := -1
+	for i, a := range accounts {
+		if a.ID == id {
+			at = i
+		}
+	}
+	if at < 0 {
+		writeError(w, http.StatusNotFound, "no such account")
+		return
+	}
+	if strings.TrimSpace(given.Secret) == "" {
+		given.Secret = accounts[at].Secret
+	}
+	if why := normalizeOTP(&given); why != "" {
+		writeError(w, http.StatusBadRequest, why)
+		return
+	}
+	for i, a := range accounts {
+		if i != at && a.Secret == given.Secret {
+			writeError(w, http.StatusBadRequest, "another account already has that secret key")
+			return
+		}
+	}
+	given.ID = accounts[at].ID
+	given.Added = accounts[at].Added
+	accounts[at] = given
+	if err := o.save(accounts); err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, accounts)
 }
 
 func (o *otpStore) remove(w http.ResponseWriter, r *http.Request) {
