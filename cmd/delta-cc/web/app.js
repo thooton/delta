@@ -1631,6 +1631,7 @@
 
   async function loadTablet() {
     clearTimeout(jobsTimer);
+    loadDevices();
     const box = $('#tablet');
     if (!box.childNodes.length) box.append(el('div', { class: 'empty' }, 'Loading…'));
     let items, jobs;
@@ -1675,6 +1676,48 @@
         el('span', { class: 'label' }, el('b', { title: it.name }, it.name), el('small', {}, facts.join(' · '))),
         el('span', { class: 'actions' }, button));
     }));
+  }
+
+  // Flashcards on the tablet pairs with a code it shows, entered here.
+  async function loadDevices() {
+    let devices;
+    try {
+      devices = await api('/flashcards/devices');
+    } catch (e) {
+      return;
+    }
+    const box = $('#devices');
+    box.hidden = !devices.length;
+    box.replaceChildren(...devices.map((d) => el('div', { class: 'row' },
+      el('span', { class: 'icon' }, icon('tablet')),
+      el('span', { class: 'label' }, el('b', {}, d.name),
+        el('small', {}, 'Paired ' + when(instant(d.added)) + (d.seen && instant(d.seen) > 0 ? ' · last synced ' + when(instant(d.seen)) : ''))),
+      el('span', { class: 'actions' }, el('button', { type: 'button', class: 'button danger', onclick: () => unpair(d) }, el('span', {}, 'Unpair'))))));
+  }
+
+  async function pair(e) {
+    e.preventDefault();
+    const input = $('#pair-code');
+    const code = input.value.trim();
+    if (!code) return;
+    try {
+      await api('/flashcards/pair/approve', { method: 'POST', json: { code, name: 'reMarkable' } });
+      input.value = '';
+      toast('Paired. Flashcards on the tablet is syncing.');
+    } catch (err) {
+      toast("Couldn't pair: " + err.message);
+    }
+    loadDevices();
+  }
+
+  async function unpair(d) {
+    if (!confirm('Unpair “' + d.name + '”? Its Flashcards stops syncing until it is paired again.')) return;
+    try {
+      await api('/flashcards/devices/' + encodeURIComponent(d.id), { method: 'DELETE' });
+    } catch (e) {
+      toast(e.message);
+    }
+    loadDevices();
   }
 
   function inTrash(it, byId) {
@@ -1874,6 +1917,7 @@
     }
   });
   $('#signout').addEventListener('click', () => { if (confirm('Sign out of Delta on this browser?')) signOut(); });
+  $('#pair').addEventListener('submit', pair);
   $('#refresh').addEventListener('click', () => listChats().catch((e) => toast(e.message)));
   $('#collapse').addEventListener('click', () => { $('#app').classList.add('collapsed'); stored('delta.collapsed', '1'); });
   $('#expand').addEventListener('click', () => {

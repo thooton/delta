@@ -335,6 +335,8 @@ func newHandler(tokenHash []byte, filesDir string, maxUpload int64, u *updater, 
 	newGitHubRelay(dataDir).register(mux)
 	mapsKeyStore(dataDir).register(mux)
 	(&otpStore{path: filepath.Join(dataDir, otpFile)}).register(mux)
+	cards := newFlashcardService(dataDir)
+	cards.register(mux)
 	if canvas != nil {
 		canvas.register(mux)
 	} else {
@@ -361,7 +363,9 @@ func newHandler(tokenHash []byte, filesDir string, maxUpload int64, u *updater, 
 	open.HandleFunc("GET /transform/fonts/{name}", newTransformFontStore(dataDir).serve)
 	// The shorthand reader's worker signs in with a secret of its own.
 	shorthand.registerWorker(open)
-	open.Handle("/", requireAuth(tokenHash, transforms, publicMux))
+	// A flashcards device pairs before it has a token.
+	cards.registerOpen(open)
+	open.Handle("/", requireAuth(tokenHash, transforms, cards, publicMux))
 	return withWebsite(open), requireAgentToken(agents.validToken, mux)
 }
 

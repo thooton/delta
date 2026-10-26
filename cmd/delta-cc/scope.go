@@ -25,6 +25,10 @@ import (
 // in its cloud session's first message. It reaches the job's own routes
 // (/transform/...) on the public listener and nothing else, and dies when
 // the job ends.
+//
+// A paired flashcards device's token (see flashcards.go) is made when the
+// user approves the device's pairing code on the website. It reaches the
+// flashcards collection and its sync, and nothing else, until it is unpaired.
 
 type scope string
 
@@ -33,6 +37,8 @@ const (
 	scopeAgent scope = "agent"
 	// A transform job's key.
 	scopeTransform scope = "transform"
+	// A device paired for flashcards (see flashcards.go).
+	scopeFlashcards scope = "flashcards"
 )
 
 type scopeKey struct{}
@@ -54,8 +60,9 @@ func bearer(r *http.Request) (string, bool) {
 }
 
 // requireAuth rejects any request without the delta token, other than a
-// running transform job's to its own routes.
-func requireAuth(tokenHash []byte, jobs *transformService, next http.Handler) http.Handler {
+// running transform job's to its own routes and a paired flashcards
+// device's to the collection.
+func requireAuth(tokenHash []byte, jobs *transformService, cards *flashcardService, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		token, ok := bearer(r)
 		sum := sha256.Sum256([]byte(token))
@@ -70,6 +77,14 @@ func requireAuth(tokenHash []byte, jobs *transformService, next http.Handler) ht
 			}
 			r = withScope(r, scopeTransform)
 			next.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), transformJobKey{}, id)))
+			return
+		}
+		if cards.validToken(token) {
+			if !flashcardsAllowed(r) {
+				writeError(w, http.StatusForbidden, "a flashcards device's token reaches only the flashcards")
+				return
+			}
+			next.ServeHTTP(w, withScope(r, scopeFlashcards))
 			return
 		}
 		if strings.HasPrefix(token, transformKeyStart) {
@@ -118,6 +133,11 @@ func agentAllowed(r *http.Request) string {
 		return "the Gmail login isn't available in this session"
 	case "otp":
 		return "the two-factor accounts aren't available in this session"
+	case "flashcards":
+		if p == "/flashcards" || p == "/flashcards/sync" {
+			return ""
+		}
+		return "this session can't pair or unpair flashcards devices"
 	case "personal-access-token":
 		return "this session can't change the GitHub token; ask the user to save a new one from a regular (●) session"
 	case "cloud-accounts":

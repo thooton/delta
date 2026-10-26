@@ -659,7 +659,7 @@ code, pre, textarea.mono { font-family: var(--mono); }
 .progress div { height: 100%; width: 0; background: var(--text); transition: width 0.15s; }
 
 .page-section { font-size: 14px; font-weight: 600; color: var(--muted); margin: 24px 0 10px; }
-.rows + .page-section { margin-top: 28px; }
+.rows + .page-section, .pair + .page-section { margin-top: 28px; }
 .row .label small.failed { color: var(--danger); white-space: normal; }
 .job-bar { display: block; height: 3px; margin-top: 7px; border-radius: 3px; background: var(--active); overflow: hidden; }
 .job-bar span { display: block; height: 100%; background: var(--text); border-radius: 3px; transition: width 0.4s; }
@@ -744,6 +744,24 @@ code, pre, textarea.mono { font-family: var(--mono); }
   .row { flex-wrap: wrap; row-gap: 4px; }
   .row .actions { flex-basis: 100%; flex-wrap: wrap; padding-left: 36px; }
 }
+
+/* Tablet: pairing Flashcards on the tablet. */
+.pair { display: flex; gap: 8px; margin-bottom: 10px; }
+.pair input {
+  flex: 1;
+  min-width: 0;
+  height: 34px;
+  padding: 0 12px;
+  border-radius: 8px;
+  border: 1px solid var(--border-strong);
+  background: var(--panel);
+  color: var(--text);
+  font: inherit;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+.pair input::placeholder { letter-spacing: 0; text-transform: none; }
+.pair input:focus { outline: none; border-color: var(--muted); }
 
 /* Tablet: the formats a transform job makes. */
 dialog.formats {

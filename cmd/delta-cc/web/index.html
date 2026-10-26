@@ -128,6 +128,12 @@
       <div class="page">
         <div class="page-head"><h1>Tablet</h1></div>
         <p class="page-sub">Write instructions on a document on your reMarkable (“type this up in MLA format”), then transform it here. An agent of its own makes the new document, which goes on the tablet next to the original and into Files.</p>
+        <h2 class="page-section">Flashcards</h2>
+        <form id="pair" class="pair">
+          <input id="pair-code" autocomplete="off" spellcheck="false" maxlength="9" placeholder="Code shown in Flashcards">
+          <button class="button primary" type="submit"><span>Pair</span></button>
+        </form>
+        <div id="devices" class="rows" hidden></div>
         <h2 class="page-section" id="jobs-head" hidden>Transform jobs</h2>
         <div id="jobs" class="rows" hidden></div>
         <h2 class="page-section">Documents</h2>

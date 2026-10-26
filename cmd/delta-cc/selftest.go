@@ -164,6 +164,9 @@ func selfTest() error {
 	if err := otpSelfTest(expect, token); err != nil {
 		return err
 	}
+	if err := flashcardsSelfTest(expect, token); err != nil {
+		return fmt.Errorf("flashcards: %w", err)
+	}
 	if err := gmailSelfTest(expect, token, dir); err != nil {
 		return err
 	}
