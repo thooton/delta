@@ -42,7 +42,7 @@ import (
 // Routes:
 //
 //	GET    /flashcards                 The whole collection, {"usn", "decks", "cards"}.
-//	POST   /flashcards/sync            {"usn", "decks", "cards"}: the device's changes since
+//	POST   /flashcards/sync            {"usn", "zone"?, "decks", "cards"}: the device's changes since
 //	                                   it last saw usn. Answers {"usn", "decks", "cards"}:
 //	                                   every record changed past that usn, and any sent one
 //	                                   that lost to a later change.
@@ -100,7 +100,10 @@ type flashCard struct {
 }
 
 type flashCollection struct {
-	USN   int64        `json:"usn"`
+	USN int64 `json:"usn"`
+	// The phone's time zone, which it sends: the day rolls over at 4am
+	// there, and the tablet, which keeps UTC, takes it from here.
+	Zone  string       `json:"zone,omitempty"`
 	Decks []*flashDeck `json:"decks"`
 	Cards []*flashCard `json:"cards"`
 }
@@ -251,6 +254,10 @@ func (f *flashcardService) sync(w http.ResponseWriter, r *http.Request) {
 		f.cards[c.ID] = c
 		changed = true
 	}
+	if z := strings.TrimSpace(given.Zone); z != "" && len(z) <= 64 && z != f.collection.Zone {
+		f.collection.Zone = z
+		changed = true
+	}
 	if changed {
 		f.collection.USN = usn
 		if err := f.save(); err != nil {
@@ -261,7 +268,7 @@ func (f *flashcardService) sync(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	out := flashCollection{USN: f.collection.USN, Decks: []*flashDeck{}, Cards: []*flashCard{}}
+	out := flashCollection{USN: f.collection.USN, Zone: f.collection.Zone, Decks: []*flashDeck{}, Cards: []*flashCard{}}
 	sent := map[string]bool{}
 	for _, d := range f.collection.Decks {
 		if d.USN > since {

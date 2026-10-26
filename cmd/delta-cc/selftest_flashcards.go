@@ -11,6 +11,7 @@ import (
 func flashcardsSelfTest(expect func(desc string, want int, method, path, tok string, body []byte) ([]byte, error), token string) error {
 	type collection struct {
 		USN   int64        `json:"usn"`
+		Zone  string       `json:"zone,omitempty"`
 		Decks []*flashDeck `json:"decks"`
 		Cards []*flashCard `json:"cards"`
 	}
@@ -25,11 +26,11 @@ func flashcardsSelfTest(expect func(desc string, want int, method, path, tok str
 	}
 	deck := &flashDeck{ID: "spanish", Name: "Spanish", NewPerDay: -1, Mod: 1000}
 	card := &flashCard{ID: "c1", Deck: "spanish", Front: "perro", Back: "dog", State: 1, Due: 5, Mod: 1000}
-	got, err := sync("the first sync brings a deck", token, collection{Decks: []*flashDeck{deck}, Cards: []*flashCard{card}})
+	got, err := sync("the first sync brings a deck", token, collection{Zone: "America/Phoenix", Decks: []*flashDeck{deck}, Cards: []*flashCard{card}})
 	if err != nil {
 		return err
 	}
-	if got.USN != 1 || len(got.Decks) != 1 || len(got.Cards) != 1 {
+	if got.USN != 1 || len(got.Decks) != 1 || len(got.Cards) != 1 || got.Zone != "America/Phoenix" {
 		return fmt.Errorf("first sync: got %+v", got)
 	}
 	newer := *card
