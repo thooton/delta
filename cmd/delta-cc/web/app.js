@@ -1678,7 +1678,7 @@
     }));
   }
 
-  // Flashcards on the tablet pairs with a code it shows, entered here.
+  // Flashcards on the tablet and the phone pairs with a code it shows, entered here.
   async function loadDevices() {
     let devices;
     try {
@@ -1701,9 +1701,9 @@
     const code = input.value.trim();
     if (!code) return;
     try {
-      await api('/flashcards/pair/approve', { method: 'POST', json: { code, name: 'reMarkable' } });
+      await api('/flashcards/pair/approve', { method: 'POST', json: { code } });
       input.value = '';
-      toast('Paired. Flashcards on the tablet is syncing.');
+      toast('Paired. Its Flashcards is syncing.');
     } catch (err) {
       toast("Couldn't pair: " + err.message);
     }

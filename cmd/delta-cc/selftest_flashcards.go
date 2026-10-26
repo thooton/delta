@@ -59,7 +59,7 @@ func flashcardsSelfTest(expect func(desc string, want int, method, path, tok str
 		return err
 	}
 
-	data, err := expect("a device starts pairing", 201, "POST", "/flashcards/pair", "", nil)
+	data, err := expect("a device starts pairing", 201, "POST", "/flashcards/pair", "", []byte(`{"name":"reMarkable"}`))
 	if err != nil {
 		return err
 	}
@@ -74,12 +74,15 @@ func flashcardsSelfTest(expect func(desc string, want int, method, path, tok str
 	if _, err := expect("approving needs the delta token", 401, "POST", "/flashcards/pair/approve", "", []byte(`{"code":"`+pair.Code+`"}`)); err != nil {
 		return err
 	}
-	data, err = expect("the website approves", 201, "POST", "/flashcards/pair/approve", token, []byte(`{"code":"`+pair.Code+`","name":"reMarkable"}`))
+	data, err = expect("the website approves", 201, "POST", "/flashcards/pair/approve", token, []byte(`{"code":"`+pair.Code+`"}`))
 	if err != nil {
 		return err
 	}
 	var device flashDevice
 	json.Unmarshal(data, &device)
+	if device.Name != "reMarkable" {
+		return fmt.Errorf("the device is called %q, not what it called itself", device.Name)
+	}
 	data, err = expect("the device gets its token", 200, "GET", "/flashcards/pair/"+pair.Secret, "", nil)
 	if err != nil {
 		return err

@@ -46,9 +46,10 @@ import (
 //	                                   it last saw usn. Answers {"usn", "decks", "cards"}:
 //	                                   every record changed past that usn, and any sent one
 //	                                   that lost to a later change.
-//	POST   /flashcards/pair            No token. Starts a pairing: {"code", "secret"}.
+//	POST   /flashcards/pair            No token. {"name"?}: starts a pairing, {"code", "secret"}.
 //	GET    /flashcards/pair/{secret}   No token. 202 while waiting, then {"token"} once.
-//	POST   /flashcards/pair/approve    {"code", "name"?}: the delta token approves a pairing.
+//	POST   /flashcards/pair/approve    {"code", "name"?}: the delta token approves a pairing
+//	                                   (named as given, else as the device named itself).
 //	GET    /flashcards/devices         The paired devices, [{"id", "name", "added", "seen"}].
 //	DELETE /flashcards/devices/{id}    Unpairs one; its token stops working.
 const (
@@ -117,6 +118,7 @@ type flashDevice struct {
 }
 
 type flashPairing struct {
+	name    string // what the device calls itself
 	code    string
 	secret  string
 	expires time.Time
@@ -370,6 +372,14 @@ func (f *flashcardService) save() error {
 // Pairing
 
 func (f *flashcardService) startPairing(w http.ResponseWriter, r *http.Request) {
+	var given struct {
+		Name string `json:"name"`
+	}
+	json.NewDecoder(http.MaxBytesReader(w, r.Body, 4096)).Decode(&given)
+	name := strings.TrimSpace(given.Name)
+	if utf8.RuneCountInString(name) > 60 || !utf8.ValidString(name) {
+		name = ""
+	}
 	f.devMu.Lock()
 	defer f.devMu.Unlock()
 	f.prune()
@@ -377,7 +387,7 @@ func (f *flashcardService) startPairing(w http.ResponseWriter, r *http.Request) 
 		writeError(w, http.StatusTooManyRequests, "too many pairings are waiting; try again in a few minutes")
 		return
 	}
-	p := &flashPairing{secret: randomHex(24), expires: time.Now().Add(flashcardPairLifetime)}
+	p := &flashPairing{name: name, secret: randomHex(24), expires: time.Now().Add(flashcardPairLifetime)}
 	for {
 		p.code = randomCode(6)
 		if f.pairing(p.code) == nil {
@@ -419,9 +429,6 @@ func (f *flashcardService) approve(w http.ResponseWriter, r *http.Request) {
 	}
 	code := strings.ToUpper(strings.NewReplacer("-", "", " ", "").Replace(given.Code))
 	name := strings.TrimSpace(given.Name)
-	if name == "" {
-		name = "Tablet"
-	}
 	if utf8.RuneCountInString(name) > 60 {
 		writeError(w, http.StatusBadRequest, "a device's name is at most 60 characters")
 		return
@@ -433,6 +440,12 @@ func (f *flashcardService) approve(w http.ResponseWriter, r *http.Request) {
 	if p == nil || p.token != "" {
 		writeError(w, http.StatusNotFound, "no device is showing that code")
 		return
+	}
+	if name == "" {
+		name = p.name
+	}
+	if name == "" {
+		name = "Device"
 	}
 	devices, err := f.loadDevices()
 	if err != nil {
