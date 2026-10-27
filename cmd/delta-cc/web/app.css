@@ -449,6 +449,37 @@ code, pre, textarea.mono { font-family: var(--mono); }
   overflow: auto;
 }
 .ask .actions { display: flex; gap: 8px; justify-content: flex-end; }
+.ask .question { margin-bottom: 14px; }
+.ask .question .header { font-size: 11.5px; text-transform: uppercase; letter-spacing: 0.04em; color: var(--muted); margin-bottom: 4px; }
+.ask .question .hint { font-size: 12.5px; color: var(--muted); margin: -4px 0 8px; }
+.ask .options { display: flex; flex-direction: column; gap: 6px; margin-bottom: 6px; }
+.ask .option {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  text-align: left;
+  padding: 8px 10px;
+  border: 1px solid var(--border-strong);
+  border-radius: 10px;
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  cursor: pointer;
+}
+.ask .option:hover { background: var(--hover); }
+.ask .option[aria-pressed="true"] { border-color: var(--text-2); background: var(--active); }
+.ask .option .label { font-weight: 500; }
+.ask .option .desc { font-size: 12.5px; color: var(--text-2); }
+.ask .other {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 7px 10px;
+  border: 1px solid var(--border-strong);
+  border-radius: 10px;
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+}
 
 /* ---------- Markdown ---------- */
 

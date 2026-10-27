@@ -977,6 +977,7 @@
       case 'todowrite': return { verb: 'Updated the plan', target: '' };
       case 'task': case 'agent': return { verb: 'Delegated', target: input.description || summary(input) };
       case 'exitplanmode': return { verb: 'Proposed a plan', target: '' };
+      case 'askuserquestion': return { verb: 'Asked', target: (Array.isArray(input.questions) ? input.questions : []).map((q) => q && q.question).filter(Boolean).join(' · ') };
       default: return { verb: n.replace(/__/g, ' · ') || 'Used a tool', target: summary(input) };
     }
   }
@@ -1103,7 +1104,11 @@
     tail.replaceChildren();
     if (!chat || state.view !== 'chat') return;
     const t = chat.t;
-    if (t.pending) {
+    if (t.pending && t.pending.tool === 'AskUserQuestion' && Array.isArray(t.pending.input.questions)) {
+      // Kept across renders, so picks and typed answers survive new events.
+      t.pending.node = t.pending.node || questionForm(chat, t.pending);
+      tail.append(t.pending.node);
+    } else if (t.pending) {
       const p = t.pending;
       const d = describe(p.tool, p.input);
       tail.append(el('div', { class: 'ask' },
@@ -1120,11 +1125,73 @@
     else if (!chat.connected && !t.entries.length) tail.append(el('div', { class: 'note' }, 'Loading…'));
   }
 
+  /**
+   * The agent's AskUserQuestion: each question's options to pick from, plus
+   * an answer of the user's own. The answers go back as the tool's input.
+   */
+  function questionForm(chat, p) {
+    const questions = p.input.questions.filter((q) => q && typeof q.question === 'string');
+    const picks = questions.map(() => new Set());
+    const own = questions.map(() => '');
+    const send = el('button', { type: 'button', class: 'button primary', disabled: true }, 'Send');
+    const ready = () => questions.every((q, i) => picks[i].size || own[i].trim());
+    const update = () => { send.disabled = !ready(); };
+    const blocks = questions.map((q, i) => {
+      const multi = !!q.multiSelect;
+      const options = (Array.isArray(q.options) ? q.options : []).filter((o) => o && o.label);
+      const buttons = options.map((o) => {
+        const b = el('button', { type: 'button', class: 'option', 'aria-pressed': 'false' },
+          el('span', { class: 'label' }, o.label),
+          o.description ? el('span', { class: 'desc' }, o.description) : null);
+        b.addEventListener('click', () => {
+          if (picks[i].has(o.label)) picks[i].delete(o.label);
+          else {
+            if (!multi) { picks[i].clear(); other.value = ''; own[i] = ''; }
+            picks[i].add(o.label);
+          }
+          buttons.forEach((ob, k) => ob.setAttribute('aria-pressed', String(picks[i].has(options[k].label))));
+          update();
+        });
+        return b;
+      });
+      const other = el('input', { type: 'text', class: 'other', placeholder: 'Other…' });
+      other.addEventListener('input', () => {
+        own[i] = other.value;
+        if (!multi && own[i].trim()) {
+          picks[i].clear();
+          for (const b of buttons) b.setAttribute('aria-pressed', 'false');
+        }
+        update();
+      });
+      other.addEventListener('keydown', (e) => { if (e.key === 'Enter' && ready()) send.click(); });
+      return el('div', { class: 'question' },
+        q.header ? el('div', { class: 'header' }, q.header) : null,
+        el('div', { class: 'q' }, q.question),
+        multi ? el('div', { class: 'hint' }, 'Pick any') : null,
+        el('div', { class: 'options' }, buttons),
+        other);
+    });
+    send.addEventListener('click', () => {
+      if (!ready()) return;
+      const answers = {};
+      questions.forEach((q, i) => {
+        const chosen = [...picks[i]];
+        if (own[i].trim()) chosen.push(own[i].trim());
+        answers[q.question] = chosen.join(', ');
+      });
+      answer(chat, true, { ...p.input, answers });
+    });
+    return el('div', { class: 'ask questions' }, blocks,
+      el('div', { class: 'actions' },
+        el('button', { type: 'button', class: 'button', onclick: () => answer(chat, false) }, 'Skip'),
+        send));
+  }
+
   // ---------------------------------------------------------------------
   // Talking to a session
   // ---------------------------------------------------------------------
 
-  async function answer(chat, allow) {
+  async function answer(chat, allow, input) {
     const p = chat.t.pending;
     if (!p) return;
     try {
@@ -1132,7 +1199,7 @@
         type: 'control_response',
         response: {
           subtype: 'success', request_id: p.requestId,
-          response: allow ? { behavior: 'allow', updatedInput: p.input } : { behavior: 'deny', message: 'Denied from the website.' },
+          response: allow ? { behavior: 'allow', updatedInput: input || p.input } : { behavior: 'deny', message: 'Denied from the website.' },
         },
         uuid: uuid(),
       }]);
