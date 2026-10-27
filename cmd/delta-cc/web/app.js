@@ -804,7 +804,9 @@
     }
 
     rateLimit(info) {
-      if (info.status === 'rejected') {
+      // A used-up window is no limit while cloud credits carry the session on.
+      const onCredits = info.isUsingOverage === true || info.overageStatus === 'allowed' || info.overageStatus === 'allowed_warning';
+      if (info.status === 'rejected' && !onCredits) {
         const resets = Number(info.resetsAt);
         if (resets > 0) { this.limitedUntil = resets * 1000; return true; }
       } else if (info.status) {
@@ -1601,7 +1603,10 @@
     }
 
     const banner = $('#banner');
-    const limited = chat && !chat.backup && chat.t.limitedUntil > Date.now();
+    // The session's own word, unless the account's report says credits carry it on.
+    const status = chat && accountStatus.get(chat.account);
+    const onCredits = !!(status && status.credits && status.credits.left > 0);
+    const limited = chat && !chat.backup && chat.t.limitedUntil > Date.now() && !onCredits;
     banner.hidden = !limited;
     banner.replaceChildren();
     if (limited) {
