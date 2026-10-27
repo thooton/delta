@@ -69,6 +69,7 @@ WORKFLOW
        transform submit essay.pdf essay.docx essay.txt    (and others)
        transform submit notes.pdf notes.md page-*.jpg     (images in page order)
        transform submit email.eml                         (an email alone)
+       transform submit "Cell biology.fkv"                (flashcards alone)
 
 COMMANDS
   start <key>             Save the job's key, then the document (as get).
@@ -93,7 +94,8 @@ COMMANDS
                           only that box, in pixels.
   docx                    How to make Word documents.
   docx extract [dir]      Write out the scripts that guide uses.
-  submit [file.pdf] [file.docx] [file.md] [file.txt] [file.eml] [page.jpg ...]
+  submit [file.pdf] [file.docx] [file.md] [file.txt] [file.eml] [file.fkv]
+         [page.jpg ...]
          [--name NAME]
                           Submit the result: each format the user chose, told apart by extension, the
                           images in page order. NAME is what they are
@@ -125,6 +127,8 @@ FORMATS
     numbers). No page numbers; a running header once at the top. UTF-8.
   - Email (.eml): the email they drafted, which Mail on their phone opens
     as a new message to check and send (EMAIL).
+  - Flashcards (.fkv): their cards, which Flashcards on their phone
+    imports as a deck (FLASHCARDS).
   - JPG: an image of each page of the PDF you submit, in order, at 150
     dpi, or at the resolution the instructions ask for ("300 dpi"; "high
     resolution" is 300). With pymupdf:
@@ -200,6 +204,33 @@ EMAIL
       open("email.eml", "wb").write(bytes(m))
   The PDF is the same email laid out to read: To, Cc and Subject at the
   top, a rule, then the message, in a plain 12 pt font.
+
+FLASHCARDS
+  The user makes flashcards from their notes on the tablet to study on
+  their phone. The cards come only from what they wrote (THE STUDENT'S
+  WORK): a term and the definition they gave it, a question and the answer
+  they wrote, a word and its translation, one card each. Never supply a
+  missing side; leave that card out. Keep their order. The front is the
+  prompt (term, question, word in the language being learned unless they
+  say otherwise), the back the answer.
+  The .fkv (Flashcards Key-Value) is UTF-8 text, one card per line:
+      front||back
+  Each side is written like the inside of a string literal: a backslash
+  starts an escape (\n newline, \t tab, \\ backslash, \| a pipe; also
+  \r \0 \xHH \uHHHH), and everything else, quotes included, is itself.
+  The first bare || splits the line; any other | in a side must be
+  escaped (\|\| for a literal ||). Blank lines are skipped; neither side
+  may be empty. Write it like this:
+      def side(s):
+          return (s.replace("\\", "\\\\").replace("|", "\\|")
+                   .replace("\n", "\\n").replace("\r", "\\r").replace("\t", "\\t"))
+      with open("Cell biology.fkv", "w", encoding="utf-8") as f:
+          for front, back in cards:
+              f.write(side(front) + "||" + side(back) + "\n")
+  The file's name is the deck's name on the phone, so name the result
+  after the subject ("Cell biology", "Spanish unit 4"), with the title or
+  --name. The PDF is the same cards laid out to read: a two-column table,
+  front and back, in a plain 12 pt font.
 
 TRANSCRIBING
   With no instructions and no marked edits, a page with handwriting asks

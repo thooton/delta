@@ -44,3 +44,24 @@ func TestFormatsWithoutPDF(t *testing.T) {
 		t.Errorf("an old job always makes a PDF: %q", why)
 	}
 }
+
+func TestCheckFlashcards(t *testing.T) {
+	for _, c := range []struct{ fkv, want string }{
+		{"hola||hello\nadiós||goodbye\n", ""},
+		{"\n\n", "no cards"},
+		{"hola||hello\nadiós goodbye\n", "line 2"},
+		{"a||" + strings.Repeat("x", maxFlashcardText+1), "too long"},
+	} {
+		got := checkFlashcards([]byte(c.fkv))
+		if c.want == "" && got != "" || !strings.Contains(got, c.want) {
+			t.Errorf("checkFlashcards(%q) = %q, want %q", c.fkv, got, c.want)
+		}
+	}
+	if got, _ := checkFormats([]string{"jpg", "fkv", "pdf"}); !slices.Equal(got, []string{"pdf", "fkv", "jpg"}) {
+		t.Errorf("formats with flashcards: %v", got)
+	}
+	cards := submission{"fkv": {[]byte("hola||hello\n")}}
+	if why := checkSubmission(cards, []string{"fkv"}); why != "" {
+		t.Errorf("flashcards alone: %s", why)
+	}
+}

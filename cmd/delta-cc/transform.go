@@ -25,6 +25,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/thooton/delta/internal/fkv"
 	"github.com/thooton/delta/internal/remarkable"
 )
 
@@ -44,7 +45,8 @@ import (
 //
 // The user picks the formats when starting a job (transformFormats): a PDF
 // (ticked to begin with), and any of a Word document, Markdown, plain text, an email (.eml,
-// for Mail on the phone to open as a message) and JPG images of the
+// for Mail on the phone to open as a message), flashcards (.fkv, for
+// Flashcards on the phone to import as a deck) and JPG images of the
 // result's pages. The agent makes exactly those, in its own session
 // (where it can check the PDF, and where any font it used is installed),
 // and submit refuses anything else. A PDF goes on the tablet, for marking
@@ -67,7 +69,7 @@ import (
 //	POST /transform/status    {"title"?, "status"?, "percent"?}: what the agent calls the job (a few
 //	                          words), what it is doing, and how far along it is, for the user.
 //	POST /transform/submit    Body: a PDF, or multipart/form-data with a part for each format the
-//	                          job asks for: "pdf", "docx", "md", "txt", "eml", and "jpg" once per page, in
+//	                          job asks for: "pdf", "docx", "md", "txt", "eml", "fkv", and "jpg" once per page, in
 //	                          order. Query: name. Ends the job.
 //	POST /transform/fail      {"reason"}. Ends the job.
 //
@@ -84,7 +86,7 @@ const (
 
 // transformFormats are the formats a job can make, in the order they are
 // listed and saved. A PDF, if the job makes one, goes on the tablet.
-var transformFormats = []string{"pdf", "docx", "md", "txt", "eml", "jpg"}
+var transformFormats = []string{"pdf", "docx", "md", "txt", "eml", "fkv", "jpg"}
 
 // maxTransformImages is more pages than any result has.
 const maxTransformImages = 500
@@ -126,6 +128,7 @@ var formatNames = map[string]string{
 	"md":   "Markdown (.md)",
 	"txt":  "plain text (.txt)",
 	"eml":  "an email (.eml)",
+	"fkv":  "flashcards (.fkv)",
 	"jpg":  "JPG images of the PDF's pages (.jpg, one per page)",
 }
 
@@ -689,7 +692,7 @@ func isDocx(data []byte) bool {
 }
 
 // submission is what the agent submitted, by format: "pdf", "docx", "md",
-// "txt" and "eml" once, and "jpg" once per page, in order.
+// "txt", "eml" and "fkv" once, and "jpg" once per page, in order.
 type submission map[string][][]byte
 
 // submitted reads what the agent submitted: a PDF as the whole body, or a
@@ -783,6 +786,11 @@ func checkSubmission(got submission, formats []string) string {
 			return why
 		}
 	}
+	if data := one("fkv"); data != nil {
+		if why := checkFlashcards(data); why != "" {
+			return why
+		}
+	}
 	if len(got["jpg"]) > maxTransformImages {
 		return fmt.Sprintf("submit at most %d images", maxTransformImages)
 	}
@@ -842,6 +850,25 @@ func checkEmail(data []byte) string {
 	}
 	if mt, _, _ := mime.ParseMediaType(msg.Header.Get("Content-Type")); mt != "" && mt != "text/plain" {
 		return "the .eml's body must be plain text (Content-Type: text/plain), not " + mt
+	}
+	return ""
+}
+
+// checkFlashcards says what is wrong with an .fkv, or "": cards Flashcards
+// on the phone imports as a deck, so every line must parse, and each side
+// fit what the collection keeps.
+func checkFlashcards(data []byte) string {
+	cards, err := fkv.Parse(data)
+	if err != nil {
+		return "the .fkv doesn't parse: " + err.Error()
+	}
+	if len(cards) == 0 {
+		return "the .fkv has no cards"
+	}
+	for i, c := range cards {
+		if len(c.Key) > maxFlashcardText || len(c.Value) > maxFlashcardText {
+			return fmt.Sprintf("the .fkv's card %d is too long: at most %d bytes a side", i+1, maxFlashcardText)
+		}
 	}
 	return ""
 }

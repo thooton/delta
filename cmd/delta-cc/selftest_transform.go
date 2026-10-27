@@ -275,6 +275,7 @@ func transformSelfTest(expect func(desc string, want int, method, path, tok stri
 		{"an email's addresses are addresses", selfTestForm("eml", []byte("To: Ms. Rivera\nSubject: Hi\n\nHi"))},
 		{"a PDF not asked for is refused", selfTestForm("pdf", stub, "eml", []byte("Subject: Hi\n\nHi"))},
 		{"an email is plain text", selfTestForm("eml", []byte("Subject: Hi\nContent-Type: text/html\n\n<p>Hi"))},
+		{"flashcards not asked for are refused", selfTestForm("eml", []byte("Subject: Hi\n\nHi"), "fkv", []byte("hola||hello\n"))},
 	} {
 		if _, err := expect(s.desc, 400, "POST", "/transform/submit", key, s.body); err != nil {
 			return err
