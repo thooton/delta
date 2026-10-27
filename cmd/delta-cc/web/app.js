@@ -1427,7 +1427,7 @@
       state.chats.unshift({ id: chat.id, title, status: 'running', updated: Date.now(), backup: chat.backup, account: chat.account, fresh: true });
       location.hash = '#/s/' + chat.id;
     } finally {
-      $('#hero').querySelector('h1').textContent = "Let's build";
+      $('#hero').querySelector('h1').textContent = "New chat";
     }
   }
 
