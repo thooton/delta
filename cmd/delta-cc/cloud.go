@@ -23,9 +23,11 @@ import (
 // for an access token whenever they need one, and it renews the login when
 // the token is close to expiring, one renewal per account at a time.
 //
-// The phone lists the accounts, starts each new session on the first one
-// that hasn't reached its usage limit, and moves a conversation to another
-// account when its own runs out. `delta accounts` adds and removes them.
+// The website lists the accounts, starts each new session on the best one
+// (pick, and pickAccount in web/app.js: of those that haven't reached a usage
+// limit, the first with cloud credits left, or else the first) unless the
+// user chose one, and moves a conversation to another account when the user
+// asks, as when its own runs out. `delta accounts` adds and removes them.
 //
 // Routes (all behind the delta bearer token):
 //
@@ -611,9 +613,16 @@ func (s *cloudAccountStore) save(accounts []cloudAccount) error {
 // Sessions started here
 // ---------------------------------------------------------------------------
 
-// pick returns the first account, in the listed order, with room left in
-// both usage windows, as the phone picks one for a new session. An account
-// whose usage can't be read is tried anyway, unless its login is dead.
+// cloudCreditsKey is where the usage report lists the account's cloud
+// credits: a dollar allowance, with limit_dollars, used_dollars,
+// remaining_dollars and resets_at, that cloud sessions spend before the plan's
+// windows. The website reads it under the same name (CREDITS_KEY).
+const cloudCreditsKey = "iguana_necktie"
+
+// pick returns the account a new session should run on, as the website picks
+// one: of the accounts with room left in both usage windows, the first, in
+// the listed order, with cloud credits left, or else the first. An account
+// whose usage can't be read counts as having room, unless its login is dead.
 func (s *cloudAccountStore) pick(ctx context.Context) (string, error) {
 	s.mu.Lock()
 	accounts, err := s.load()
@@ -624,19 +633,27 @@ func (s *cloudAccountStore) pick(ctx context.Context) (string, error) {
 	if len(accounts) == 0 {
 		return "", errors.New("no Claude accounts are set up on the command center; add one with `delta accounts login`")
 	}
+	fallback := ""
 	for _, acct := range accounts {
 		a, err := s.fresh(ctx, acct.ID, "")
 		if errors.Is(err, errCloudRejected) {
 			continue
 		} else if err != nil {
-			return acct.ID, nil
+			if fallback == "" {
+				fallback = acct.ID
+			}
+			continue
 		}
 		status, body, err := s.api(ctx, "/api/oauth/usage", a.AccessToken)
 		if err != nil || status != http.StatusOK {
-			return a.ID, nil
+			if fallback == "" {
+				fallback = a.ID
+			}
+			continue
 		}
 		var usage map[string]*struct {
-			Utilization *float64 `json:"utilization"`
+			Utilization      *float64 `json:"utilization"`
+			RemainingDollars *float64 `json:"remaining_dollars"`
 		}
 		json.Unmarshal(body, &usage)
 		full := false
@@ -645,9 +662,18 @@ func (s *cloudAccountStore) pick(ctx context.Context) (string, error) {
 				full = true
 			}
 		}
-		if !full {
+		if full {
+			continue
+		}
+		if c := usage[cloudCreditsKey]; c != nil && c.RemainingDollars != nil && *c.RemainingDollars > 0 {
 			return a.ID, nil
 		}
+		if fallback == "" {
+			fallback = a.ID
+		}
+	}
+	if fallback != "" {
+		return fallback, nil
 	}
 	return "", errors.New("every Claude account is at its usage limit")
 }

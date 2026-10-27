@@ -31,15 +31,20 @@ const accountsHelpText = `delta accounts: the cloud accounts the sessions run on
 
 The sessions the website starts (this one included) run on the user's
 Claude subscriptions. Their logins are kept on the command center, which
-renews them; no session or browser ever holds one. The website starts each
-new session on the first account in the list that hasn't reached its usage
-limit. When an account runs out in the middle of a conversation, the
-website says until when.
+renews them; no session or browser ever holds one. Each account also has
+cloud credits, a dollar allowance that cloud sessions spend before the
+plan's limits. Of the accounts that haven't reached a usage limit, the
+website starts each new session on the first in the list with cloud credits
+left, or else on the first; the user can choose an account instead. Each
+chat shows its account, and the user can move it to another one at any
+time. When an account runs out in the middle of a conversation, the website
+says until when and offers to move the chat, naming the account it goes to.
 
 COMMANDS
   delta accounts                List the accounts, in the order the
                                 website tries them, with how much of each
-                                one's 5-hour and weekly limits is used.
+                                one's 5-hour and weekly limits is used and
+                                how much of its cloud credits is left.
   delta accounts login          Add an account (or renew one whose login
                                 stopped working). Prints an address to open
                                 in a browser; sign in there with the account
@@ -144,6 +149,33 @@ func (w *usageWindow) String() string {
 	return s
 }
 
+// cloudCredits is the dollar allowance cloud sessions draw on, which the
+// usage report lists under an internal name (cloudCreditsKey in the command
+// center).
+type cloudCredits struct {
+	LimitDollars     *float64 `json:"limit_dollars"`
+	UsedDollars      *float64 `json:"used_dollars"`
+	RemainingDollars *float64 `json:"remaining_dollars"`
+	ResetsAt         string   `json:"resets_at"`
+}
+
+func (c *cloudCredits) String() string {
+	if c == nil || c.LimitDollars == nil {
+		return "-"
+	}
+	left := *c.LimitDollars
+	if c.RemainingDollars != nil {
+		left = *c.RemainingDollars
+	} else if c.UsedDollars != nil {
+		left = max(0, *c.LimitDollars-*c.UsedDollars)
+	}
+	s := fmt.Sprintf("$%.0f of $%.0f left", left, *c.LimitDollars)
+	if t, err := time.Parse(time.RFC3339, c.ResetsAt); err == nil {
+		s += ", resets " + t.Local().Format("Jan 2")
+	}
+	return s
+}
+
 func listAccounts() error {
 	c, err := loadConfig()
 	if err != nil {
@@ -158,8 +190,9 @@ func listAccounts() error {
 		return nil
 	}
 	type usage struct {
-		FiveHour *usageWindow `json:"five_hour"`
-		SevenDay *usageWindow `json:"seven_day"`
+		FiveHour *usageWindow  `json:"five_hour"`
+		SevenDay *usageWindow  `json:"seven_day"`
+		Credits  *cloudCredits `json:"iguana_necktie"`
 		err      error
 	}
 	usages := make([]usage, len(accounts))
@@ -177,7 +210,7 @@ func listAccounts() error {
 	}
 	wg.Wait()
 	tw := tabwriter.NewWriter(os.Stdout, 0, 4, 2, ' ', 0)
-	fmt.Fprintln(tw, "#\tACCOUNT\tPLAN\t5-HOUR\tWEEKLY")
+	fmt.Fprintln(tw, "#\tACCOUNT\tPLAN\t5-HOUR\tWEEKLY\tCLOUD CREDITS")
 	for i, a := range accounts {
 		plan := strings.TrimPrefix(a.Plan, "claude_")
 		if plan == "" {
@@ -188,7 +221,7 @@ func listAccounts() error {
 			fmt.Fprintf(tw, "%d\t%s\t%s\t%s\t\n", i+1, a.Email, plan, u.err)
 			continue
 		}
-		fmt.Fprintf(tw, "%d\t%s\t%s\t%s\t%s\n", i+1, a.Email, plan, u.FiveHour, u.SevenDay)
+		fmt.Fprintf(tw, "%d\t%s\t%s\t%s\t%s\t%s\n", i+1, a.Email, plan, u.FiveHour, u.SevenDay, u.Credits)
 	}
 	return tw.Flush()
 }

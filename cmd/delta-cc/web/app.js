@@ -35,7 +35,7 @@
   const FILES_CLOSE = '</delta-files>';
   const CARRY_OPEN = '<delta-continued>';
   const CARRY_CLOSE = '</delta-continued>';
-  const CARRY_NOTE = 'Continued from an earlier session whose account reached its usage limit.';
+  const CARRY_NOTE = 'Continued from an earlier session on another account.';
 
   const BETA = 'ccr-byoc-2025-07-29';
   const CLOUD_KIND = 'anthropic_cloud';
@@ -315,39 +315,125 @@
     return until;
   }
 
+  // The usage report lists the account's cloud credits, a dollar allowance
+  // cloud sessions spend before the plan's windows, under an internal name
+  // (cloudCreditsKey in cloud.go).
+  const CREDITS_KEY = 'iguana_necktie';
+
+  /** The account's cloud credits ({limit, used, left, resets}), or null if it has none. */
+  function credits(report) {
+    const c = report && report[CREDITS_KEY];
+    if (!c || typeof c.limit_dollars !== 'number') return null;
+    const used = typeof c.used_dollars === 'number' ? c.used_dollars : 0;
+    const left = typeof c.remaining_dollars === 'number' ? c.remaining_dollars : Math.max(0, c.limit_dollars - used);
+    return { limit: c.limit_dollars, used, left, resets: instant(c.resets_at) };
+  }
+
+  const dollars = (n) => '$' + (n >= 10 || n === 0 ? Math.round(n) : n.toFixed(2));
+
   async function loadAccounts() {
     state.accounts = await api('/cloud-accounts');
     return state.accounts;
   }
 
-  /** The first account, in the listed order, not known to be out (and not `except`). */
-  async function pickAccount(except) {
-    const accounts = await loadAccounts();
-    if (!accounts.length) throw new Error('No accounts are set up on the command center yet. Add one with `delta accounts login`.');
-    const known = limits();
-    let soonest = 0;
-    for (const a of accounts) {
-      if (a.id === except) continue;
-      if (known[a.id] > Date.now()) { soonest = soonest ? Math.min(soonest, known[a.id]) : known[a.id]; continue; }
-      try {
-        const until = limitedUntil(await api('/cloud-accounts/' + encodeURIComponent(a.id) + '/usage'));
-        if (until > Date.now()) {
-          noteLimit(a.id, until);
-          soonest = soonest ? Math.min(soonest, until) : until;
-          continue;
-        }
-      } catch (e) {
-        if (e.status === 403) continue; // its login no longer works
-      }
-      return a.id;
+  /** The account's name: its email, or its place in the list. */
+  function accountName(id) {
+    const k = state.accounts.findIndex((a) => a.id === id);
+    if (k < 0) return 'another account';
+    return state.accounts[k].email || 'Account ' + (k + 1);
+  }
+
+  // What each account's usage report last said, by id: {until, credits,
+  // five, week, dead, unread, at}. Menus and banners read it as it stands;
+  // checkAccounts brings it up to date.
+  const accountStatus = new Map();
+
+  async function checkAccount(id) {
+    let s;
+    try {
+      const report = await api('/cloud-accounts/' + encodeURIComponent(id) + '/usage');
+      const until = limitedUntil(report);
+      noteLimit(id, until);
+      const pct = (w) => w && typeof w.utilization === 'number' ? w.utilization : null;
+      s = { until, credits: credits(report), five: pct(report.five_hour), week: pct(report.seven_day), report };
+    } catch (e) {
+      // A dead login can't be used; an unreadable report is tried anyway.
+      s = e.status === 403 ? { dead: true } : { unread: true, error: e.message };
     }
-    throw new Error((except ? 'Every other account' : 'Every account') + ' is at its usage limit' + (soonest ? ' until ' + when(soonest) : '') + '. A backup session (▲) works meanwhile.');
+    s.at = Date.now();
+    accountStatus.set(id, s);
+    return s;
+  }
+
+  /** Brings every account's status up to date, unless it was read in the last `fresh` ms. */
+  async function checkAccounts(fresh = 0) {
+    const accounts = await loadAccounts();
+    await Promise.all(accounts.map((a) => {
+      const s = accountStatus.get(a.id);
+      return s && Date.now() - s.at < fresh ? s : checkAccount(a.id);
+    }));
+    return accounts;
+  }
+
+  /** When the account is out until, from its status or what was noted in this browser; 0 if it isn't known to be. */
+  function outUntil(id) {
+    const s = accountStatus.get(id);
+    const until = Math.max((s && s.until) || 0, limits()[id] || 0);
+    return until > Date.now() ? until : 0;
+  }
+
+  const usable = (id) => !(accountStatus.get(id) || {}).dead && !outUntil(id);
+  const hasCredits = (id) => { const c = (accountStatus.get(id) || {}).credits; return !!c && c.left > 0; };
+
+  /**
+   * The accounts a new session could go to, best first: of those with room in
+   * both windows, the ones with cloud credits left come first, so the credits
+   * are spent before the plans' windows; otherwise the listed order.
+   */
+  function ranked(except) {
+    const open = state.accounts.filter((a) => a.id !== except && usable(a.id));
+    return open.filter((a) => hasCredits(a.id)).concat(open.filter((a) => !hasCredits(a.id)));
+  }
+
+  /** A line on how the account stands, for its menu item. */
+  function standing(id) {
+    const s = accountStatus.get(id);
+    if (!s) return 'Checking…';
+    if (s.dead) return 'Its login no longer works';
+    const out = outUntil(id);
+    if (out) return 'Out until ' + when(out);
+    if (s.unread) return "Couldn't read its usage";
+    const parts = [];
+    if (s.five !== null) parts.push('5-hour ' + Math.round(s.five) + '%');
+    if (s.week !== null) parts.push('weekly ' + Math.round(s.week) + '%');
+    parts.push(s.credits ? dollars(s.credits.left) + ' credits left' : 'no credits');
+    return parts.join(' · ');
+  }
+
+  /**
+   * The account a new session goes to: `chosen` if given (it must have room),
+   * otherwise the best one but `except`.
+   */
+  async function pickAccount(except, chosen) {
+    const accounts = await checkAccounts(30000);
+    if (!accounts.length) throw new Error('No accounts are set up on the command center yet. Add one with `delta accounts login`.');
+    if (chosen) {
+      if (!accounts.some((a) => a.id === chosen)) throw new Error('That account is no longer on the command center. Choose another.');
+      await checkAccount(chosen);
+      if ((accountStatus.get(chosen) || {}).dead) throw new Error(accountName(chosen) + "'s login no longer works. Choose another account.");
+      const out = outUntil(chosen);
+      if (out) throw new Error(accountName(chosen) + ' is at its usage limit until ' + when(out) + '. Choose another account.');
+      return chosen;
+    }
+    const best = ranked(except)[0];
+    if (best) return best.id;
+    const soonest = Math.min(...accounts.filter((a) => a.id !== except).map((a) => outUntil(a.id) || Infinity));
+    throw new Error((except ? 'Every other account' : 'Every account') + ' is at its usage limit' + (isFinite(soonest) ? ' until ' + when(soonest) : '') + '. A backup session (▲) works meanwhile.');
   }
 
   /** Whether another account than `account` isn't known to be out, so a chat can move there. */
   function canMove(account) {
-    const known = limits();
-    return state.accounts.some((a) => a.id !== account && !(known[a.id] > Date.now()));
+    return state.accounts.some((a) => a.id !== account && usable(a.id));
   }
 
   // ---------------------------------------------------------------------
@@ -407,6 +493,7 @@
         state.listed = true;
         const open = state.view === 'chat' && state.open && chats.find((c) => c.id === state.open.id);
         if (open) setTitle(chatTitle(open), open.backup ? 'backup' : 'cloud');
+        if (state.view === 'chat' && state.open) { if (!state.open.account && open) state.open.account = open.account; topActions(state.open); }
         state.warning = failed.length ? "Couldn't list " + failed.join(', ') + '.' : '';
       } finally {
         $('#refresh').classList.remove('spin');
@@ -442,7 +529,7 @@
         onclick: (e) => { e.preventDefault(); e.stopPropagation(); chatMenu(c, e.currentTarget); },
       }, icon('more'));
       list.append(el('li', {}, el('a', {
-        class: 'chat' + (active ? ' active' : ''), href: '#/s/' + c.id, title: chatTitle(c),
+        class: 'chat' + (active ? ' active' : ''), href: '#/s/' + c.id, title: chatTitle(c) + (c.account ? ' · on ' + accountName(c.account) : ''),
       }, el('span', { class: 'mark ' + kind }, MARK[kind]), el('span', { class: 'name' }, chatTitle(c)), status, more)));
     }
   }
@@ -453,21 +540,30 @@
     $('#kind-menu').hidden = true;
   }
 
-  function floatingMenu(anchor, items) {
+  /**
+   * A menu by `anchor`: items are {label, sub?, run, danger?, checked?,
+   * disabled?} or {heading}. `up` opens it above the anchor, `left` lines it
+   * up with the anchor's left edge rather than its right.
+   */
+  function floatingMenu(anchor, items, opts = {}) {
     closeMenus();
     const menu = el('div', { class: 'menu floating' });
     for (const item of items) {
+      if (item.heading) { menu.append(el('div', { class: 'menu-heading' }, item.heading)); continue; }
       menu.append(el('button', {
-        type: 'button', class: 'menu-item' + (item.danger ? ' danger' : ''),
+        type: 'button', class: 'menu-item' + (item.danger ? ' danger' : '') + (item.checked ? ' checked' : ''), disabled: item.disabled,
         onclick: (e) => { e.stopPropagation(); closeMenus(); item.run(); },
-      }, item.label));
+      }, item.sub == null ? item.label : el('span', {}, el('b', {}, item.label), el('small', {}, item.sub))));
     }
     document.body.append(menu);
     const r = anchor.getBoundingClientRect();
     menu.style.position = 'fixed';
     menu.style.minWidth = '170px';
-    menu.style.top = Math.min(r.bottom + 4, innerHeight - menu.offsetHeight - 8) + 'px';
-    menu.style.left = Math.max(8, Math.min(r.right - menu.offsetWidth, innerWidth - menu.offsetWidth - 8)) + 'px';
+    menu.style.maxWidth = 'min(360px, calc(100vw - 16px))';
+    const top = opts.up ? r.top - menu.offsetHeight - 6 : r.bottom + 4;
+    menu.style.top = Math.max(8, Math.min(top, innerHeight - menu.offsetHeight - 8)) + 'px';
+    const left = opts.left ? r.left : r.right - menu.offsetWidth;
+    menu.style.left = Math.max(8, Math.min(left, innerWidth - menu.offsetWidth - 8)) + 'px';
     return menu;
   }
 
@@ -808,8 +904,8 @@
     }
     const name = (title || '').trim().replace(/\n/g, ' ') || 'Untitled';
     const text = '# ' + name + '\n\n' +
-      'The complete conversation of an earlier Delta session, which stopped because the account it ' +
-      'ran on reached its usage limit: every message, every tool call with its full input, and every ' +
+      'The complete conversation of an earlier Delta session, which was moved to another account ' +
+      '(usually because the one it ran on reached its usage limit): every message, every tool call with its full input, and every ' +
       'tool result in full, oldest first. "You" is the agent. Pictures the user sent are attached to ' +
       'the first message of the session that continues it, in the order they are mentioned.\n\n' +
       out.join('') + '[End of the conversation. Carry on from here.]\n';
@@ -821,8 +917,8 @@
     const t = (title || '').trim();
     return CARRY_OPEN + '\n' +
       'This conversation continues an earlier session' + (t ? ' ("' + carryClean(t) + '")' : '') +
-      ' that stopped because the account it ran on reached its usage limit; this session runs on ' +
-      'another account. The whole conversation so far, every message, tool call and tool result in ' +
+      ' that was moved to another account, usually because the one it ran on reached its usage ' +
+      'limit; this session runs on the new account. The whole conversation so far, every message, tool call and tool result in ' +
       'full, is on the command center. Once the Delta CLI is set up, and before anything else, run\n\n' +
       '    delta resume ' + id + ' conversation.md\n\n' +
       'which saves it to conversation.md, and read ALL of that file, from the first line to the last, ' +
@@ -1317,9 +1413,10 @@
   /**
    * Sends what is in the composer: to the open chat, or to a new one. With
    * `move`, the open chat goes on in a new session on another account
-   * instead, and what was typed follows the conversation it carries.
+   * instead (`target`, or the best one), and what was typed follows the
+   * conversation it carries.
    */
-  async function send(move) {
+  async function send(move, target) {
     const input = $('#input');
     const typed = input.value.trim();
     const attachments = state.attachments.slice();
@@ -1341,7 +1438,7 @@
       const images = pictures.map((p) => p.dataUrl);
       const id = uuid();
       if (move) {
-        await moveChat(chat, typed, message, id, jpegs, images, names);
+        await moveChat(chat, typed, message, id, jpegs, images, names, target);
         input.value = '';
         state.attachments = [];
         renderAttachments();
@@ -1382,9 +1479,11 @@
   }
 
   /**
-   * Starts a new chat with the message. `carry` ({title, block, pictures,
-   * except}) makes it the continuation of a moved one: a regular session on
-   * an account other than `except`, whose first message opens with the block.
+   * Starts a new chat with the message, on the account chosen in the
+   * composer, or the best one. `carry` ({title, block, pictures, from,
+   * target}) makes it the continuation of a moved one: a regular session on
+   * `target`, or the best account other than `from`, whose first message
+   * opens with the block.
    */
   async function create(typed, message, id, jpegs, images, names, carry) {
     const kind = carry ? 'cloud' : state.kind;
@@ -1396,7 +1495,7 @@
         const made = await api('/agent-sessions', { method: 'POST', json: { title, uuid: id, text: message, images: jpegs } });
         chat = { id: made.id, backup: true, title };
       } else {
-        const account = await pickAccount(carry && carry.except);
+        const account = carry ? await pickAccount(carry.from, carry.target) : await pickAccount(null, chosenAccount());
         const env = await environment(account);
         if (carry) {
           message = message ? carry.block + '\n\n' + message : carry.block;
@@ -1419,20 +1518,21 @@
       chat.t = new Transcript();
       if (carry) {
         chat.t.uuids.add(id);
-        chat.t.note(CARRY_NOTE);
+        chat.t.note('Continued from an earlier session on ' + accountName(carry.from) + '. This one runs on ' + accountName(chat.account) + '.');
       }
       if (!carry || typed || images.length || names.length) chat.t.sent(id, typed, images, names);
       else chat.t.working = true;
       state.sessions.set(chat.id, chat);
       state.chats.unshift({ id: chat.id, title, status: 'running', updated: Date.now(), backup: chat.backup, account: chat.account, fresh: true });
       location.hash = '#/s/' + chat.id;
+      if (!chat.backup) toast((carry ? 'Moved to ' : 'Started on ') + accountName(chat.account));
     } finally {
       $('#hero').querySelector('h1').textContent = "New chat";
     }
   }
 
-  /** Carries `chat`, whose account is out, to a new session on another account (see carryText). */
-  async function moveChat(chat, typed, message, id, jpegs, images, names) {
+  /** Carries `chat` to a new session on `target`, or the best other account (see carryText). */
+  async function moveChat(chat, typed, message, id, jpegs, images, names, target) {
     if (chat.t.limitedUntil > Date.now()) noteLimit(chat.account, chat.t.limitedUntil);
     const listed = state.chats.find((c) => c.id === chat.id);
     const title = chatTitle(listed || chat);
@@ -1443,7 +1543,7 @@
       const stored = await api('/conversations', { method: 'POST', body: carried.text, headers: { 'Content-Type': 'text/plain; charset=utf-8' } });
       if (!stored || !stored.id) throw new Error("The command center didn't store the conversation");
       await create(typed, message, id, jpegs, images, names,
-        { title, block: carryBlock(title, stored.id), pictures: carried.pictures, except: chat.account });
+        { title, block: carryBlock(title, stored.id), pictures: carried.pictures, from: chat.account, target });
     } catch (e) {
       throw new Error("Couldn't move the chat: " + e.message);
     } finally {
@@ -1483,19 +1583,92 @@
     sendBtn.disabled = state.busy || (!stop && !typed);
     $('#input').placeholder = chat ? (working ? 'Send a message while Delta works' : 'Reply to Delta') : 'Ask Delta anything';
 
+    const picker = $('#account-picker');
+    picker.hidden = !!chat || state.kind !== 'cloud' || !state.accounts.length;
+    if (!picker.hidden) {
+      const chosen = chosenAccount();
+      const best = ranked()[0];
+      $('#account-btn').replaceChildren(el('span', {}, chosen ? accountName(chosen) : 'Auto' + (best ? ' · ' + accountName(best.id) : '')), icon('down'));
+      $('#account-btn').title = chosen ? 'New chats start on ' + accountName(chosen) : 'New chats start on the best account' + (best ? ', now ' + accountName(best.id) : '');
+    }
+
     const banner = $('#banner');
     const limited = chat && !chat.backup && chat.t.limitedUntil > Date.now();
     banner.hidden = !limited;
     banner.replaceChildren();
     if (limited) {
+      if (Date.now() - refreshed > 60000) refreshAccounts();
       const movable = canMove(chat.account);
-      banner.append(el('span', {}, "This chat's account has reached its usage limit until " + when(chat.t.limitedUntil) + '.' +
+      const best = ranked(chat.account)[0];
+      banner.append(el('span', {}, 'This chat\'s account, ' + accountName(chat.account) + ', has reached its usage limit until ' + when(chat.t.limitedUntil) + '.' +
         (movable ? ' Move the chat to another account to carry on now; anything typed below goes with it.' : ' Every other account is at its limit too.')));
       if (movable) {
-        banner.append(el('button', { type: 'button', class: 'button primary', disabled: state.busy || !!chat.moving, onclick: () => send(true) },
-          chat.moving ? 'Moving…' : 'Move to another account'));
+        const busy = state.busy || !!chat.moving;
+        banner.append(el('button', { type: 'button', class: 'button primary', disabled: busy, onclick: () => send(true, best && best.id) },
+          chat.moving ? 'Moving…' : best ? 'Move to ' + accountName(best.id) : 'Move to another account'));
+        banner.append(el('button', { type: 'button', class: 'button', disabled: busy, onclick: (e) => { e.stopPropagation(); moveMenu(chat, e.currentTarget, true); } }, 'Other account…'));
       }
     }
+  }
+
+  // The account new chats start on: one the user chose in the composer, or
+  // (when none is chosen, or it was removed) the best one at the time.
+  function chosenAccount() {
+    const id = stored('delta.account');
+    return id && state.accounts.some((a) => a.id === id) ? id : null;
+  }
+
+  let refreshing = null;
+  let refreshed = 0;
+  /** Brings the accounts' statuses up to date in the background, then redraws what shows them. */
+  function refreshAccounts(fresh = 30000) {
+    if (!refreshing) {
+      refreshed = Date.now();
+      refreshing = checkAccounts(fresh).catch(() => {}).finally(() => { refreshing = null; renderComposer(); });
+    }
+    return refreshing;
+  }
+
+  async function accountMenu(anchor) {
+    await refreshAccounts();
+    const chosen = chosenAccount();
+    const best = ranked()[0];
+    const pick = (id) => { stored('delta.account', id); renderComposer(); $('#input').focus(); };
+    floatingMenu(anchor, [
+      { heading: 'Start new chats on' },
+      { label: 'Auto', sub: (best ? 'Now ' + accountName(best.id) : 'No account has room now') + ': the first with room, spending cloud credits first',
+        checked: !chosen, run: () => pick(null) },
+      ...state.accounts.map((a) => ({
+        label: accountName(a.id) + (a.plan ? ' · ' + planName(a.plan) : ''), sub: standing(a.id),
+        checked: chosen === a.id, disabled: !usable(a.id), run: () => pick(a.id),
+      })),
+    ], { up: true, left: true });
+  }
+
+  /** Offers to move `chat` to another account, each shown with how it stands. */
+  async function moveMenu(chat, anchor, up) {
+    if (chat.moving || state.busy) return;
+    await refreshAccounts();
+    if (state.open !== chat) return;
+    const best = ranked(chat.account)[0];
+    floatingMenu(anchor, [
+      { heading: 'Move this chat to' },
+      ...state.accounts.map((a) => a.id === chat.account
+        ? { label: accountName(a.id), sub: 'This chat runs here now', checked: true, disabled: true, run: () => {} }
+        : {
+          label: accountName(a.id) + (a.plan ? ' · ' + planName(a.plan) : ''),
+          sub: standing(a.id) + (best && best.id === a.id ? ' · best' : ''),
+          disabled: !usable(a.id), run: () => confirmMove(chat, a.id),
+        }),
+    ], { up });
+  }
+
+  function confirmMove(chat, target) {
+    const limited = chat.t.limitedUntil > Date.now();
+    if (!limited && !confirm('Move this chat to ' + accountName(target) + '?\n\nIt carries on in a new chat there, which is given the whole conversation so far' +
+      (chat.t.working ? ' (Delta is still working here: what it does from now on stays behind)' : '') +
+      '. This chat stays in the list. Anything typed in the box goes along.')) return;
+    send(true, target);
   }
 
   // ---------------------------------------------------------------------
@@ -1526,6 +1699,14 @@
     const box = $('#top-actions');
     box.replaceChildren();
     if (!chat) return;
+    if (!chat.backup) {
+      const where = el('button', {
+        type: 'button', class: 'pill account-chip',
+        title: chat.account ? 'This chat runs on ' + accountName(chat.account) + '. Choose another account to move it there.' : 'The account this chat runs on',
+        onclick: (e) => { e.stopPropagation(); moveMenu(chat, e.currentTarget); },
+      }, el('span', {}, chat.account ? accountName(chat.account) : 'Account'), icon('down'));
+      box.append(where);
+    }
     const more = el('button', { type: 'button', class: 'icon-btn ghost', title: 'More' }, icon('more'));
     more.addEventListener('click', (e) => {
       e.stopPropagation();
@@ -1572,6 +1753,7 @@
       $('#hero').hidden = false;
       renderChat();
       renderComposer();
+      refreshAccounts();
       $('#input').focus();
     }
   }
@@ -1904,21 +2086,40 @@
       box.replaceChildren(el('div', { class: 'empty' }, 'No accounts yet. An agent can add one with `delta accounts login`.'));
       return;
     }
+    const heads = new Map();
     const cards = accounts.map((a) => {
       const usage = el('div', {}, el('div', { class: 'meter-label' }, 'Loading usage…'));
       const right = el('span', {}, planName(a.plan));
-      const card = el('div', { class: 'card' }, el('div', { class: 'card-head' }, el('b', {}, a.email || a.id), right), usage);
-      api('/cloud-accounts/' + encodeURIComponent(a.id) + '/usage').then((report) => {
-        const until = limitedUntil(report);
-        noteLimit(a.id, until);
-        if (until > Date.now()) { right.className = 'out'; right.textContent = 'Out until ' + when(until); }
-        usage.replaceChildren(meter('5-hour', report.five_hour), meter('Weekly', report.seven_day));
+      const head = el('div', { class: 'card-head' }, el('b', {}, accountName(a.id)), right);
+      heads.set(a.id, head);
+      const chats = state.chats.filter((c) => c.account === a.id).length;
+      const card = el('div', { class: 'card' }, head, usage,
+        chats ? el('div', { class: 'card-foot' }, chats + (chats === 1 ? ' chat' : ' chats') + ' here') : null);
+      return { card, done: checkAccount(a.id).then((s) => {
+        if (s.dead) throw Object.assign(new Error(''), { status: 403 });
+        if (s.unread) throw new Error(s.error);
+        if (s.until > Date.now()) { right.className = 'out'; right.textContent = 'Out until ' + when(s.until); }
+        usage.replaceChildren(meter('5-hour', s.report.five_hour), meter('Weekly', s.report.seven_day), creditMeter(s.credits));
       }).catch((e) => {
         usage.replaceChildren(el('div', { class: 'meter-label error' }, e.status === 403 ? 'Its login no longer works. Sign it in again with `delta accounts login`.' : "Couldn't get its usage: " + e.message));
-      });
-      return card;
+      }) };
     });
-    if (state.view === 'accounts') box.replaceChildren(...cards);
+    if (state.view === 'accounts') box.replaceChildren(...cards.map((c) => c.card));
+    await Promise.all(cards.map((c) => c.done));
+    const chosen = chosenAccount();
+    const next = chosen || (ranked()[0] || {}).id;
+    const head = next && heads.get(next);
+    if (head) head.firstChild.after(el('span', { class: 'next', title: chosen ? 'You chose it in the composer' : 'The best account now' }, chosen ? 'New chats (chosen)' : 'Next new chat'));
+    renderComposer();
+  }
+
+  function creditMeter(c) {
+    if (!c) return el('div', { class: 'meter' }, el('div', { class: 'meter-label' }, el('b', {}, 'Cloud credits'), el('span', {}, 'None')));
+    const used = c.limit > 0 ? Math.max(0, Math.min(100, c.used / c.limit * 100)) : 100;
+    return el('div', { class: 'meter' },
+      el('div', { class: 'meter-label' }, el('b', {}, 'Cloud credits'),
+        el('span', {}, dollars(c.left) + ' of ' + dollars(c.limit) + ' left' + (c.resets ? ' · resets ' + when(c.resets) : ''))),
+      el('div', { class: 'bar' }, el('div', { class: c.left <= 0 ? 'full' : '', style: 'width:' + used + '%' })));
   }
 
   function meter(label, w) {
@@ -2029,6 +2230,7 @@
     menu.querySelectorAll('[data-kind]').forEach((b) => b.classList.toggle('checked', b.dataset.kind === state.kind));
   }
   $('#kind-btn').addEventListener('click', toggleKindMenu);
+  $('#account-btn').addEventListener('click', (e) => { e.stopPropagation(); accountMenu(e.currentTarget); });
   // From the hero, the same choice opens under it, as Codex's does.
   $('#hero-kind').addEventListener('click', (e) => {
     e.stopPropagation();

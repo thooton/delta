@@ -104,6 +104,9 @@
                 <button type="button" class="menu-item" data-kind="backup"><span class="mark">▲</span><span><b>Backup</b><small>Runs on the command center</small></span></button>
               </div>
             </div>
+            <div class="picker" id="account-picker" hidden>
+              <button type="button" class="pill" id="account-btn" title="The account new chats start on"></button>
+            </div>
             <span class="spacer"></span>
             <button type="submit" class="send" id="send" title="Send"><svg><use href="#i-up"/></svg></button>
           </div>
@@ -144,7 +147,7 @@
     <section id="view-accounts" class="view view-page" hidden>
       <div class="page">
         <div class="page-head"><h1>Accounts</h1></div>
-        <p class="page-sub">New regular chats start on the first account, in this order, with room left in both windows.</p>
+        <p class="page-sub">New regular chats start on the first account, in this order, with room left in both windows, and of those, on one with cloud credits left first, so the credits are spent before the plans' limits. You can choose an account for new chats in the composer instead, and move a chat to another account from its account button at the top.</p>
         <div id="accounts" class="cards"></div>
       </div>
     </section>
