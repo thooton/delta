@@ -33,16 +33,18 @@ The sessions the website starts (this one included) run on the user's
 Claude subscriptions. Their logins are kept on the command center, which
 renews them; no session or browser ever holds one. Each account also has
 cloud credits, a dollar allowance that cloud sessions spend before the
-plan's limits. Of the accounts that haven't reached a usage limit, the
-website starts each new session on the first in the list with cloud credits
-left, or else on the first; the user can choose an account instead. Each
+plan's limits and that carries on past them: an account is out only once a
+limit is reached and its credits are spent. The website starts each new
+session on the first account in the list with cloud credits left, or else
+on the first that hasn't reached a limit; the user can choose one instead. Each
 chat shows its account, and the user can move it to another one at any
 time. When an account runs out in the middle of a conversation, the website
 says until when and offers to move the chat, naming the account it goes to.
 
 COMMANDS
   delta accounts                List the accounts, in the order the
-                                website tries them, with how much of each
+                                website tries them, with each one's UUID,
+                                how much of each
                                 one's 5-hour and weekly limits is used and
                                 how much of its cloud credits is left.
   delta accounts login          Add an account (or renew one whose login
@@ -210,7 +212,7 @@ func listAccounts() error {
 	}
 	wg.Wait()
 	tw := tabwriter.NewWriter(os.Stdout, 0, 4, 2, ' ', 0)
-	fmt.Fprintln(tw, "#\tACCOUNT\tPLAN\t5-HOUR\tWEEKLY\tCLOUD CREDITS")
+	fmt.Fprintln(tw, "#\tID\tACCOUNT\tPLAN\t5-HOUR\tWEEKLY\tCLOUD CREDITS")
 	for i, a := range accounts {
 		plan := strings.TrimPrefix(a.Plan, "claude_")
 		if plan == "" {
@@ -218,10 +220,10 @@ func listAccounts() error {
 		}
 		u := usages[i]
 		if u.err != nil {
-			fmt.Fprintf(tw, "%d\t%s\t%s\t%s\t\n", i+1, a.Email, plan, u.err)
+			fmt.Fprintf(tw, "%d\t%s\t%s\t%s\t%s\t\n", i+1, a.ID, a.Email, plan, u.err)
 			continue
 		}
-		fmt.Fprintf(tw, "%d\t%s\t%s\t%s\t%s\t%s\n", i+1, a.Email, plan, u.FiveHour, u.SevenDay, u.Credits)
+		fmt.Fprintf(tw, "%d\t%s\t%s\t%s\t%s\t%s\t%s\n", i+1, a.ID, a.Email, plan, u.FiveHour, u.SevenDay, u.Credits)
 	}
 	return tw.Flush()
 }

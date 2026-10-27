@@ -24,8 +24,9 @@ import (
 // the token is close to expiring, one renewal per account at a time.
 //
 // The website lists the accounts, starts each new session on the best one
-// (pick, and pickAccount in web/app.js: of those that haven't reached a usage
-// limit, the first with cloud credits left, or else the first) unless the
+// (pick, and pickAccount in web/app.js: the first with cloud credits left,
+// whose credits carry on past its usage limits, or else the first that hasn't
+// reached a limit) unless the
 // user chose one, and moves a conversation to another account when the user
 // asks, as when its own runs out. `delta accounts` adds and removes them.
 //
@@ -620,9 +621,10 @@ func (s *cloudAccountStore) save(accounts []cloudAccount) error {
 const cloudCreditsKey = "iguana_necktie"
 
 // pick returns the account a new session should run on, as the website picks
-// one: of the accounts with room left in both usage windows, the first, in
-// the listed order, with cloud credits left, or else the first. An account
-// whose usage can't be read counts as having room, unless its login is dead.
+// one: the first, in the listed order, with cloud credits left (which carry
+// on past the usage windows), or else the first with room left in both
+// windows. An account whose usage can't be read counts as having room,
+// unless its login is dead.
 func (s *cloudAccountStore) pick(ctx context.Context) (string, error) {
 	s.mu.Lock()
 	accounts, err := s.load()
@@ -662,13 +664,10 @@ func (s *cloudAccountStore) pick(ctx context.Context) (string, error) {
 				full = true
 			}
 		}
-		if full {
-			continue
-		}
 		if c := usage[cloudCreditsKey]; c != nil && c.RemainingDollars != nil && *c.RemainingDollars > 0 {
 			return a.ID, nil
 		}
-		if fallback == "" {
+		if !full && fallback == "" {
 			fallback = a.ID
 		}
 	}

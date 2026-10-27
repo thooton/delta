@@ -67,13 +67,14 @@ func TestCloudRejected(t *testing.T) {
 	}
 }
 
-// A new session goes to the first account with room that has cloud credits
-// left, or else to the first account with room.
+// A new session goes to the first account with cloud credits left, even one
+// whose windows are used up, or else to the first account with room.
 func TestCloudPick(t *testing.T) {
 	usage := map[string]string{
 		"full":    `{"five_hour":{"utilization":0},"seven_day":{"utilization":100},"` + cloudCreditsKey + `":{"remaining_dollars":50}}`,
 		"spent":   `{"five_hour":{"utilization":40},"seven_day":{"utilization":6},"` + cloudCreditsKey + `":{"remaining_dollars":0}}`,
 		"none":    `{"five_hour":{"utilization":10},"seven_day":{"utilization":10},"` + cloudCreditsKey + `":null}`,
+		"broke":   `{"five_hour":{"utilization":100},"seven_day":{"utilization":30},"` + cloudCreditsKey + `":{"remaining_dollars":0}}`,
 		"credits": `{"five_hour":{"utilization":20},"seven_day":{"utilization":50},"` + cloudCreditsKey + `":{"remaining_dollars":157.5}}`,
 	}
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -87,9 +88,10 @@ func TestCloudPick(t *testing.T) {
 		accounts []string
 		want     string
 	}{
-		{[]string{"full", "spent", "none", "credits"}, "credits"},
-		{[]string{"full", "spent", "none"}, "spent"},
-		{[]string{"full"}, ""},
+		{[]string{"spent", "none", "credits"}, "credits"},
+		{[]string{"full", "spent", "credits"}, "full"},
+		{[]string{"spent", "none"}, "spent"},
+		{[]string{"broke"}, ""},
 	} {
 		var accounts []cloudAccount
 		for _, id := range c.accounts {

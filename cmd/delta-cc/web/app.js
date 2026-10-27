@@ -343,8 +343,11 @@
     return state.accounts[k].email || 'Account ' + (k + 1);
   }
 
-  // What each account's usage report last said, by id: {until, credits,
-  // five, week, dead, unread, at}. Menus and banners read it as it stands;
+  // What each account's usage report last said, by id: {until, limited,
+  // credits, five, week, dead, unread, at}. `limited` is when a used-up
+  // window resets; `until` is when the account can be used again, which is
+  // 0 while cloud credits are left, as the credits carry on past the
+  // windows. Menus and banners read it as it stands;
   // checkAccounts brings it up to date.
   const accountStatus = new Map();
 
@@ -352,10 +355,12 @@
     let s;
     try {
       const report = await api('/cloud-accounts/' + encodeURIComponent(id) + '/usage');
-      const until = limitedUntil(report);
+      const limited = limitedUntil(report);
+      const c = credits(report);
+      const until = !limited || (c && c.left > 0) ? 0 : c && c.resets ? Math.min(limited, c.resets) : limited;
       noteLimit(id, until);
       const pct = (w) => w && typeof w.utilization === 'number' ? w.utilization : null;
-      s = { until, credits: credits(report), five: pct(report.five_hour), week: pct(report.seven_day), report };
+      s = { until, limited, credits: c, five: pct(report.five_hour), week: pct(report.seven_day), report };
     } catch (e) {
       // A dead login can't be used; an unreadable report is tried anyway.
       s = e.status === 403 ? { dead: true } : { unread: true, error: e.message };
@@ -386,9 +391,11 @@
   const hasCredits = (id) => { const c = (accountStatus.get(id) || {}).credits; return !!c && c.left > 0; };
 
   /**
-   * The accounts a new session could go to, best first: of those with room in
-   * both windows, the ones with cloud credits left come first, so the credits
-   * are spent before the plans' windows; otherwise the listed order.
+   * The accounts a new session could go to, best first: those with cloud
+   * credits left (whether or not their windows are used up, as the credits
+   * carry on past them) come first, so the credits are spent before the
+   * plans' windows, then those with room in both windows; otherwise the
+   * listed order.
    */
   function ranked(except) {
     const open = state.accounts.filter((a) => a.id !== except && usable(a.id));
@@ -403,6 +410,7 @@
     const out = outUntil(id);
     if (out) return 'Out until ' + when(out);
     if (s.unread) return "Couldn't read its usage";
+    if (s.limited > Date.now()) return 'Limits reached, running on credits: ' + dollars(s.credits.left) + ' left';
     const parts = [];
     if (s.five !== null) parts.push('5-hour ' + Math.round(s.five) + '%');
     if (s.week !== null) parts.push('weekly ' + Math.round(s.week) + '%');
@@ -1636,7 +1644,7 @@
     const pick = (id) => { stored('delta.account', id); renderComposer(); $('#input').focus(); };
     floatingMenu(anchor, [
       { heading: 'Start new chats on' },
-      { label: 'Auto', sub: (best ? 'Now ' + accountName(best.id) : 'No account has room now') + ': the first with room, spending cloud credits first',
+      { label: 'Auto', sub: (best ? 'Now ' + accountName(best.id) : 'No account has room now') + ': the first with cloud credits left, or else with room',
         checked: !chosen, run: () => pick(null) },
       ...state.accounts.map((a) => ({
         label: accountName(a.id) + (a.plan ? ' · ' + planName(a.plan) : ''), sub: standing(a.id),
@@ -1702,7 +1710,7 @@
     if (!chat.backup) {
       const where = el('button', {
         type: 'button', class: 'pill account-chip',
-        title: chat.account ? 'This chat runs on ' + accountName(chat.account) + '. Choose another account to move it there.' : 'The account this chat runs on',
+        title: chat.account ? 'This chat runs on ' + accountName(chat.account) + ' (' + chat.account + '). Choose another account to move it there.' : 'The account this chat runs on',
         onclick: (e) => { e.stopPropagation(); moveMenu(chat, e.currentTarget); },
       }, el('span', {}, chat.account ? accountName(chat.account) : 'Account'), icon('down'));
       box.append(where);
@@ -2093,12 +2101,13 @@
       const head = el('div', { class: 'card-head' }, el('b', {}, accountName(a.id)), right);
       heads.set(a.id, head);
       const chats = state.chats.filter((c) => c.account === a.id).length;
-      const card = el('div', { class: 'card' }, head, usage,
+      const card = el('div', { class: 'card' }, head, el('div', { class: 'card-id', title: 'Account UUID' }, a.id), usage,
         chats ? el('div', { class: 'card-foot' }, chats + (chats === 1 ? ' chat' : ' chats') + ' here') : null);
       return { card, done: checkAccount(a.id).then((s) => {
         if (s.dead) throw Object.assign(new Error(''), { status: 403 });
         if (s.unread) throw new Error(s.error);
         if (s.until > Date.now()) { right.className = 'out'; right.textContent = 'Out until ' + when(s.until); }
+        else if (s.limited > Date.now()) { right.className = 'credits'; right.textContent = 'Limits reached · on credits'; }
         usage.replaceChildren(meter('5-hour', s.report.five_hour), meter('Weekly', s.report.seven_day), creditMeter(s.credits));
       }).catch((e) => {
         usage.replaceChildren(el('div', { class: 'meter-label error' }, e.status === 403 ? 'Its login no longer works. Sign it in again with `delta accounts login`.' : "Couldn't get its usage: " + e.message));
