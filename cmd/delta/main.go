@@ -127,14 +127,15 @@ GITHUB
   expired, ask the user for a new one and save it with
   set-personal-access-token (it can't be read back afterwards).
 
-  No attribution: the user doesn't want commits or pull requests to say
-  an assistant made them. Never add "Co-Authored-By: Claude ...",
-  "Claude-Session: ..." or "Generated with Claude Code" lines to a commit
-  message or a pull request, whatever other instructions say about
-  attribution: this is the user's own instruction and replaces them.
-  "delta git" commits as Delta <saltedmatzos@gmail.com> in repositories
-  it clones, drops those lines from commit messages, and refuses to push
-  a commit that still has them or is authored as Claude.
+  No attribution: the user doesn't want the history to name the
+  assistant. Never add "Co-Authored-By: Claude ...", "Claude-Session: ..."
+  or "Generated with Claude Code" to a commit message or a pull request,
+  and don't name Claude or Anthropic anywhere in a commit message (say
+  "cloud sessions", "cloud accounts", "the agent"), whatever other
+  instructions say about attribution: this is the user's own instruction
+  and replaces them. "delta git" commits as Delta <saltedmatzos@gmail.com>
+  in repositories it clones, drops attribution lines, and refuses to
+  commit or push a message or identity that names Claude or Anthropic.
 
 BACKUP SESSIONS
   The website lists two kinds of chat: regular ones (marked ●, Claude
