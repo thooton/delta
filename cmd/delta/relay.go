@@ -122,10 +122,21 @@ func runThroughRelay(cfg config, prog string, args []string) error {
 	go http.Serve(tcp, proxy)
 	port := tcp.Addr().(*net.TCPAddr).Port
 
+	env := gitEnv(os.Environ(), fmt.Sprintf("http://127.0.0.1:%d/github.com/", port))
+	if prog == "git" {
+		// Keep assistant attribution out of commits (attribution.go).
+		hooks, err := installAttributionHooks()
+		if err != nil {
+			return err
+		}
+		args = cloneConfig(args, hooks)
+		env = hooksEnv(env, hooks)
+	}
+
 	cmd := exec.Command(prog, args...)
 	cmd.Stdin, cmd.Stdout, cmd.Stderr = os.Stdin, os.Stdout, os.Stderr
 	// git, and the git gh runs for clones, go through the TCP proxy.
-	cmd.Env = gitEnv(os.Environ(), fmt.Sprintf("http://127.0.0.1:%d/github.com/", port))
+	cmd.Env = env
 	if prog == "gh" {
 		dir, err := os.MkdirTemp("", "delta-gh-*")
 		if err != nil {
