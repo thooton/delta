@@ -866,8 +866,8 @@ func checkFlashcards(data []byte) string {
 		return "the .fkv has no cards"
 	}
 	for i, c := range cards {
-		if len(c.Key) > maxFlashcardText || len(c.Value) > maxFlashcardText {
-			return fmt.Sprintf("the .fkv's card %d is too long: at most %d bytes a side", i+1, maxFlashcardText)
+		if len(c.Key) > maxFlashcardText || len(c.Value) > maxFlashcardText || len(c.Meta) > maxFlashcardText {
+			return fmt.Sprintf("the .fkv's card %d is too long: at most %d bytes a part", i+1, maxFlashcardText)
 		}
 	}
 	return ""

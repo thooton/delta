@@ -47,7 +47,7 @@ func TestFormatsWithoutPDF(t *testing.T) {
 
 func TestCheckFlashcards(t *testing.T) {
 	for _, c := range []struct{ fkv, want string }{
-		{"hola||hello\nadiós||goodbye\n", ""},
+		{"hola||hello\nadiós||goodbye||¡Adiós, amigos!\n", ""},
 		{"\n\n", "no cards"},
 		{"hola||hello\nadiós goodbye\n", "line 2"},
 		{"a||" + strings.Repeat("x", maxFlashcardText+1), "too long"},

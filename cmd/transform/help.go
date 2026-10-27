@@ -212,25 +212,32 @@ FLASHCARDS
   they wrote, a word and its translation, one card each. Never supply a
   missing side; leave that card out. Keep their order. The front is the
   prompt (term, question, word in the language being learned unless they
-  say otherwise), the back the answer.
+  say otherwise), the back the answer. A card may also carry metadata,
+  shown under the answer: an example sentence, a note, a mnemonic, but
+  only one they wrote for that card; never write one yourself.
   The .fkv (Flashcards Key-Value) is UTF-8 text, one card per line:
       front||back
-  Each side is written like the inside of a string literal: a backslash
+      front||back||metadata
+  for example
+      estar||to be||Yo estoy frío.\n\nI am cold.
+  Each part is written like the inside of a string literal: a backslash
   starts an escape (\n newline, \t tab, \\ backslash, \| a pipe; also
   \r \0 \xHH \uHHHH), and everything else, quotes included, is itself.
-  The first bare || splits the line; any other | in a side must be
-  escaped (\|\| for a literal ||). Blank lines are skipped; neither side
-  may be empty. Write it like this:
-      def side(s):
+  Each bare || ends a part; any other | must be escaped (\|\| for a
+  literal ||). Blank lines are skipped; the front and the back may not be
+  empty. Write it like this (meta is "" for a card with none):
+      def part(s):
           return (s.replace("\\", "\\\\").replace("|", "\\|")
                    .replace("\n", "\\n").replace("\r", "\\r").replace("\t", "\\t"))
       with open("Cell biology.fkv", "w", encoding="utf-8") as f:
-          for front, back in cards:
-              f.write(side(front) + "||" + side(back) + "\n")
+          for front, back, meta in cards:
+              parts = [front, back] + ([meta] if meta else [])
+              f.write("||".join(part(p) for p in parts) + "\n")
   The file's name is the deck's name on the phone, so name the result
   after the subject ("Cell biology", "Spanish unit 4"), with the title or
   --name. The PDF is the same cards laid out to read: a two-column table,
-  front and back, in a plain 12 pt font.
+  front and back (any metadata under the back, smaller), in a plain 12 pt
+  font.
 
 TRANSCRIBING
   With no instructions and no marked edits, a page with handwriting asks

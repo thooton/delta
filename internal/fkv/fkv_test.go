@@ -7,16 +7,18 @@ import (
 )
 
 func TestParse(t *testing.T) {
-	got, err := Parse([]byte("\uFEFFhola||hello\r\n\n  \nline\\none||a \\\\ b\nquote \"it's\"||\\|\\| and \\||\na|||b\n\\x41\\u00e9\\U0001F600||tab\\there\n"))
+	got, err := Parse([]byte("\uFEFFhola||hello\r\n\n  \nline\\none||a \\\\ b\nquote \"it's\"||\\|\\| and \\||\na|||b\n\\x41\\u00e9\\U0001F600||tab\\there\nestar||to be||Yo estoy frío.\\n\\nI am cold.\nx||y||\n"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	want := []Card{
-		{"hola", "hello"},
-		{"line\none", `a \ b`},
-		{`quote "it's"`, "|| and ||"},
-		{"a", "|b"},
-		{"Aé😀", "tab\there"},
+		{"hola", "hello", ""},
+		{"line\none", `a \ b`, ""},
+		{`quote "it's"`, "|| and ||", ""},
+		{"a", "|b", ""},
+		{"Aé😀", "tab\there", ""},
+		{"estar", "to be", "Yo estoy frío.\n\nI am cold."},
+		{"x", "y", ""},
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("got %q, want %q", got, want)
@@ -26,7 +28,7 @@ func TestParse(t *testing.T) {
 func TestParseErrors(t *testing.T) {
 	for _, c := range []struct{ in, why string }{
 		{"ok||ok\nno separator", "line 2: no ||"},
-		{"a||b||c", "a second ||"},
+		{"a||b||c||d", "a third ||"},
 		{"||b", "the key is empty"},
 		{"a||", "the value is empty"},
 		{`a\q||b`, `\q isn't an escape`},

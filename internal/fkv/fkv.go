@@ -1,14 +1,16 @@
 // Package fkv reads FKV (Flashcards Key-Value), the flashcard format
 // Transform makes and Flashcards on the phone imports.
 //
-// An FKV file is UTF-8 text, one card per line: key||value. The key and the
-// value are written as the body of a string literal: a backslash starts an
+// An FKV file is UTF-8 text, one card per line: key||value, or
+// key||value||metadata, where the metadata is optional extra text shown with
+// the answer (an example sentence, say). Each part is written as the body of
+// a string literal: a backslash starts an
 // escape (\n, \r, \t, \\, \|, \0, \a, \b, \f, \v, \', \", \xHH, \uHHHH,
-// \UHHHHHHHH), and anything else stands for itself, quotes included. The
-// first unescaped "||" splits the line; another one in the line is an
-// error, so a literal || is written \|\| (or \||). Blank lines are skipped,
+// \UHHHHHHHH), and anything else stands for itself, quotes included. Each
+// unescaped "||" ends a part; a third one in the line is an error, so a
+// literal || is written \|\| (or \||). Blank lines are skipped,
 // a \r before a line's end is dropped (CRLF files), and so is a leading BOM.
-// A card needs a key and a value.
+// A card needs a key and a value; the metadata may be empty.
 //
 // The phone's parser (Fkv in sonim's flashcards core) follows the same rules;
 // change them together.
@@ -21,9 +23,9 @@ import (
 	"unicode/utf8"
 )
 
-// Card is one card: its front and its back.
+// Card is one card: its front, its back, and its metadata ("" for none).
 type Card struct {
-	Key, Value string
+	Key, Value, Meta string
 }
 
 // Parse reads an FKV file, or says what is wrong with it, naming the line.
@@ -47,9 +49,9 @@ func Parse(data []byte) ([]Card, error) {
 	return cards, nil
 }
 
-// ParseLine reads one line, key||value.
+// ParseLine reads one line, key||value or key||value||metadata.
 func ParseLine(line string) (Card, error) {
-	var parts [2]strings.Builder
+	var parts [3]strings.Builder
 	part := 0
 	for i := 0; i < len(line); {
 		switch c := line[i]; {
@@ -61,10 +63,10 @@ func ParseLine(line string) (Card, error) {
 			parts[part].WriteRune(r)
 			i += n
 		case c == '|' && i+1 < len(line) && line[i+1] == '|':
-			if part == 1 {
-				return Card{}, fmt.Errorf(`a second || (write a literal one as \|\|)`)
+			if part == 2 {
+				return Card{}, fmt.Errorf(`a third || (write a literal one as \|\|)`)
 			}
-			part = 1
+			part++
 			i += 2
 		default:
 			parts[part].WriteByte(c)
@@ -79,7 +81,7 @@ func ParseLine(line string) (Card, error) {
 	case parts[1].Len() == 0:
 		return Card{}, fmt.Errorf("the value is empty")
 	}
-	return Card{parts[0].String(), parts[1].String()}, nil
+	return Card{parts[0].String(), parts[1].String(), parts[2].String()}, nil
 }
 
 var simple = map[byte]rune{
