@@ -52,6 +52,9 @@ import (
 //	                                   (named as given, else as the device named itself).
 //	GET    /flashcards/devices         The paired devices, [{"id", "name", "added", "seen"}].
 //	DELETE /flashcards/devices/{id}    Unpairs one; its token stops working.
+//	PATCH  /flashcards/cards/{id}      {"front"?, "back"?, "aux"?}: corrects a card's text.
+//	                                   Its memory and mod stay; its usn moves on, so every
+//	                                   device takes the new text at its next sync.
 const (
 	flashcardsFile        = "flashcards.json"
 	flashcardDevicesFile  = "flashcards-devices.json"
@@ -151,6 +154,7 @@ func (f *flashcardService) register(mux *http.ServeMux) {
 	mux.HandleFunc("POST /flashcards/pair/approve", f.approve)
 	mux.HandleFunc("GET /flashcards/devices", f.listDevices)
 	mux.HandleFunc("DELETE /flashcards/devices/{id}", f.removeDevice)
+	mux.HandleFunc("PATCH /flashcards/cards/{id}", f.editCard)
 }
 
 // registerOpen adds the routes a device uses before it has a token.
@@ -250,6 +254,10 @@ func (f *flashcardService) sync(w http.ResponseWriter, r *http.Request) {
 		if have == nil {
 			f.collection.Cards = append(f.collection.Cards, c)
 		} else {
+			// A device changes a card's memory, never its text: that is
+			// edited here (PATCH), and a device that hasn't heard of an edit
+			// yet would otherwise put the old text back with its next answer.
+			c.Deck, c.Ord, c.Front, c.Back, c.Aux = have.Deck, have.Ord, have.Front, have.Back, have.Aux
 			*have = *c
 			c = have
 		}
@@ -296,6 +304,49 @@ func (f *flashcardService) sync(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	writeJSON(w, http.StatusOK, out)
+}
+
+func (f *flashcardService) editCard(w http.ResponseWriter, r *http.Request) {
+	var given struct {
+		Front, Back, Aux *string
+	}
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 3*maxFlashcardText+1024)).Decode(&given); err != nil {
+		writeError(w, http.StatusBadRequest, `expected {"front"?, "back"?, "aux"?}`)
+		return
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if err := f.load(); err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	have := f.cards[r.PathValue("id")]
+	if have == nil {
+		writeError(w, http.StatusNotFound, "no such card")
+		return
+	}
+	edited := *have
+	for _, e := range []struct {
+		to   *string
+		from *string
+	}{{&edited.Front, given.Front}, {&edited.Back, given.Back}, {&edited.Aux, given.Aux}} {
+		if e.from != nil {
+			*e.to = *e.from
+		}
+	}
+	if why := checkFlashCard(&edited); why != "" {
+		writeError(w, http.StatusBadRequest, why)
+		return
+	}
+	f.collection.USN++
+	edited.USN = f.collection.USN
+	*have = edited
+	if err := f.save(); err != nil {
+		f.loaded = false
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, have)
 }
 
 func checkFlashDeck(d *flashDeck) string {

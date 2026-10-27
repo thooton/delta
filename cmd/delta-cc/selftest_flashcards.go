@@ -55,6 +55,17 @@ func flashcardsSelfTest(expect func(desc string, want int, method, path, tok str
 	if len(got.Cards) != 0 || len(got.Decks) != 0 {
 		return fmt.Errorf("nothing new: got %+v", got)
 	}
+	if _, err := expect("a card's text is corrected", 200, "PATCH", "/flashcards/cards/c1", token, []byte(`{"front":"el perro"}`)); err != nil {
+		return err
+	}
+	stale := newer
+	stale.Front, stale.State, stale.Mod = "perro", 1, 3000
+	if got, err = sync("a device that hasn't heard of the edit answers the card", token, collection{USN: 2, Cards: []*flashCard{&stale}}); err != nil {
+		return err
+	}
+	if len(got.Cards) != 1 || got.Cards[0].Front != "el perro" || got.Cards[0].State != 1 {
+		return fmt.Errorf("the answer is taken but not the old text: got %+v", got.Cards)
+	}
 	if _, err := expect("a bad card is refused", 400, "POST", "/flashcards/sync", token, []byte(`{"cards":[{"id":"x","deck":"d","state":9}]}`)); err != nil {
 		return err
 	}
