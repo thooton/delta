@@ -160,7 +160,7 @@ NIGHTLY QA
   fixes what should be fixed and pushes to master, and then one refactors
   each repository. Apps are tested against their SPEC.md, so when you
   change what an app does, change its SPEC.md to match. The Tree app on
-  the phone shows the findings and the morning summary, starts runs, and
+  the phone shows the findings and the nightly report, starts runs, and
   lets the user choose which apps may grow new features. A first message
   opening with <delta-qa> is such a job: do what it says. See
   "delta qa help".

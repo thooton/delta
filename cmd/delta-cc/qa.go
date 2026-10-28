@@ -42,7 +42,7 @@ import (
 //
 // When every app is through (on a run of every app), one refactor job per
 // repository, one after another, sweeps the code for complexity. Then the
-// run writes the morning summary Tree shows.
+// run writes the nightly report Tree and the website show.
 //
 // Nothing is gated: fixes go to master and the Updaters offer them, and the
 // user installs them when they choose. The ledger (findings) remembers what
@@ -75,7 +75,7 @@ const (
 	maxQAFindings   = 3000
 	maxQAShots      = 4       // a finding's screenshots
 	maxQAShotBytes  = 2 << 20 // each
-	qaDefaultHour   = 2
+	qaDefaultHour   = 13
 	qaDefaultZone   = "America/Phoenix"
 	qaMaxSessions   = 8 // sessions a run has going at once
 	qaTick          = 20 * time.Second

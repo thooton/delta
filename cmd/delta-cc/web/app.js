@@ -1982,7 +1982,7 @@
     const hour = el('select', { onchange: () => qaSettings({ hour: Number(hour.value) }) },
       Array.from({ length: 24 }, (_, h) => el('option', { value: h, selected: h === s.hour },
         new Date(2000, 0, 1, h).toLocaleTimeString([], { hour: 'numeric' }))));
-    const parts = [el('label', {}, on, 'Every night at'), hour, el('span', { class: 'note' }, s.time_zone)];
+    const parts = [el('label', {}, on, 'Every day at'), hour, el('span', { class: 'note' }, s.time_zone)];
     if (!o.devices) parts.push(el('span', { class: 'note' }, 'Phone apps have no emulators yet: have an agent run delta qa setup.'));
     $('#qa-schedule').replaceChildren(...parts);
     const run = $('#qa-run');
@@ -1995,9 +1995,10 @@
     const box = $('#qa-latest');
     const r = o.running || (o.runs || [])[0];
     $('#qa-run-head').hidden = !r;
+    $('#qa-run-head').textContent = o.running ? 'Run in progress' : 'Nightly report';
     if (!r) { box.replaceChildren(); return; }
     if (!o.running) {
-      const meta = (r.trigger === 'schedule' ? 'Nightly run' : 'Run') + ' · ' + when(instant(r.created)) + (r.status === 'cancelled' ? ' · cancelled' : '');
+      const meta = (r.trigger === 'schedule' ? 'Scheduled run' : 'Run') + ' · ' + when(instant(r.created)) + (r.status === 'cancelled' ? ' · cancelled' : '');
       box.replaceChildren(el('div', { class: 'qa-summary' }, el('span', { class: 'meta' }, meta), r.summary || r.error || ''));
       return;
     }
@@ -2016,7 +2017,7 @@
     }
     box.replaceChildren(
       el('div', { class: 'qa-summary' },
-        el('span', { class: 'meta' }, (r.trigger === 'schedule' ? 'Nightly run' : 'Run') + ' going since ' + when(instant(r.created))),
+        el('span', { class: 'meta' }, (r.trigger === 'schedule' ? 'Scheduled run' : 'Run') + ' going since ' + when(instant(r.created))),
         stage, el('span', { class: 'job-bar' }, el('span', { style: 'width:' + pct + '%' }))),
       rows.length ? el('div', { class: 'rows qa-progress' }, rows) : '');
   }

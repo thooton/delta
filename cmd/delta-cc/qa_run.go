@@ -604,7 +604,7 @@ func (q *qaService) githubDispatch(ctx context.Context, run qaRun, apps []string
 }
 
 // ---------------------------------------------------------------------------
-// The morning summary
+// The nightly report
 // ---------------------------------------------------------------------------
 
 func (q *qaService) summaryLocked(run *qaRun) string {

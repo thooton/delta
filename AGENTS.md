@@ -159,7 +159,7 @@ Every endpoint requires the bearer token, except the website's `GET /` and `GET 
 | GET | `/transform/fonts/{name}` | One of Microsoft's core font installers (`times32.exe`, `arial32.exe`, `courie32.exe`, `georgi32.exe`, `verdan32.exe`), as Microsoft published them, for transform sessions to install. No token needed. |
 | any | `/github/{host}/{path}` | Relayed to `https://{host}/{path}` with the GitHub token, for `github.com`, `api.github.com`, `uploads.github.com` and `codeload.github.com`. Redirects are passed back, not followed. |
 | GET | `/qa` | Nightly QA's overview, for Tree and the website's QA page: `{"settings": {"enabled", "hour", "time_zone"}, "apps": [{"id", "repo", "dir", "phone", "spec", "grow", "explored", "open", "passed", "grown", "last"}], "running", "runs" (the last ten, each with its "summary"), "devices" (whether the device token is set)}`. `?fresh=1` lists the apps from GitHub again. |
-| PUT | `/qa/settings` | Takes `{"enabled"?, "hour"?, "time_zone"?, "server"?}`: the nightly schedule (default on, at 2 in America/Phoenix), and the command center's address as QA sessions reach it (it can't tell itself, behind a proxy and a path; `delta qa setup` and Tree send it). |
+| PUT | `/qa/settings` | Takes `{"enabled"?, "hour"?, "time_zone"?, "server"?}`: the nightly schedule (default on, at 13, 1 PM, in America/Phoenix), and the command center's address as QA sessions reach it (it can't tell itself, behind a proxy and a path; `delta qa setup` and Tree send it). |
 | PUT | `/qa/apps/{repo}/{name}` | Takes `{"grow": bool}`: whether QA may grow features in that app. |
 | POST | `/qa/runs` | Takes `{"apps"?: ["sonim/list", ...], "server"?}` and starts a run now: every app (then the refactors), or those named. 409 while one is running. |
 | GET | `/qa/runs/{id}`, DELETE `/qa/runs/{id}` | A run with its apps and jobs; cancelling it ends its jobs' keys. |
@@ -380,9 +380,9 @@ For each line of the page (found by the OCR model's segmenter, column by column)
 
 ## Nightly QA
 
-Every night (at 2 in the user's time zone by default; `PUT /qa/settings`), and whenever the user starts one from Tree on the phone (thooton/sonim `tree/`) or an agent runs `delta qa run`, the command center runs QA over the phone apps (thooton/sonim) and the tablet apps (thooton/tablet): agents find what is wrong with each app and fix it, with nobody watching and nothing gated. Fixes go to `master`, and the Updaters offer them; the user installs them when they choose. The code is `cmd/delta-cc/qa*.go`.
+Every day (at 1 PM in the user's time zone by default; `PUT /qa/settings`), and whenever the user starts one from Tree on the phone (thooton/sonim `tree/`) or an agent runs `delta qa run`, the command center runs QA over the phone apps (thooton/sonim) and the tablet apps (thooton/tablet): agents find what is wrong with each app and fix it, with nobody watching and nothing gated. Fixes go to `master`, and the Updaters offer them; the user installs them when they choose. The code is `cmd/delta-cc/qa*.go`.
 
-**Controls.** The website's QA page (`loadQA` in `web/app.js`) and Tree on the phone show the same thing: the schedule (on/off and the hour), the latest run's summary or, while one goes, its progress with each running job's chat, and every app with its counts, Grow, Run (that app alone) and its findings (detail, screenshots, and 👍/👎 on grown features). Run all now and Cancel run sit at the top.
+**Controls.** The website's QA page (`loadQA` in `web/app.js`) and Tree on the phone show the same thing: the schedule (on/off and the hour), the latest run's nightly report or, while one goes, its progress with each running job's chat, and every app with its counts, Grow, Run (that app alone) and its findings (detail, screenshots, and 👍/👎 on grown features). Run all now and Cancel run sit at the top.
 
 **The apps** come from the repositories' trees on GitHub (`appsFromTree`): every sonim directory with `android/app/build.gradle` or `app/build.gradle`, and the launcher; every tablet directory with `app/manifest.json`. An app is `<repo>/<dir>`. Each has (or gets) a `SPEC.md` in its directory, which QA tests against.
 
