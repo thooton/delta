@@ -558,35 +558,8 @@ func (t *transformService) session(ctx context.Context, name, key, server string
 	if err != nil {
 		return account, "", err
 	}
-	title := "Transform: " + name
-	if r := []rune(title); len(r) > 60 {
-		title = string(r[:59]) + "…"
-	}
-	body, _ := json.Marshal(map[string]any{
-		"title": title,
-		"events": []any{
-			map[string]any{"type": "event", "data": map[string]any{
-				"type": "control_request", "request_id": newRemarkableID(), "uuid": newRemarkableID(),
-				"request": map[string]any{"subtype": "set_permission_mode", "mode": "auto"},
-			}},
-			map[string]any{"type": "event", "data": map[string]any{
-				"uuid": newRemarkableID(), "session_id": "", "type": "user", "parent_tool_use_id": nil,
-				"message": map[string]any{"role": "user", "content": transformPrompt(name, key, formats)},
-			}},
-		},
-		"session_context": map[string]any{"sources": []any{}, "outcomes": []any{}},
-		"environment_id":  env,
-	})
-	headers := map[string]string{"x-organization-uuid": org, "anthropic-beta": transformBeta}
-	status, data, err := t.cloud.request(ctx, account, http.MethodPost, "/v1/sessions", headers, body)
-	if err != nil {
-		return account, "", err
-	}
-	var made struct{ ID string }
-	if status/100 != 2 || json.Unmarshal(data, &made) != nil || !cloudID(made.ID) {
-		return account, "", fmt.Errorf("starting the session answered HTTP %d", status)
-	}
-	return account, made.ID, nil
+	session, err = t.cloud.startSession(ctx, account, org, env, "Transform: "+name, transformPrompt(name, key, formats))
+	return account, session, err
 }
 
 // environment finds the account's environment for transform jobs reaching
@@ -601,55 +574,20 @@ func (t *transformService) environment(ctx context.Context, account, org, server
 	if id != "" {
 		return id, nil
 	}
-	headers := map[string]string{"x-organization-uuid": org}
-	status, data, err := t.cloud.request(ctx, account, http.MethodGet, "/v1/environment_providers", headers, nil)
+	u, _ := url.Parse(server)
+	id, err := t.cloud.environment(ctx, account, org, name, "Delta transform jobs - reaches the command center and package registries only", map[string]any{
+		"environment_type": "anthropic",
+		"cwd":              "/home/user",
+		"init_script":      setup,
+		"environment":      map[string]string{"TRANSFORM_SERVER": server},
+		"languages":        []any{map[string]string{"name": "python", "version": "3.11"}, map[string]string{"name": "node", "version": "20"}},
+		"network_config": map[string]any{
+			"allowed_hosts":       append([]string{u.Hostname()}, transformHosts...),
+			"allow_default_hosts": false,
+		},
+	})
 	if err != nil {
 		return "", err
-	}
-	var listed struct {
-		Environments []struct {
-			Kind, Name    string
-			EnvironmentID string `json:"environment_id"`
-		}
-	}
-	if status != http.StatusOK || json.Unmarshal(data, &listed) != nil {
-		return "", fmt.Errorf("listing the environments answered HTTP %d", status)
-	}
-	for _, e := range listed.Environments {
-		if e.Kind == "anthropic_cloud" && e.Name == name {
-			id = e.EnvironmentID
-		}
-	}
-	if id == "" {
-		u, _ := url.Parse(server)
-		body, _ := json.Marshal(map[string]any{
-			"name":        name,
-			"kind":        "anthropic_cloud",
-			"description": "Delta transform jobs - reaches the command center and package registries only",
-			"config": map[string]any{
-				"environment_type": "anthropic",
-				"cwd":              "/home/user",
-				"init_script":      setup,
-				"environment":      map[string]string{"TRANSFORM_SERVER": server},
-				"languages":        []any{map[string]string{"name": "python", "version": "3.11"}, map[string]string{"name": "node", "version": "20"}},
-				"network_config": map[string]any{
-					"allowed_hosts":       append([]string{u.Hostname()}, transformHosts...),
-					"allow_default_hosts": false,
-				},
-			},
-		})
-		headers["anthropic-beta"] = transformBeta
-		status, data, err := t.cloud.request(ctx, account, http.MethodPost, "/v1/environment_providers/cloud/create", headers, body)
-		if err != nil {
-			return "", err
-		}
-		var made struct {
-			EnvironmentID string `json:"environment_id"`
-		}
-		if status/100 != 2 || json.Unmarshal(data, &made) != nil || made.EnvironmentID == "" {
-			return "", fmt.Errorf("making the environment answered HTTP %d", status)
-		}
-		id = made.EnvironmentID
 	}
 	t.mu.Lock()
 	t.envs[account+" "+name] = id

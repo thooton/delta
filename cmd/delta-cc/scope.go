@@ -29,6 +29,13 @@ import (
 // A paired flashcards device's token (see flashcards.go) is made when the
 // user approves the device's pairing code on the website. It reaches the
 // flashcards collection and its sync, and nothing else, until it is unpaired.
+//
+// A QA job's key (see qa.go) is made for one job of a nightly QA run and
+// travels in its cloud session's first message. It reaches the job's own
+// routes (/qa/job/...), the GitHub relay, /auth and /version, and dies when
+// the job ends. The emulators' device token (POST /qa/device-token, kept in
+// sonim's Actions secrets) reaches the device relay (/qa/device/...) and
+// nothing else.
 
 type scope string
 
@@ -39,6 +46,9 @@ const (
 	scopeTransform scope = "transform"
 	// A device paired for flashcards (see flashcards.go).
 	scopeFlashcards scope = "flashcards"
+	// A QA job's key, and the emulators' device token (see qa.go).
+	scopeQA       scope = "qa"
+	scopeQADevice scope = "qa-device"
 )
 
 type scopeKey struct{}
@@ -60,9 +70,9 @@ func bearer(r *http.Request) (string, bool) {
 }
 
 // requireAuth rejects any request without the delta token, other than a
-// running transform job's to its own routes and a paired flashcards
-// device's to the collection.
-func requireAuth(tokenHash []byte, jobs *transformService, cards *flashcardService, next http.Handler) http.Handler {
+// running transform job's to its own routes, a paired flashcards device's
+// to the collection, and a QA job's or the emulators' to theirs.
+func requireAuth(tokenHash []byte, jobs *transformService, cards *flashcardService, qa *qaService, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		token, ok := bearer(r)
 		sum := sha256.Sum256([]byte(token))
@@ -85,6 +95,27 @@ func requireAuth(tokenHash []byte, jobs *transformService, cards *flashcardServi
 				return
 			}
 			next.ServeHTTP(w, withScope(r, scopeFlashcards))
+			return
+		}
+		if run, job, ok := qa.jobKey(token); ok {
+			if !qaJobAllowed(r) {
+				writeError(w, http.StatusForbidden, "a QA job's key reaches only its own routes (delta qa ...) and GitHub (delta git, delta gh)")
+				return
+			}
+			r = withScope(r, scopeQA)
+			next.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), qaJobKey{}, [2]string{run, job})))
+			return
+		}
+		if qa.deviceKey(token) {
+			if !strings.HasPrefix(r.URL.Path, "/qa/device/") {
+				writeError(w, http.StatusForbidden, "the device token reaches only the device relay")
+				return
+			}
+			next.ServeHTTP(w, withScope(r, scopeQADevice))
+			return
+		}
+		if strings.HasPrefix(token, qaKeyStart) {
+			writeError(w, http.StatusUnauthorized, "this QA job is over (it finished, failed, timed out, or its run was cancelled), so its key no longer works")
 			return
 		}
 		if strings.HasPrefix(token, transformKeyStart) {

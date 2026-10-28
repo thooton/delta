@@ -109,7 +109,11 @@ COMMANDS
                                      then pick up where it left off. With
                                      no arguments, list them.
 
-  Read "delta accounts help" before using that.
+  delta qa ...                       The nightly QA of the phone and tablet
+                                     apps: its status, starting a run, and
+                                     the commands its own sessions use.
+
+  Read "delta accounts help" and "delta qa help" before using those.
   Aliases: ls = list, rm = delete, get = pull.
 
 GITHUB
@@ -148,6 +152,18 @@ BACKUP SESSIONS
     apt-get (gh is "apt-get install -y gh"). The container keeps its files
     until the user deletes the session, but stops while it is idle.
   - "delta git" and "delta gh" work as anywhere else.
+
+NIGHTLY QA
+  Every night the command center has cloud sessions go through each phone
+  and tablet app: one explores it in an emulator (phone apps on emulators
+  sonim's QA workflow runs on GitHub Actions) and files findings, another
+  fixes what should be fixed and pushes to master, and then one refactors
+  each repository. Apps are tested against their SPEC.md, so when you
+  change what an app does, change its SPEC.md to match. The Tree app on
+  the phone shows the findings and the morning summary, starts runs, and
+  lets the user choose which apps may grow new features. A first message
+  opening with <delta-qa> is such a job: do what it says. See
+  "delta qa help".
 
 UPDATING THE COMMAND CENTER
   Push the change to master in thooton/delta, wait for its GitHub Actions
@@ -218,6 +234,8 @@ func run(args []string) error {
 		return runAccounts(args)
 	case "resume":
 		return runResume(args)
+	case "qa":
+		return runQA(args)
 	case "list", "ls":
 		if len(args) != 0 {
 			return errors.New("usage: delta list")

@@ -139,7 +139,7 @@ func canvasSelfTest(dir string) error {
 	if err != nil {
 		return err
 	}
-	public, _ := newHandler(hash[:], filepath.Join(dir, "files"), 1<<20, &updater{restart: make(chan struct{}, 1)}, proxy, nil, agents)
+	public, _, _ := newHandler(hash[:], filepath.Join(dir, "files"), 1<<20, &updater{restart: make(chan struct{}, 1)}, proxy, nil, agents)
 	ts := httptest.NewServer(public)
 	defer ts.Close()
 

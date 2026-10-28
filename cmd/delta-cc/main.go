@@ -227,7 +227,8 @@ func serve(args []string) {
 
 	u := &updater{restart: make(chan struct{}, 1)}
 	remarkable := newRemarkableStore(*rmData, *rmUser, *rmEnv, *maxUpload)
-	public, agent := newHandler(tokenHash, filesDir, *maxUpload, u, canvas, remarkable, agents)
+	public, agent, qa := newHandler(tokenHash, filesDir, *maxUpload, u, canvas, remarkable, agents)
+	qa.start()
 	srv := &http.Server{
 		Addr:              *addr,
 		Handler:           logRequests(public),
@@ -306,9 +307,10 @@ func listenAgentSocket(path string) (net.Listener, error) {
 
 // newHandler builds the authenticated API: the public handler, for the delta
 // token, and the agent handler, for backup sessions' tokens on the agent
-// socket (see scope.go). It is shared by serve and selfTest. A nil canvas
-// disables the Canvas relay, and a nil remarkable the reMarkable.
-func newHandler(tokenHash []byte, filesDir string, maxUpload int64, u *updater, canvas *canvasProxy, remarkable *remarkableStore, agents *agentService) (public, agent http.Handler) {
+// socket (see scope.go), and the nightly QA, whose schedule the caller
+// starts. It is shared by serve and selfTest. A nil canvas disables the
+// Canvas relay, and a nil remarkable the reMarkable.
+func newHandler(tokenHash []byte, filesDir string, maxUpload int64, u *updater, canvas *canvasProxy, remarkable *remarkableStore, agents *agentService) (public, agent http.Handler, qa *qaService) {
 	s := &server{filesDir: filesDir, maxUpload: maxUpload}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /auth", func(w http.ResponseWriter, r *http.Request) {
@@ -357,6 +359,8 @@ func newHandler(tokenHash []byte, filesDir string, maxUpload int64, u *updater, 
 	transforms.register(publicMux)
 	shorthand := newShorthandService(dataDir)
 	shorthand.register(publicMux, transforms)
+	qa = newQAService(dataDir, cloud)
+	qa.register(publicMux)
 	// Transform sessions fetch their CLI and fonts before they have a key.
 	open := http.NewServeMux()
 	open.HandleFunc("GET /transform/cli", serveTransformCLI)
@@ -365,8 +369,8 @@ func newHandler(tokenHash []byte, filesDir string, maxUpload int64, u *updater, 
 	shorthand.registerWorker(open)
 	// A flashcards device pairs before it has a token.
 	cards.registerOpen(open)
-	open.Handle("/", requireAuth(tokenHash, transforms, cards, publicMux))
-	return withWebsite(open), requireAgentToken(agents.validToken, mux)
+	open.Handle("/", requireAuth(tokenHash, transforms, cards, qa, publicMux))
+	return withWebsite(open), requireAgentToken(agents.validToken, mux), qa
 }
 
 func logRequests(next http.Handler) http.Handler {

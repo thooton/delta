@@ -48,7 +48,7 @@ func selfTest() error {
 	if err := os.MkdirAll(remarkable.dir, 0o700); err != nil {
 		return err
 	}
-	public, agentHandler := newHandler(hash[:], filesDir, 1<<20, u, nil, remarkable, agents)
+	public, agentHandler, qa := newHandler(hash[:], filesDir, 1<<20, u, nil, remarkable, agents)
 	ts := httptest.NewServer(public)
 	defer ts.Close()
 
@@ -168,6 +168,9 @@ func selfTest() error {
 	}
 	if err := booksSelfTest(expect, token); err != nil {
 		return err
+	}
+	if err := qaSelfTest(expect, token, qa); err != nil {
+		return fmt.Errorf("qa: %w", err)
 	}
 	if err := otpSelfTest(expect, token); err != nil {
 		return err
