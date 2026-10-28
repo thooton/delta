@@ -34,6 +34,11 @@ import (
 // the more recent counts. A device that sends a record unknown here adds it:
 // that is how the phone's first sync brings its decks.
 //
+// A card removed from its deck on a device comes as itself with deleted set,
+// and is kept here as that, a tombstone, so every device drops it at its
+// next sync. Removal wins over any answer, earlier or later: a device that
+// answered the card before it heard of the removal gets the tombstone back.
+//
 // The tablet can't hold the delta token (there is nothing to type it with),
 // so it pairs: it asks for a code, shows it, and the user enters it on the
 // website, which gives the tablet a token that reaches /flashcards/sync and
@@ -101,6 +106,8 @@ type flashCard struct {
 	Intro      int64    `json:"intro"`
 	Mod        int64    `json:"mod"`
 	USN        int64    `json:"usn"`
+	// Removed from its deck on a device: kept only so the others drop it.
+	Deleted bool `json:"deleted,omitempty"`
 }
 
 type flashCollection struct {
@@ -242,7 +249,7 @@ func (f *flashcardService) sync(w http.ResponseWriter, r *http.Request) {
 	}
 	for _, c := range given.Cards {
 		have := f.cards[c.ID]
-		if have != nil && c.Mod <= have.Mod {
+		if have != nil && (have.Deleted || (c.Mod <= have.Mod && !c.Deleted)) {
 			lostCards = append(lostCards, have)
 			continue
 		}
@@ -321,7 +328,7 @@ func (f *flashcardService) editCard(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	have := f.cards[r.PathValue("id")]
-	if have == nil {
+	if have == nil || have.Deleted {
 		writeError(w, http.StatusNotFound, "no such card")
 		return
 	}

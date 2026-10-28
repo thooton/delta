@@ -6,7 +6,8 @@ import (
 )
 
 // flashcardsSelfTest checks the sync (a new card is taken, a later change
-// wins, an earlier one loses and is answered with what is kept) and pairing
+// wins, an earlier one loses and is answered with what is kept, a removal
+// stays) and pairing
 // (a device's token reaches the flashcards and nothing else, until unpaired).
 func flashcardsSelfTest(expect func(desc string, want int, method, path, tok string, body []byte) ([]byte, error), token string) error {
 	type collection struct {
@@ -65,6 +66,25 @@ func flashcardsSelfTest(expect func(desc string, want int, method, path, tok str
 	}
 	if len(got.Cards) != 1 || got.Cards[0].Front != "el perro" || got.Cards[0].State != 1 {
 		return fmt.Errorf("the answer is taken but not the old text: got %+v", got.Cards)
+	}
+	gone := *got.Cards[0]
+	gone.Deleted, gone.Mod = true, 2500
+	if got, err = sync("a device removes the card, though another answered it later", token, collection{USN: got.USN, Cards: []*flashCard{&gone}}); err != nil {
+		return err
+	}
+	if len(got.Cards) != 1 || !got.Cards[0].Deleted {
+		return fmt.Errorf("the removal is taken: got %+v", got.Cards)
+	}
+	answered := stale
+	answered.Mod = 9000
+	if got, err = sync("a device that hasn't heard of the removal answers the card", token, collection{USN: got.USN, Cards: []*flashCard{&answered}}); err != nil {
+		return err
+	}
+	if len(got.Cards) != 1 || !got.Cards[0].Deleted {
+		return fmt.Errorf("the card stays removed: got %+v", got.Cards)
+	}
+	if _, err := expect("a removed card isn't corrected", 404, "PATCH", "/flashcards/cards/c1", token, []byte(`{"front":"perro"}`)); err != nil {
+		return err
 	}
 	if _, err := expect("a bad card is refused", 400, "POST", "/flashcards/sync", token, []byte(`{"cards":[{"id":"x","deck":"d","state":9}]}`)); err != nil {
 		return err
