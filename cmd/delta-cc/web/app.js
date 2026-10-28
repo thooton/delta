@@ -1952,7 +1952,7 @@
 
   const QA_STATUS = { open: 'Open', fixed: 'Fixed', passed: 'For you', declined: 'Declined', grown: 'Grown', reverted: 'Taken out' };
   const QA_APP_STATUS = { waiting: 'Waiting', running: 'Working', done: 'Done', skipped: 'Skipped' };
-  const QA_ROLE = { spec: 'Writing its spec', explore: 'Exploring', fix: 'Fixing', refactor: 'Refactoring' };
+  const QA_ROLE = { spec: 'writing its spec', explore: 'exploring', fix: 'fixing', refactor: 'refactoring' };
   const qaOpen = new Set(); // apps whose findings are shown
   let qaTimer = 0;
   let qaRunning = null;
@@ -2008,7 +2008,7 @@
     const rows = [];
     for (const j of r.jobs || []) {
       if (j.status !== 'running') continue;
-      const what = (QA_ROLE[j.role] || j.role) + ' ' + (j.app ? appLabel(j.app) : j.repo);
+      const what = (j.app ? appLabel(j.app) : j.repo) + ': ' + (QA_ROLE[j.role] || j.role);
       const actions = el('span', { class: 'actions' });
       if (j.session) actions.append(el('button', { type: 'button', class: 'button', title: 'See what the agent is doing', onclick: () => { location.hash = '#/s/' + j.session; } }, el('span', {}, 'Open chat')));
       rows.push(el('div', { class: 'row' }, el('span', { class: 'icon' }, icon('refresh')),
