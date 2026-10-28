@@ -26,7 +26,7 @@ func newTestQA(t *testing.T) *qaService {
 func TestQAScheduleOncePerNight(t *testing.T) {
 	q := newTestQA(t)
 	loc, _ := time.LoadLocation(qaDefaultZone)
-	now := time.Date(2026, 10, 28, 1, 59, 0, 0, loc)
+	now := time.Date(2026, 10, 28, qaDefaultHour-1, 59, 0, 0, loc)
 	q.now = func() time.Time { return now }
 	q.schedule(context.Background())
 	if len(q.state.Runs) != 0 {
