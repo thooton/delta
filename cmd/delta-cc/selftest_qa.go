@@ -132,8 +132,18 @@ func qaSelfTest(expect expectFunc, token string, qa *qaService) error {
 	if _, err := expect("the device token reaches only the relay", 403, "GET", "/files", device, nil); err != nil {
 		return err
 	}
+	// Late emulators take back the apps skipped for want of them.
+	qa.mu.Lock()
+	qa.runLocked(run.ID).Apps[2].Status, qa.runLocked(run.ID).Apps[2].Why = "skipped", qaNoEmulators
+	qa.mu.Unlock()
 	if _, err := expect("the emulators say hello", 200, "POST", "/qa/device/hello", device, body(map[string]any{"runner": "r1", "run": run.ID, "serials": []string{"emulator-5554"}})); err != nil {
 		return err
+	}
+	qa.mu.Lock()
+	back := qa.runLocked(run.ID).Apps[2].Status == "waiting"
+	qa.mu.Unlock()
+	if !back {
+		return errors.New("an app skipped for want of emulators didn't get them back when they came")
 	}
 	qa.step(ctx)
 	explore := key("explore", "sonim/list")

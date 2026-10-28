@@ -37,6 +37,10 @@ const (
 	qaDeviceWait  = 45 * time.Minute // for the emulators to come up
 	qaWorkflow    = "qa-devices.yml" // in sonim
 	qaEnvironment = "Delta QA "
+	// Why a phone app was skipped when the emulators didn't connect in time.
+	// Emulators that connect later, while the run is still on its apps,
+	// take them back (qaDevices.hello).
+	qaNoEmulators = "The emulators didn't come up."
 )
 
 // qaSetup is the QA sessions' environment's setup script: the delta CLI, as
@@ -262,8 +266,10 @@ func (q *qaService) step(ctx context.Context) {
 						continue
 					}
 					if !q.devices.lease(run.ID, ra.App) {
-						if now.Sub(run.Dispatch) > qaDeviceWait && !q.devices.any(run.ID) {
-							q.settleAppLocked(ra, "skipped", "The emulators didn't come up.")
+						// Dispatch is set once GitHub has taken the dispatch; until
+						// then the emulators haven't even been asked for.
+						if !run.Dispatch.IsZero() && now.Sub(run.Dispatch) > qaDeviceWait && !q.devices.any(run.ID) {
+							q.settleAppLocked(ra, "skipped", qaNoEmulators)
 						}
 						continue
 					}

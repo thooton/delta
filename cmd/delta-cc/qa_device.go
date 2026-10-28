@@ -192,6 +192,15 @@ func (d *qaDevices) hello(w http.ResponseWriter, r *http.Request) {
 	d.q.mu.Lock()
 	running := d.q.runningLocked()
 	live := running != nil && running.ID == req.Run && running.Stage == "apps"
+	if live {
+		// Apps skipped because the emulators were late get them after all.
+		for i := range running.Apps {
+			if a := &running.Apps[i]; a.Status == "skipped" && a.Why == qaNoEmulators {
+				a.Status, a.Why = "waiting", ""
+			}
+		}
+		d.q.saveLocked()
+	}
 	d.q.mu.Unlock()
 	if !live {
 		writeJSON(w, http.StatusOK, map[string]any{"quit": true})
