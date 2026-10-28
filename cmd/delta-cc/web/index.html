@@ -32,6 +32,7 @@
   <symbol id="i-file" viewBox="0 0 20 20"><path d="M11 3.5H6.25A1.75 1.75 0 0 0 4.5 5.25v9.5a1.75 1.75 0 0 0 1.75 1.75h7.5a1.75 1.75 0 0 0 1.75-1.75V8M11 3.5 15.5 8M11 3.5V8h4.5" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/></symbol>
   <symbol id="i-signout" viewBox="0 0 20 20"><path d="M8 4.5H5.75A1.75 1.75 0 0 0 4 6.25v7.5a1.75 1.75 0 0 0 1.75 1.75H8M12 6.5 15.5 10 12 13.5M15.5 10H8" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></symbol>
   <symbol id="i-tablet" viewBox="0 0 20 20"><rect x="4.5" y="2.75" width="11" height="14.5" rx="2" fill="none" stroke="currentColor" stroke-width="1.5"/><path d="M7.5 6.5h5M7.5 9.5h5M7.5 12.5h3" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></symbol>
+  <symbol id="i-qa" viewBox="0 0 20 20"><path d="M10 2.75 15.75 5v4.5c0 3.4-2.4 6.2-5.75 7.75C6.65 15.7 4.25 12.9 4.25 9.5V5z" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/><path d="m7.4 9.9 1.9 1.9 3.4-3.6" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></symbol>
   <symbol id="i-logo" viewBox="0 0 24 24"><path d="M12 4.5 20.5 19h-17Z" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linejoin="round"/></symbol>
 </svg>
 
@@ -56,6 +57,7 @@
       <a class="nav-item" href="#/" data-view="new"><svg><use href="#i-new"/></svg><span>New chat</span></a>
       <a class="nav-item" href="#/files" data-view="files"><svg><use href="#i-files"/></svg><span>Files</span></a>
       <a class="nav-item" href="#/tablet" data-view="tablet"><svg><use href="#i-tablet"/></svg><span>Tablet</span></a>
+      <a class="nav-item" href="#/qa" data-view="qa"><svg><use href="#i-qa"/></svg><span>QA</span></a>
       <a class="nav-item" href="#/accounts" data-view="accounts"><svg><use href="#i-accounts"/></svg><span>Accounts</span></a>
     </nav>
     <div class="section-head">
@@ -141,6 +143,21 @@
         <div id="jobs" class="rows" hidden></div>
         <h2 class="page-section">Documents</h2>
         <div id="tablet" class="rows"></div>
+      </div>
+    </section>
+
+    <section id="view-qa" class="view view-page" hidden>
+      <div class="page">
+        <div class="page-head">
+          <h1>QA</h1>
+          <button type="button" class="button primary" id="qa-run"><span>Run all now</span></button>
+        </div>
+        <p class="page-sub">Every night agents go through each phone and tablet app: one explores it in an emulator and files findings, another fixes what should be fixed and pushes it, and then one refactors each repository. Updates wait in the Updaters until you install them.</p>
+        <div id="qa-schedule" class="qa-schedule"></div>
+        <h2 class="page-section" id="qa-run-head">Latest run</h2>
+        <div id="qa-latest"></div>
+        <h2 class="page-section">Apps</h2>
+        <div id="qa-apps" class="rows"></div>
       </div>
     </section>
 

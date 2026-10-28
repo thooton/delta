@@ -825,3 +825,36 @@ dialog.formats p { margin: 0 0 10px; font-weight: 600; }
 dialog.formats .format { display: block; padding: 4px 0; }
 dialog.formats .format .note { margin-left: 8px; color: var(--muted); font-size: 12px; }
 dialog.formats .actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 12px; }
+
+/* ---------- QA ---------- */
+
+.qa-schedule { display: flex; flex-wrap: wrap; align-items: center; gap: 10px 16px; color: var(--text-2); }
+.qa-schedule label { display: inline-flex; align-items: center; gap: 8px; cursor: pointer; }
+.qa-schedule select { font: inherit; color: var(--text); background: var(--panel); border: 1px solid var(--border-strong); border-radius: 8px; padding: 4px 8px; }
+.qa-schedule .note { color: var(--muted); font-size: 12.5px; }
+.qa-summary { border: 1px solid var(--border); border-radius: 12px; padding: 12px 14px; background: var(--panel); white-space: pre-wrap; line-height: 1.55; }
+.qa-summary .meta { display: block; color: var(--muted); font-size: 12.5px; margin-bottom: 6px; white-space: normal; }
+.qa-progress { margin-top: 10px; }
+.tag { display: inline-block; font-size: 11px; font-weight: 500; color: var(--muted); border: 1px solid var(--border-strong); border-radius: 999px; padding: 0 7px; margin-left: 8px; vertical-align: 1px; }
+.tag.on { color: var(--ok); border-color: var(--ok); }
+.row .label b .tag { font-weight: 500; }
+.qa-findings { border-top: 1px solid var(--border); background: var(--hover); padding: 6px 12px 10px 58px; }
+.qa-finding { padding: 8px 0; border-top: 1px solid var(--border); }
+.qa-finding:first-child { border-top: 0; }
+.qa-finding summary { cursor: pointer; list-style: none; display: flex; gap: 8px; align-items: baseline; }
+.qa-finding summary::-webkit-details-marker { display: none; }
+.qa-finding .st { flex: none; font-size: 11.5px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.03em; color: var(--muted); min-width: 70px; }
+.qa-finding .st.fixed, .qa-finding .st.grown { color: var(--ok); }
+.qa-finding .st.open { color: var(--warn); }
+.qa-finding .st.passed { color: var(--text); }
+.qa-finding .why { color: var(--muted); font-size: 12.5px; margin: 3px 0 0 78px; }
+.qa-finding pre { white-space: pre-wrap; font: 12.5px/1.5 var(--mono); margin: 8px 0 0 78px; color: var(--text-2); }
+.qa-finding .shots { display: flex; gap: 8px; flex-wrap: wrap; margin: 8px 0 0 78px; }
+.qa-finding .shots img { max-width: 240px; max-height: 320px; border: 1px solid var(--border); border-radius: 6px; }
+.qa-finding .verdict { display: flex; gap: 6px; margin: 8px 0 0 78px; }
+.qa-finding .verdict .button.chosen { border-color: var(--text); }
+@media (max-width: 760px) {
+  .qa-findings { padding-left: 12px; }
+  .qa-finding .why, .qa-finding pre, .qa-finding .shots, .qa-finding .verdict { margin-left: 0; }
+  .qa-finding .shots img { max-width: 100%; }
+}

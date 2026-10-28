@@ -37,7 +37,8 @@ import (
 //	DELETE /cloud-accounts/{id}         Remove one.
 //	POST   /cloud-accounts/{id}/token   {"access_token", "expires_at"}. A body of {"refused": <token>} says
 //	                                    the provider turned that token down, so a new one is needed.
-//	GET    /cloud-accounts/{id}/usage   The provider's usage report for the account, as it sends it.
+//	GET    /cloud-accounts/{id}/usage   The account's latest usage report, as the provider sent it (read
+//	                                    every few minutes by watchUsage; X-Usage-Read says when).
 //	ANY    /cloud-accounts/{id}/api/... Relayed to the provider's API with the account's access token,
 //	                                    for the cloud session routes (cloudRelayed). For the website.
 //
@@ -98,6 +99,8 @@ type cloudAccountStore struct {
 
 	mu       sync.Mutex             // the file
 	renewing map[string]*sync.Mutex // one per account, guarded by mu
+	usages   map[string]cloudUsage  // the latest usage report, by account, guarded by mu
+	reading  map[string]*sync.Mutex // one usage read per account at a time, guarded by mu
 }
 
 func newCloudAccountStore(path string) *cloudAccountStore {
@@ -108,6 +111,8 @@ func newCloudAccountStore(path string) *cloudAccountStore {
 		client:   &http.Client{Timeout: 30 * time.Second},
 		streams:  &http.Client{},
 		renewing: map[string]*sync.Mutex{},
+		usages:   map[string]cloudUsage{},
+		reading:  map[string]*sync.Mutex{},
 	}
 }
 
@@ -251,27 +256,22 @@ func (s *cloudAccountStore) token(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *cloudAccountStore) usage(w http.ResponseWriter, r *http.Request) {
-	a, err := s.fresh(r.Context(), r.PathValue("id"), "")
-	if err != nil {
+	id := r.PathValue("id")
+	if _, err := s.find(id); err != nil {
 		writeCloudError(w, err)
 		return
 	}
-	status, body, err := s.api(r.Context(), "/api/oauth/usage", a.AccessToken)
-	if err == nil && status == http.StatusUnauthorized {
-		// Turned down before its time: renew once and ask again.
-		if a, err = s.fresh(r.Context(), a.ID, a.AccessToken); err == nil {
-			status, body, err = s.api(r.Context(), "/api/oauth/usage", a.AccessToken)
-		}
-	}
-	if err != nil {
+	body, at, err := s.latestUsage(r.Context(), id)
+	if errors.Is(err, errCloudRejected) {
 		writeCloudError(w, err)
 		return
-	}
-	if status != http.StatusOK {
-		writeError(w, http.StatusBadGateway, fmt.Sprintf("the usage report answered HTTP %d", status))
+	} else if err != nil {
+		// 503, not 502: the proxy in front replaces a 502's message with its own.
+		writeError(w, http.StatusServiceUnavailable, "no usage report yet: "+err.Error())
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("X-Usage-Read", at.UTC().Format(time.RFC3339))
 	w.Write(body)
 }
 
@@ -620,11 +620,129 @@ func (s *cloudAccountStore) save(accounts []cloudAccount) error {
 // windows. The website reads it under the same name (CREDITS_KEY).
 const cloudCreditsKey = "iguana_necktie"
 
+// Usage: the provider rate-limits its usage reports, so the command center
+// is the only one that asks for them, on a steady schedule (watchUsage), and
+// everything else (the website's Accounts page and rotation, `delta
+// accounts`, pick for transform jobs and QA) gets the latest report it has.
+// However many pages are open or sessions start, the provider sees one read
+// per account every cloudUsageEvery.
+
+// cloudUsage is an account's latest usage report and when it was read.
+type cloudUsage struct {
+	body  []byte
+	at    time.Time
+	retry time.Time // after a failed read, when to try again
+}
+
+const (
+	cloudUsageEvery = 3 * time.Minute
+	cloudUsageRetry = 5 * time.Minute
+	// A report older than this no longer counts.
+	cloudUsageStale = 12 * time.Hour
+)
+
+// watchUsage reads every account's usage every cloudUsageEvery, the
+// accounts spread over the interval.
+func (s *cloudAccountStore) watchUsage() {
+	go func() {
+		for {
+			s.mu.Lock()
+			accounts, _ := s.load()
+			s.mu.Unlock()
+			gap := cloudUsageEvery
+			if len(accounts) > 0 {
+				gap = cloudUsageEvery / time.Duration(len(accounts))
+			}
+			for _, a := range accounts {
+				ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+				s.readUsage(ctx, a.ID, false)
+				cancel()
+				time.Sleep(gap)
+			}
+			if len(accounts) == 0 {
+				time.Sleep(gap)
+			}
+		}
+	}()
+}
+
+// readUsage asks the provider for account id's usage and keeps the report.
+// Unless forced, it doesn't ask again before a failed read's retry time.
+// One read per account at a time (s.reading).
+func (s *cloudAccountStore) readUsage(ctx context.Context, id string, force bool) error {
+	s.mu.Lock()
+	lock := s.reading[id]
+	if lock == nil {
+		lock = &sync.Mutex{}
+		s.reading[id] = lock
+	}
+	known := s.usages[id]
+	s.mu.Unlock()
+	if !force && time.Now().Before(known.retry) {
+		return errors.New("the usage report was turned down; trying again shortly")
+	}
+	lock.Lock()
+	defer lock.Unlock()
+	// Someone else read it while this waited.
+	s.mu.Lock()
+	if u := s.usages[id]; u.at.After(known.at) {
+		s.mu.Unlock()
+		return nil
+	}
+	s.mu.Unlock()
+	a, err := s.fresh(ctx, id, "")
+	if err != nil {
+		return err
+	}
+	status, body, err := s.api(ctx, "/api/oauth/usage", a.AccessToken)
+	if err == nil && status == http.StatusUnauthorized {
+		// Turned down before its time: renew once and ask again.
+		if a, err = s.fresh(ctx, a.ID, a.AccessToken); err == nil {
+			status, body, err = s.api(ctx, "/api/oauth/usage", a.AccessToken)
+		}
+	}
+	if err == nil && status != http.StatusOK {
+		err = fmt.Errorf("the usage report answered HTTP %d", status)
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	u := s.usages[id]
+	if err != nil {
+		u.retry = time.Now().Add(cloudUsageRetry)
+		s.usages[id] = u
+		log.Printf("cloud accounts: %s: %v", id, err)
+		return err
+	}
+	s.usages[id] = cloudUsage{body: body, at: time.Now()}
+	return nil
+}
+
+// latestUsage is account id's latest usage report and when it was read. An
+// account with none yet is read now, once.
+func (s *cloudAccountStore) latestUsage(ctx context.Context, id string) ([]byte, time.Time, error) {
+	s.mu.Lock()
+	u, ok := s.usages[id]
+	s.mu.Unlock()
+	if !ok || u.body == nil {
+		if err := s.readUsage(ctx, id, false); err != nil {
+			return nil, time.Time{}, err
+		}
+		s.mu.Lock()
+		u = s.usages[id]
+		s.mu.Unlock()
+	}
+	if u.body == nil || time.Since(u.at) > cloudUsageStale {
+		return nil, time.Time{}, errors.New("no recent usage report")
+	}
+	return u.body, u.at, nil
+}
+
 // pick returns the account a new session should run on, as the website picks
 // one: the first, in the listed order, with cloud credits left (which carry
 // on past the usage windows), or else the first with room left in both
-// windows. An account whose usage can't be read counts as having room,
-// unless its login is dead.
+// windows, by the latest usage reports (latestUsage). Only when
+// no account is known to have room does one whose usage can't be read at
+// all count as having room, unless its login is dead.
 func (s *cloudAccountStore) pick(ctx context.Context) (string, error) {
 	s.mu.Lock()
 	accounts, err := s.load()
@@ -635,21 +753,21 @@ func (s *cloudAccountStore) pick(ctx context.Context) (string, error) {
 	if len(accounts) == 0 {
 		return "", errors.New("no Claude accounts are set up on the command center; add one with `delta accounts login`")
 	}
-	fallback := ""
+	fallback, unknown := "", ""
 	for _, acct := range accounts {
 		a, err := s.fresh(ctx, acct.ID, "")
 		if errors.Is(err, errCloudRejected) {
 			continue
 		} else if err != nil {
-			if fallback == "" {
-				fallback = acct.ID
+			if unknown == "" {
+				unknown = acct.ID
 			}
 			continue
 		}
-		status, body, err := s.api(ctx, "/api/oauth/usage", a.AccessToken)
-		if err != nil || status != http.StatusOK {
-			if fallback == "" {
-				fallback = a.ID
+		body, _, err := s.latestUsage(ctx, a.ID)
+		if err != nil {
+			if unknown == "" {
+				unknown = a.ID
 			}
 			continue
 		}
@@ -673,6 +791,9 @@ func (s *cloudAccountStore) pick(ctx context.Context) (string, error) {
 	}
 	if fallback != "" {
 		return fallback, nil
+	}
+	if unknown != "" {
+		return unknown, nil
 	}
 	return "", errors.New("every Claude account is at its usage limit")
 }

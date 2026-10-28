@@ -229,6 +229,7 @@ func serve(args []string) {
 	remarkable := newRemarkableStore(*rmData, *rmUser, *rmEnv, *maxUpload)
 	public, agent, qa := newHandler(tokenHash, filesDir, *maxUpload, u, canvas, remarkable, agents)
 	qa.start()
+	qa.cloud.watchUsage()
 	srv := &http.Server{
 		Addr:              *addr,
 		Handler:           logRequests(public),

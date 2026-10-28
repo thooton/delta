@@ -158,7 +158,7 @@ Every endpoint requires the bearer token, except the website's `GET /` and `GET 
 | GET | `/transform/cli` | The transform CLI (linux-amd64). No token needed. |
 | GET | `/transform/fonts/{name}` | One of Microsoft's core font installers (`times32.exe`, `arial32.exe`, `courie32.exe`, `georgi32.exe`, `verdan32.exe`), as Microsoft published them, for transform sessions to install. No token needed. |
 | any | `/github/{host}/{path}` | Relayed to `https://{host}/{path}` with the GitHub token, for `github.com`, `api.github.com`, `uploads.github.com` and `codeload.github.com`. Redirects are passed back, not followed. |
-| GET | `/qa` | Nightly QA's overview, for Tree: `{"settings": {"enabled", "hour", "time_zone"}, "apps": [{"id", "repo", "dir", "phone", "spec", "grow", "explored", "open", "passed", "grown", "last"}], "running", "runs" (the last ten, each with its "summary"), "devices" (whether the device token is set)}`. `?fresh=1` lists the apps from GitHub again. |
+| GET | `/qa` | Nightly QA's overview, for Tree and the website's QA page: `{"settings": {"enabled", "hour", "time_zone"}, "apps": [{"id", "repo", "dir", "phone", "spec", "grow", "explored", "open", "passed", "grown", "last"}], "running", "runs" (the last ten, each with its "summary"), "devices" (whether the device token is set)}`. `?fresh=1` lists the apps from GitHub again. |
 | PUT | `/qa/settings` | Takes `{"enabled"?, "hour"?, "time_zone"?, "server"?}`: the nightly schedule (default on, at 2 in America/Phoenix), and the command center's address as QA sessions reach it (it can't tell itself, behind a proxy and a path; `delta qa setup` and Tree send it). |
 | PUT | `/qa/apps/{repo}/{name}` | Takes `{"grow": bool}`: whether QA may grow features in that app. |
 | POST | `/qa/runs` | Takes `{"apps"?: ["sonim/list", ...], "server"?}` and starts a run now: every app (then the refactors), or those named. 409 while one is running. |
@@ -181,6 +181,8 @@ The `/agent-sessions` routes are on the public listener only. A backup session's
 Running `delta-cc` with no arguments starts the server. By default it listens on `:8080`, stores data in `./data`, and accepts uploads up to 1 GiB; the `-addr`, `-data`, and `-max-upload` flags change these. It also listens on the agent socket, `data/agent-socket/delta.sock` (see [Backup sessions](#backup-sessions)). The server speaks plain HTTP, so run it behind a reverse proxy that handles TLS (Caddy, for example). Otherwise the token travels unencrypted.
 
 ## Cloud accounts
+
+**Usage.** The provider rate-limits its usage reports, so the command center is the only one that asks for them: `watchUsage` reads each account's every three minutes (spread over the interval, backing off five minutes after a refusal), and `GET /cloud-accounts/{id}/usage` (the website's Accounts page and rotation, `delta accounts`) and `pick` (transform jobs, QA) get the latest report it has. However many pages are open or sessions start, the provider sees the same steady reads. `pick` counts an account whose usage can't be read as having room only when no account is known to.
 
 The phone's sessions run on the user's Claude subscriptions (Pro, say), and there can be several. Their logins live only on the command center, in `data/cloud-accounts.json` (mode 0600). The phone holds none: it asks for an access token whenever it needs one.
 
@@ -379,6 +381,8 @@ For each line of the page (found by the OCR model's segmenter, column by column)
 ## Nightly QA
 
 Every night (at 2 in the user's time zone by default; `PUT /qa/settings`), and whenever the user starts one from Tree on the phone (thooton/sonim `tree/`) or an agent runs `delta qa run`, the command center runs QA over the phone apps (thooton/sonim) and the tablet apps (thooton/tablet): agents find what is wrong with each app and fix it, with nobody watching and nothing gated. Fixes go to `master`, and the Updaters offer them; the user installs them when they choose. The code is `cmd/delta-cc/qa*.go`.
+
+**Controls.** The website's QA page (`loadQA` in `web/app.js`) and Tree on the phone show the same thing: the schedule (on/off and the hour), the latest run's summary or, while one goes, its progress with each running job's chat, and every app with its counts, Grow, Run (that app alone) and its findings (detail, screenshots, and 👍/👎 on grown features). Run all now and Cancel run sit at the top.
 
 **The apps** come from the repositories' trees on GitHub (`appsFromTree`): every sonim directory with `android/app/build.gradle` or `app/build.gradle`, and the launcher; every tablet directory with `app/manifest.json`. An app is `<repo>/<dir>`. Each has (or gets) a `SPEC.md` in its directory, which QA tests against.
 

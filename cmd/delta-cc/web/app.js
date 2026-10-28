@@ -1694,6 +1694,7 @@
     $('#view-files').hidden = view !== 'files';
     $('#view-tablet').hidden = view !== 'tablet';
     $('#view-accounts').hidden = view !== 'accounts';
+    $('#view-qa').hidden = view !== 'qa';
     document.querySelectorAll('.nav-item[data-view]').forEach((a) => a.classList.toggle('active', a.dataset.view === view));
     $('#app').classList.remove('drawer');
     closeMenus();
@@ -1754,6 +1755,11 @@
       setTitle('');
       topActions(null);
       loadTablet();
+    } else if (hash === 'qa') {
+      show('qa');
+      setTitle('');
+      topActions(null);
+      loadQA();
     } else if (hash === 'accounts') {
       show('accounts');
       setTitle('');
@@ -1938,6 +1944,201 @@
         el('span', { class: 'label' }, el('b', { title: it.name }, it.name), el('small', {}, facts.join(' · '))),
         el('span', { class: 'actions' }, button));
     }));
+  }
+
+  // ---------------------------------------------------------------------
+  // QA: the nightly runs, as Tree on the phone shows them (see qa.go)
+  // ---------------------------------------------------------------------
+
+  const QA_STATUS = { open: 'Open', fixed: 'Fixed', passed: 'For you', declined: 'Declined', grown: 'Grown', reverted: 'Taken out' };
+  const QA_APP_STATUS = { waiting: 'Waiting', running: 'Working', done: 'Done', skipped: 'Skipped' };
+  const QA_ROLE = { spec: 'Writing its spec', explore: 'Exploring', fix: 'Fixing', refactor: 'Refactoring' };
+  const qaOpen = new Set(); // apps whose findings are shown
+  let qaTimer = 0;
+  let qaRunning = null;
+
+  const appLabel = (id) => { const d = id.split('/')[1] || id; return d.charAt(0).toUpperCase() + d.slice(1); };
+
+  async function loadQA() {
+    clearTimeout(qaTimer);
+    let o;
+    try {
+      o = await api('/qa');
+    } catch (e) {
+      $('#qa-apps').replaceChildren(el('div', { class: 'empty' }, "Couldn't read QA: " + e.message));
+      return;
+    }
+    if (state.view !== 'qa') return;
+    qaRunning = o.running;
+    renderQASchedule(o);
+    renderQALatest(o);
+    renderQAApps(o);
+    if (o.running) qaTimer = setTimeout(() => { if (state.view === 'qa') loadQA(); }, 10000);
+  }
+
+  function renderQASchedule(o) {
+    const s = o.settings;
+    const on = el('input', { type: 'checkbox', checked: s.enabled, onchange: () => qaSettings({ enabled: on.checked }) });
+    const hour = el('select', { onchange: () => qaSettings({ hour: Number(hour.value) }) },
+      Array.from({ length: 24 }, (_, h) => el('option', { value: h, selected: h === s.hour },
+        new Date(2000, 0, 1, h).toLocaleTimeString([], { hour: 'numeric' }))));
+    const parts = [el('label', {}, on, 'Every night at'), hour, el('span', { class: 'note' }, s.time_zone)];
+    if (!o.devices) parts.push(el('span', { class: 'note' }, 'Phone apps have no emulators yet: have an agent run delta qa setup.'));
+    $('#qa-schedule').replaceChildren(...parts);
+    const run = $('#qa-run');
+    run.replaceChildren(el('span', {}, o.running ? 'Cancel run' : 'Run all now'));
+    run.classList.toggle('primary', !o.running);
+    run.classList.toggle('danger', !!o.running);
+  }
+
+  function renderQALatest(o) {
+    const box = $('#qa-latest');
+    const r = o.running || (o.runs || [])[0];
+    $('#qa-run-head').hidden = !r;
+    if (!r) { box.replaceChildren(); return; }
+    if (!o.running) {
+      const meta = (r.trigger === 'schedule' ? 'Nightly run' : 'Run') + ' · ' + when(instant(r.created)) + (r.status === 'cancelled' ? ' · cancelled' : '');
+      box.replaceChildren(el('div', { class: 'qa-summary' }, el('span', { class: 'meta' }, meta), r.summary || r.error || ''));
+      return;
+    }
+    const apps = r.apps || [];
+    const done = apps.filter((a) => a.status === 'done' || a.status === 'skipped').length;
+    const stage = r.stage === 'refactor' ? 'Refactoring the repositories' : done + ' of ' + apps.length + ' apps through';
+    const pct = r.stage === 'refactor' ? 100 : Math.round(100 * done / Math.max(1, apps.length));
+    const rows = [];
+    for (const j of r.jobs || []) {
+      if (j.status !== 'running') continue;
+      const what = (QA_ROLE[j.role] || j.role) + ' ' + (j.app ? appLabel(j.app) : j.repo);
+      const actions = el('span', { class: 'actions' });
+      if (j.session) actions.append(el('button', { type: 'button', class: 'button', title: 'See what the agent is doing', onclick: () => { location.hash = '#/s/' + j.session; } }, el('span', {}, 'Open chat')));
+      rows.push(el('div', { class: 'row' }, el('span', { class: 'icon' }, icon('refresh')),
+        el('span', { class: 'label' }, el('b', {}, what), el('small', {}, 'Since ' + when(instant(j.created)))), actions));
+    }
+    box.replaceChildren(
+      el('div', { class: 'qa-summary' },
+        el('span', { class: 'meta' }, (r.trigger === 'schedule' ? 'Nightly run' : 'Run') + ' going since ' + when(instant(r.created))),
+        stage, el('span', { class: 'job-bar' }, el('span', { style: 'width:' + pct + '%' }))),
+      rows.length ? el('div', { class: 'rows qa-progress' }, rows) : '');
+  }
+
+  function renderQAApps(o) {
+    const running = new Map(((o.running && o.running.apps) || []).map((a) => [a.app, a]));
+    const rows = [];
+    for (const a of o.apps) {
+      const facts = [];
+      if (!a.spec) facts.push('No spec yet');
+      if (a.open) facts.push(a.open + ' open');
+      if (a.passed) facts.push(a.passed + ' for you');
+      if (a.grown) facts.push(a.grown + ' grown, awaiting your verdict');
+      const now = running.get(a.id);
+      if (now) facts.push(QA_APP_STATUS[now.status] + (now.why ? ': ' + now.why : ''));
+      else if (a.explored) facts.push('Checked ' + when(instant(a.explored)));
+      const grow = el('button', { type: 'button', class: 'button', title: a.grow ? 'QA may grow features in this app: stop it' : 'Let QA propose and build new features in this app',
+        onclick: () => qaGrow(a, !a.grow) }, el('span', {}, a.grow ? 'Growing' : 'Grow'));
+      const run = el('button', { type: 'button', class: 'button', title: 'Run QA on this app now', onclick: () => qaStart([a.id]) }, el('span', {}, 'Run'));
+      run.disabled = !!o.running;
+      const open = qaOpen.has(a.id);
+      const more = el('button', { type: 'button', class: 'button', onclick: () => { open ? qaOpen.delete(a.id) : qaOpen.add(a.id); loadQA(); } }, el('span', {}, open ? 'Hide' : 'Findings'));
+      const name = el('b', {}, appLabel(a.id), el('span', { class: 'tag' }, a.phone ? 'phone' : 'tablet'));
+      if (a.grow) name.append(el('span', { class: 'tag on' }, 'grows'));
+      rows.push(el('div', { class: 'row' },
+        el('span', { class: 'icon' }, icon(a.phone ? 'file' : 'tablet')),
+        el('span', { class: 'label' }, name, el('small', {}, facts.join(' · ') || 'Nothing found yet')),
+        el('span', { class: 'actions' }, grow, run, more)));
+      if (open) {
+        const box = el('div', { class: 'qa-findings' }, el('div', { class: 'empty' }, 'Loading…'));
+        rows.push(box);
+        qaFindings(a.id, box);
+      }
+    }
+    $('#qa-apps').replaceChildren(...rows);
+  }
+
+  async function qaFindings(app, box) {
+    let list;
+    try {
+      list = await api('/qa/findings?limit=100&app=' + encodeURIComponent(app));
+    } catch (e) {
+      box.replaceChildren(el('div', { class: 'empty' }, e.message));
+      return;
+    }
+    if (!list.length) { box.replaceChildren(el('div', { class: 'empty' }, 'No findings yet.')); return; }
+    box.replaceChildren(...list.map((f) => {
+      const d = el('details', { class: 'qa-finding' },
+        el('summary', {}, el('span', { class: 'st ' + f.status }, QA_STATUS[f.status] || f.status),
+          el('span', {}, f.title, el('span', { class: 'tag' }, f.kind))));
+      if (f.reason) d.append(el('div', { class: 'why' }, f.reason + (f.commit ? ' (' + f.commit.slice(0, 7) + ')' : '')));
+      if (f.status === 'grown') {
+        const pick = (v) => qaVerdict(f, f.verdict === v ? '' : v);
+        d.append(el('div', { class: 'verdict' },
+          el('button', { type: 'button', class: 'button' + (f.verdict === 'up' ? ' chosen' : ''), onclick: () => pick('up') }, el('span', {}, '👍 Keep')),
+          el('button', { type: 'button', class: 'button' + (f.verdict === 'down' ? ' chosen' : ''), onclick: () => pick('down') }, el('span', {}, '👎 Take out'))));
+      }
+      d.addEventListener('toggle', () => {
+        if (!d.open || d.dataset.filled) return;
+        d.dataset.filled = '1';
+        d.append(el('pre', {}, f.detail));
+        if (f.shots && f.shots.length) {
+          const shots = el('div', { class: 'shots' });
+          d.append(shots);
+          for (const name of f.shots) {
+            api('/qa/shots/' + encodeURIComponent(name), { raw: true }).then((r) => r.blob())
+              .then((b) => shots.append(el('img', { src: URL.createObjectURL(b), alt: 'Screenshot' }))).catch(() => {});
+          }
+        }
+      });
+      return d;
+    }));
+  }
+
+  async function qaSettings(change) {
+    try {
+      await api('/qa/settings', { method: 'PUT', json: { ...change, server: SERVER } });
+    } catch (e) {
+      toast(e.message);
+    }
+    loadQA();
+  }
+
+  async function qaGrow(a, grow) {
+    try {
+      await api('/qa/apps/' + a.id.split('/').map(encodeURIComponent).join('/'), { method: 'PUT', json: { grow } });
+      toast(grow ? appLabel(a.id) + ' may grow now' : appLabel(a.id) + ' no longer grows');
+    } catch (e) {
+      toast(e.message);
+    }
+    loadQA();
+  }
+
+  async function qaStart(apps) {
+    try {
+      await api('/qa/runs', { method: 'POST', json: { apps, server: SERVER } });
+      toast(apps.length ? 'QA started on ' + apps.map(appLabel).join(', ') : 'QA started on every app');
+    } catch (e) {
+      toast("Couldn't start: " + e.message);
+    }
+    loadQA();
+  }
+
+  async function qaVerdict(f, verdict) {
+    try {
+      await api('/qa/findings/' + encodeURIComponent(f.id) + '/verdict', { method: 'PUT', json: { verdict } });
+      if (verdict === 'down') toast('The next run takes it out');
+    } catch (e) {
+      toast(e.message);
+    }
+    loadQA();
+  }
+
+  async function qaRunButton() {
+    if (!qaRunning) return qaStart([]);
+    if (!confirm('Cancel the QA run? Its agents stop where they are.')) return;
+    try {
+      await api('/qa/runs/' + encodeURIComponent(qaRunning.id), { method: 'DELETE' });
+    } catch (e) {
+      toast(e.message);
+    }
+    loadQA();
   }
 
   // Flashcards on the tablet and the phone pairs with a code it shows, entered here.
@@ -2200,6 +2401,7 @@
   });
   $('#signout').addEventListener('click', () => { if (confirm('Sign out of Delta on this browser?')) signOut(); });
   $('#pair').addEventListener('submit', pair);
+  $('#qa-run').addEventListener('click', qaRunButton);
   $('#refresh').addEventListener('click', () => listChats().catch((e) => toast(e.message)));
   $('#collapse').addEventListener('click', () => { $('#app').classList.add('collapsed'); stored('delta.collapsed', '1'); });
   $('#expand').addEventListener('click', () => {
