@@ -108,7 +108,7 @@ func newFakeCloud() *fakeCloud {
 	// Environments and sessions, for transform jobs: only for the first
 	// account's organization.
 	scoped := func(w http.ResponseWriter, r *http.Request, beta bool) bool {
-		if who(r) != "first" || r.Header.Get("x-organization-uuid") != "org-1" || beta && r.Header.Get("anthropic-beta") != transformBeta {
+		if who(r) != "first" || r.Header.Get("x-organization-uuid") != "org-1" || beta && r.Header.Get("anthropic-beta") != cloudSessionsBeta {
 			writeError(w, http.StatusUnauthorized, "invalid token")
 			return false
 		}

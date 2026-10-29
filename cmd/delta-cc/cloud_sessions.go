@@ -2,6 +2,8 @@ package main
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -14,7 +16,55 @@ import (
 
 // cloudSessionsBeta is the cloud's beta for environments and sessions, as
 // the app sends it.
-const cloudSessionsBeta = transformBeta
+const cloudSessionsBeta = "ccr-byoc-2025-07-29"
+
+// A cloudEnv is the environment a kind of job runs its sessions in: one
+// per account and command center address, found by its name (prefix and a
+// hash of the setup script and the address), or made.
+type cloudEnv struct {
+	prefix      string // e.g. "Delta QA "
+	description string
+	setup       string // its init_script
+	server      string // the command center's address as sessions reach it
+	// config is the rest of the "config" of an anthropic_cloud environment.
+	config map[string]any
+}
+
+func (e cloudEnv) name() string {
+	sum := sha256.Sum256([]byte(e.setup + "\n" + e.server))
+	return e.prefix + hex.EncodeToString(sum[:4])
+}
+
+// launch starts a session on account in env, titled title, whose first
+// message is prompt, and returns its id.
+func (s *cloudAccountStore) launch(ctx context.Context, account string, env cloudEnv, title, prompt string) (string, error) {
+	org, err := s.organization(ctx, account)
+	if err != nil {
+		return "", err
+	}
+	name := env.name()
+	s.mu.Lock()
+	id := s.envs[account+" "+name]
+	s.mu.Unlock()
+	if id == "" {
+		config := map[string]any{
+			"environment_type": "anthropic",
+			"cwd":              "/home/user",
+			"init_script":      env.setup,
+			"languages":        []any{map[string]string{"name": "python", "version": "3.11"}, map[string]string{"name": "node", "version": "20"}},
+		}
+		for k, v := range env.config {
+			config[k] = v
+		}
+		if id, err = s.environment(ctx, account, org, name, env.description, config); err != nil {
+			return "", err
+		}
+		s.mu.Lock()
+		s.envs[account+" "+name] = id
+		s.mu.Unlock()
+	}
+	return s.startSession(ctx, account, org, id, title, prompt)
+}
 
 // environment finds the account's cloud environment called name, or makes it
 // with config (the "config" of an anthropic_cloud environment).

@@ -101,6 +101,7 @@ type cloudAccountStore struct {
 	renewing map[string]*sync.Mutex // one per account, guarded by mu
 	usages   map[string]cloudUsage  // the latest usage report, by account, guarded by mu
 	reading  map[string]*sync.Mutex // one usage read per account at a time, guarded by mu
+	envs     map[string]string      // environment id by account and name, guarded by mu
 }
 
 func newCloudAccountStore(path string) *cloudAccountStore {
@@ -113,6 +114,7 @@ func newCloudAccountStore(path string) *cloudAccountStore {
 		renewing: map[string]*sync.Mutex{},
 		usages:   map[string]cloudUsage{},
 		reading:  map[string]*sync.Mutex{},
+		envs:     map[string]string{},
 	}
 }
 

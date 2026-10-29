@@ -2,8 +2,6 @@ package main
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"errors"
 	"fmt"
 	"log"
@@ -540,46 +538,20 @@ func (q *qaService) cloudLaunch(ctx context.Context, run *qaRun, j *qaJob, promp
 	if err != nil {
 		return "", "", fmt.Errorf("%w: %v", errQANoRoom, err)
 	}
-	org, err := q.cloud.organization(ctx, account)
-	if err != nil {
-		return account, "", err
-	}
-	env, err := q.environment(ctx, account, org, run.Server)
-	if err != nil {
-		return account, "", err
-	}
-	session, err = q.cloud.startSession(ctx, account, org, env, qaTitle(*j), prompt)
+	// The delta CLI, and the whole network, as the website's sessions have
+	// (they build and test the apps, which reach for package registries of
+	// every kind).
+	session, err = q.cloud.launch(ctx, account, cloudEnv{
+		prefix:      qaEnvironment,
+		description: "Delta QA - the nightly QA of the phone and tablet apps",
+		setup:       qaSetup,
+		server:      run.Server,
+		config: map[string]any{
+			"environment":    map[string]string{"DELTA_SERVER": run.Server},
+			"network_config": map[string]any{"allowed_hosts": []string{"*"}, "allow_default_hosts": true},
+		},
+	}, qaTitle(*j), prompt)
 	return account, session, err
-}
-
-// environment is the account's environment for QA sessions reaching
-// server: the delta CLI, and the whole network, as the website's sessions
-// have (they build and test the apps, which reach for package registries
-// of every kind).
-func (q *qaService) environment(ctx context.Context, account, org, server string) (string, error) {
-	sum := sha256.Sum256([]byte(qaSetup + "\n" + server))
-	name := qaEnvironment + hex.EncodeToString(sum[:4])
-	q.mu.Lock()
-	id := q.envs[account+" "+name]
-	q.mu.Unlock()
-	if id != "" {
-		return id, nil
-	}
-	id, err := q.cloud.environment(ctx, account, org, name, "Delta QA - the nightly QA of the phone and tablet apps", map[string]any{
-		"environment_type": "anthropic",
-		"cwd":              "/home/user",
-		"init_script":      qaSetup,
-		"environment":      map[string]string{"DELTA_SERVER": server},
-		"languages":        []any{map[string]string{"name": "python", "version": "3.11"}, map[string]string{"name": "node", "version": "20"}},
-		"network_config":   map[string]any{"allowed_hosts": []string{"*"}, "allow_default_hosts": true},
-	})
-	if err != nil {
-		return "", err
-	}
-	q.mu.Lock()
-	q.envs[account+" "+name] = id
-	q.mu.Unlock()
-	return id, nil
 }
 
 func (q *qaService) cloudIdle(ctx context.Context, j qaJob) (bool, error) {

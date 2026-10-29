@@ -4,8 +4,6 @@ import (
 	"archive/zip"
 	"bytes"
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -79,8 +77,6 @@ const (
 	transformLife     = 12 * time.Hour // a job not submitted by then has failed
 	maxTransformJobs  = 200
 	transformKeyStart = "delta_transform_"
-	// The cloud's beta for environments and sessions, as the app sends it.
-	transformBeta = "ccr-byoc-2025-07-29"
 )
 
 // transformFormats are the formats a job can make, in the order they are
@@ -181,8 +177,7 @@ type transformService struct {
 	cloud     *cloudAccountStore
 	maxUpload int64
 
-	mu   sync.Mutex        // the file
-	envs map[string]string // environment id by account and name
+	mu sync.Mutex // the file
 }
 
 func newTransformService(dataDir, filesDir string, rm *remarkableStore, cloud *cloudAccountStore, maxUpload int64) *transformService {
@@ -192,7 +187,6 @@ func newTransformService(dataDir, filesDir string, rm *remarkableStore, cloud *c
 		rm:        rm,
 		cloud:     cloud,
 		maxUpload: maxUpload,
-		envs:      map[string]string{},
 	}
 }
 
@@ -523,49 +517,21 @@ func (t *transformService) session(ctx context.Context, name, key, server string
 	if err != nil {
 		return "", "", err
 	}
-	org, err := t.cloud.organization(ctx, account)
-	if err != nil {
-		return account, "", err
-	}
-	env, err := t.environment(ctx, account, org, server)
-	if err != nil {
-		return account, "", err
-	}
-	session, err = t.cloud.startSession(ctx, account, org, env, "Transform: "+name, transformPrompt(name, key, formats))
-	return account, session, err
-}
-
-// environment finds the account's environment for transform jobs reaching
-// server, by name, or makes it.
-func (t *transformService) environment(ctx context.Context, account, org, server string) (string, error) {
-	setup := transformSetup(server)
-	sum := sha256.Sum256([]byte(setup + "\n" + server))
-	name := "Delta transform " + hex.EncodeToString(sum[:4])
-	t.mu.Lock()
-	id := t.envs[account+" "+name]
-	t.mu.Unlock()
-	if id != "" {
-		return id, nil
-	}
 	u, _ := url.Parse(server)
-	id, err := t.cloud.environment(ctx, account, org, name, "Delta transform jobs - reaches the command center and package registries only", map[string]any{
-		"environment_type": "anthropic",
-		"cwd":              "/home/user",
-		"init_script":      setup,
-		"environment":      map[string]string{"TRANSFORM_SERVER": server},
-		"languages":        []any{map[string]string{"name": "python", "version": "3.11"}, map[string]string{"name": "node", "version": "20"}},
-		"network_config": map[string]any{
-			"allowed_hosts":       append([]string{u.Hostname()}, transformHosts...),
-			"allow_default_hosts": false,
+	session, err = t.cloud.launch(ctx, account, cloudEnv{
+		prefix:      "Delta transform ",
+		description: "Delta transform jobs - reaches the command center and package registries only",
+		setup:       transformSetup(server),
+		server:      server,
+		config: map[string]any{
+			"environment": map[string]string{"TRANSFORM_SERVER": server},
+			"network_config": map[string]any{
+				"allowed_hosts":       append([]string{u.Hostname()}, transformHosts...),
+				"allow_default_hosts": false,
+			},
 		},
-	})
-	if err != nil {
-		return "", err
-	}
-	t.mu.Lock()
-	t.envs[account+" "+name] = id
-	t.mu.Unlock()
-	return id, nil
+	}, "Transform: "+name, transformPrompt(name, key, formats))
+	return account, session, err
 }
 
 // ---------------------------------------------------------------------------

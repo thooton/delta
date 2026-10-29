@@ -203,7 +203,6 @@ type qaService struct {
 	idle      func(ctx context.Context, job qaJob) (bool, error)
 	dispatch  func(ctx context.Context, run qaRun, apps []string, runners int) error
 	now       func() time.Time
-	envs      map[string]string
 	appsCache struct {
 		at   time.Time
 		apps []qaApp
@@ -217,7 +216,6 @@ func newQAService(dataDir string, cloud *cloudAccountStore) *qaService {
 		tokenFile: filepath.Join(dataDir, accessTokenFile),
 		wake:      make(chan struct{}, 1),
 		now:       time.Now,
-		envs:      map[string]string{},
 	}
 	q.devices = newQADevices(q)
 	q.listApps = q.githubApps
