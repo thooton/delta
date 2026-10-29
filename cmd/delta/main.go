@@ -446,8 +446,7 @@ func del(name string) error {
 }
 
 // updateCC has the command center install the latest official build of
-// itself. It picks the build; the URL sent along is only for command
-// centers older than that, which required one.
+// itself.
 func updateCC() error {
 	c, err := loadConfig()
 	if err != nil {
@@ -457,8 +456,7 @@ func updateCC() error {
 		Old string `json:"old"`
 		New string `json:"new"`
 	}
-	req := map[string]string{"url": "https://github.com/thooton/delta/releases/download/latest/delta-cc-linux-amd64"}
-	if err := callJSON(c, http.MethodPost, "/update", req, &res); err != nil {
+	if err := callJSON(c, http.MethodPost, "/update", nil, &res); err != nil {
 		return err
 	}
 	fmt.Printf("Installed delta-cc %s (was %s). Waiting for restart...\n", res.New, res.Old)
