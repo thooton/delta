@@ -2092,54 +2092,42 @@
     }));
   }
 
-  async function qaSettings(change) {
+  // act makes a request for a button, toasts what came of it (done when it
+  // worked, if anything; the error, after failed, when it didn't) and then
+  // shows the page again with after.
+  async function act(path, opts, after, done = '', failed = '') {
     try {
-      await api('/qa/settings', { method: 'PUT', json: { ...change, server: SERVER } });
+      await api(path, opts);
+      if (done) toast(done);
     } catch (e) {
-      toast(e.message);
+      toast(failed + e.message);
     }
-    loadQA();
+    after();
   }
 
-  async function qaGrow(a, grow) {
-    try {
-      await api('/qa/apps/' + a.id.split('/').map(encodeURIComponent).join('/'), { method: 'PUT', json: { grow } });
-      toast(grow ? appLabel(a.id) + ' may grow now' : appLabel(a.id) + ' no longer grows');
-    } catch (e) {
-      toast(e.message);
-    }
-    loadQA();
+  function qaSettings(change) {
+    act('/qa/settings', { method: 'PUT', json: { ...change, server: SERVER } }, loadQA);
   }
 
-  async function qaStart(apps) {
-    try {
-      await api('/qa/runs', { method: 'POST', json: { apps, server: SERVER } });
-      toast(apps.length ? 'QA started on ' + apps.map(appLabel).join(', ') : 'QA started on every app');
-    } catch (e) {
-      toast("Couldn't start: " + e.message);
-    }
-    loadQA();
+  function qaGrow(a, grow) {
+    act('/qa/apps/' + a.id.split('/').map(encodeURIComponent).join('/'), { method: 'PUT', json: { grow } }, loadQA,
+      grow ? appLabel(a.id) + ' may grow now' : appLabel(a.id) + ' no longer grows');
   }
 
-  async function qaVerdict(f, verdict) {
-    try {
-      await api('/qa/findings/' + encodeURIComponent(f.id) + '/verdict', { method: 'PUT', json: { verdict } });
-      if (verdict === 'down') toast('The next run takes it out');
-    } catch (e) {
-      toast(e.message);
-    }
-    loadQA();
+  function qaStart(apps) {
+    act('/qa/runs', { method: 'POST', json: { apps, server: SERVER } }, loadQA,
+      apps.length ? 'QA started on ' + apps.map(appLabel).join(', ') : 'QA started on every app', "Couldn't start: ");
+  }
+
+  function qaVerdict(f, verdict) {
+    act('/qa/findings/' + encodeURIComponent(f.id) + '/verdict', { method: 'PUT', json: { verdict } }, loadQA,
+      verdict === 'down' ? 'The next run takes it out' : '');
   }
 
   async function qaRunButton() {
     if (!qaRunning) return qaStart([]);
     if (!confirm('Cancel the QA run? Its agents stop where they are.')) return;
-    try {
-      await api('/qa/runs/' + encodeURIComponent(qaRunning.id), { method: 'DELETE' });
-    } catch (e) {
-      toast(e.message);
-    }
-    loadQA();
+    act('/qa/runs/' + encodeURIComponent(qaRunning.id), { method: 'DELETE' }, loadQA);
   }
 
   // Flashcards on the tablet and the phone pairs with a code it shows, entered here.
@@ -2174,14 +2162,9 @@
     loadDevices();
   }
 
-  async function unpair(d) {
+  function unpair(d) {
     if (!confirm('Unpair “' + d.name + '”? Its Flashcards stops syncing until it is paired again.')) return;
-    try {
-      await api('/flashcards/devices/' + encodeURIComponent(d.id), { method: 'DELETE' });
-    } catch (e) {
-      toast(e.message);
-    }
-    loadDevices();
+    act('/flashcards/devices/' + encodeURIComponent(d.id), { method: 'DELETE' }, loadDevices);
   }
 
   function inTrash(it, byId) {
@@ -2271,14 +2254,9 @@
     loadTablet();
   }
 
-  async function forgetJob(j) {
+  function forgetJob(j) {
     if (j.status === 'running' && !confirm('Cancel transforming “' + j.name + '”? Its agent can no longer submit anything.')) return;
-    try {
-      await api('/transforms/' + encodeURIComponent(j.id), { method: 'DELETE' });
-    } catch (e) {
-      toast(e.message);
-    }
-    loadTablet();
+    act('/transforms/' + encodeURIComponent(j.id), { method: 'DELETE' }, loadTablet);
   }
 
   // ---------------------------------------------------------------------
