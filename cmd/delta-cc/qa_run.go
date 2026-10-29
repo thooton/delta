@@ -17,7 +17,7 @@ import (
 // here is a step from the saved state, which an update or restart resumes.
 
 var (
-	errQABusy       = errors.New("a QA run is already going; wait for it, or cancel it from Tree")
+	errQABusy       = errors.New("a QA run is already going; wait for it, or cancel it from the website's QA page")
 	errQAUnknownApp = errors.New("no such app")
 	errQANoRoom     = errors.New("no room on the Claude accounts")
 )
@@ -116,14 +116,14 @@ func (q *qaService) begin(ctx context.Context, trigger string, only []string) (q
 	q.mu.Lock()
 	run.Server = q.state.Settings.Server
 	if err == nil && run.Server == "" {
-		err = errors.New("the command center doesn't know its own address yet: run `delta qa setup`, or start a run from Tree")
+		err = errors.New("the command center doesn't know its own address yet: run `delta qa setup`, or start a run from the website")
 	}
 	if err == nil && q.runningLocked() != nil {
 		err = errQABusy
 	}
 	if err != nil {
 		if trigger == "schedule" && !errors.Is(err, errQABusy) {
-			// The user sees in Tree that the night's run didn't happen.
+			// The user sees on the website that the night's run didn't happen.
 			run.Status, run.Stage, run.Error, run.Ended = "done", "done", err.Error(), now
 			run.Apps = nil
 			run.Summary = q.summaryLocked(&run)

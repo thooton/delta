@@ -1947,7 +1947,7 @@
   }
 
   // ---------------------------------------------------------------------
-  // QA: the nightly runs, as Tree on the phone shows them (see qa.go)
+  // QA: the nightly runs, the nightly report, findings and controls (see qa.go)
   // ---------------------------------------------------------------------
 
   const QA_STATUS = { open: 'Open', fixed: 'Fixed', passed: 'For you', declined: 'Declined', grown: 'Grown', reverted: 'Taken out' };

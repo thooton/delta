@@ -13,7 +13,7 @@ import (
 
 const qaHelpText = `delta qa: the nightly QA of the phone and tablet apps
 
-Every night (and whenever the user starts one from Tree on the phone) the
+Every night (and whenever the user starts one from the website) the
 command center runs QA: for each app, a cloud session explores it in an
 emulator and files findings, then another fixes what should be fixed and
 pushes it; then one refactors each repository. Each session is a job with

@@ -24,7 +24,7 @@ import (
 // Nightly QA: agents that go through every phone and tablet app, find what
 // is wrong with it, and fix it, without anyone watching.
 //
-// A run (on the schedule, or started from Tree on the phone, for every app
+// A run (on the schedule, or started from the website, for every app
 // or some) takes each app through a pipeline of cloud sessions, each a job
 // with a key of its own (scopeQA):
 //
@@ -42,14 +42,14 @@ import (
 //
 // When every app is through (on a run of every app), one refactor job per
 // repository, one after another, sweeps the code for complexity. Then the
-// run writes the nightly report Tree and the website show.
+// run writes the nightly report the website shows.
 //
 // Nothing is gated: fixes go to master and the Updaters offer them, and the
 // user installs them when they choose. The ledger (findings) remembers what
 // was found and what became of it, so a later run doesn't report the same
 // thing again, and holds the user's 👍/👎 on grown features.
 //
-// Routes, for the delta token (Tree):
+// Routes, for the delta token (the website):
 //
 //	GET    /qa                     The overview: settings, apps, the running run, recent runs.
 //	PUT    /qa/settings            {"enabled"?, "hour"?, "time_zone"?, "server"?}: the nightly schedule,
@@ -94,7 +94,7 @@ type qaSettings struct {
 	Hour     int             `json:"hour"`      // local hour the nightly run starts
 	TimeZone string          `json:"time_zone"` // IANA name
 	Apps     map[string]bool `json:"grow"`      // app id -> may grow
-	// The command center's address as sessions reach it, as Tree or the
+	// The command center's address as sessions reach it, as the website or the
 	// CLI last sent it (setServer).
 	Server string `json:"server,omitempty"`
 }
@@ -473,7 +473,7 @@ func (q *qaService) github(ctx context.Context, method, path string, body any, o
 
 // setServer remembers the command center's address as sessions reach it
 // (it can't tell itself: it sits behind a proxy, under a path), from what
-// Tree or the CLI sends.
+// the website or the CLI sends.
 func (q *qaService) setServer(server string) error {
 	server = strings.TrimRight(strings.TrimSpace(server), "/")
 	if server == "" {
