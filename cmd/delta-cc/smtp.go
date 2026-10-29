@@ -28,7 +28,7 @@ import (
 
 // The SMTP relay: a small SMTP server, on this machine only, that sends what
 // it is given through the user's Gmail, with the Gmail login `delta gmail
-// login` stored (gmail.go). It is for programs that can send mail only over
+// login` stored (logins.go). It is for programs that can send mail only over
 // SMTP, above all rmfakecloud, whose "send by email" on the reMarkable would
 // otherwise need an SMTP password for Gmail, which accounts without app
 // passwords can't have. rmfakecloud is pointed at it in its environment file:

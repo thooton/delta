@@ -106,12 +106,11 @@ func (s *remarkableStore) register(mux *http.ServeMux) {
 }
 
 func registerRemarkableDisabled(mux *http.ServeMux) {
-	mux.HandleFunc("/remarkable", func(w http.ResponseWriter, r *http.Request) {
+	off := func(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusServiceUnavailable, "the reMarkable isn't set up on the command center")
-	})
-	mux.HandleFunc("/remarkable/", func(w http.ResponseWriter, r *http.Request) {
-		writeError(w, http.StatusServiceUnavailable, "the reMarkable isn't set up on the command center")
-	})
+	}
+	mux.HandleFunc("/remarkable", off)
+	mux.HandleFunc("/remarkable/", off)
 }
 
 type remarkableEntry struct {
@@ -350,24 +349,11 @@ func (s *remarkableStore) page(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "pages are numbered from 1")
 		return
 	}
-	it, err := s.find(r.PathValue("id"))
-	if errors.Is(err, errRemarkableMissing) {
-		writeError(w, http.StatusNotFound, err.Error())
-		return
-	} else if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+	id, files, ok := s.documentFiles(w, r)
+	if !ok {
 		return
 	}
-	if it.Type == "folder" {
-		writeError(w, http.StatusBadRequest, "that's a folder; it has no pages")
-		return
-	}
-	files, err := s.readFiles(it.ID)
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
-		return
-	}
-	out := remarkable.RenderPage(it.ID, files, n)
+	out := remarkable.RenderPage(id, files, n)
 	w.Header().Set("X-Pages", strconv.Itoa(out.Pages))
 	if out.Separate {
 		w.Header().Set("X-Handwriting-Only", "true")
@@ -388,24 +374,11 @@ func (s *remarkableStore) page(w http.ResponseWriter, r *http.Request) {
 // internal/remarkable draws it, for the phone's Tablet app to save to
 // the SD card. X-Handwriting-Only is as for page.
 func (s *remarkableStore) pdf(w http.ResponseWriter, r *http.Request) {
-	it, err := s.find(r.PathValue("id"))
-	if errors.Is(err, errRemarkableMissing) {
-		writeError(w, http.StatusNotFound, err.Error())
-		return
-	} else if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+	id, files, ok := s.documentFiles(w, r)
+	if !ok {
 		return
 	}
-	if it.Type == "folder" {
-		writeError(w, http.StatusBadRequest, "that's a folder; it has no pages")
-		return
-	}
-	files, err := s.readFiles(it.ID)
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
-		return
-	}
-	out := remarkable.Render(it.ID, files)
+	out := remarkable.Render(id, files)
 	if out.PDF == nil {
 		writeError(w, http.StatusNotFound, "nothing is written on it, and the tablet lays out its pages itself")
 		return
@@ -416,6 +389,29 @@ func (s *remarkableStore) pdf(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/pdf")
 	w.Header().Set("Content-Length", strconv.Itoa(len(out.PDF)))
 	w.Write(out.PDF)
+}
+
+// documentFiles reads the files of the document the request names, for page
+// and pdf. It answers w itself, and returns false, when it can't.
+func (s *remarkableStore) documentFiles(w http.ResponseWriter, r *http.Request) (string, map[string][]byte, bool) {
+	it, err := s.find(r.PathValue("id"))
+	if errors.Is(err, errRemarkableMissing) {
+		writeError(w, http.StatusNotFound, err.Error())
+		return "", nil, false
+	} else if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return "", nil, false
+	}
+	if it.Type == "folder" {
+		writeError(w, http.StatusBadRequest, "that's a folder; it has no pages")
+		return "", nil, false
+	}
+	files, err := s.readFiles(it.ID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return "", nil, false
+	}
+	return it.ID, files, true
 }
 
 // readFiles reads document id's files into memory, by name, as

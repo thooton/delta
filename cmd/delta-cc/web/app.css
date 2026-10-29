@@ -81,7 +81,7 @@ body {
 button { font: inherit; color: inherit; }
 a { color: inherit; }
 svg { width: 18px; height: 18px; flex: none; }
-code, pre, textarea.mono { font-family: var(--mono); }
+code, pre { font-family: var(--mono); }
 
 /* ---------- Buttons ---------- */
 
