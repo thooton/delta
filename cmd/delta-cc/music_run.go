@@ -270,9 +270,7 @@ func (m *musicService) download(ctx context.Context, engine string, req musicReq
 		return fail(err)
 	}
 	defer done()
-	id := make([]byte, 16)
-	rand.Read(id)
-	job := hex.EncodeToString(id)
+	job := randomHex(16)
 	jobDir := filepath.Join(m.dataDir, musicJobsDir, job)
 	if err := os.MkdirAll(jobDir, 0o700); err != nil {
 		return fail(err)
@@ -624,20 +622,7 @@ func (m *musicService) account(renew bool) (musicAccount, error) {
 		}
 	}
 	acct = newMusicAccount()
-	data, _ := json.MarshalIndent(acct, "", "  ")
-	tmp, err := os.CreateTemp(m.dataDir, ".music-login-*")
-	if err != nil {
-		return acct, err
-	}
-	defer os.Remove(tmp.Name())
-	_, err = tmp.Write(data)
-	if cerr := tmp.Close(); err == nil {
-		err = cerr
-	}
-	if err == nil {
-		err = os.Rename(tmp.Name(), p)
-	}
-	return acct, err
+	return acct, writeJSONFile(p, acct)
 }
 
 // newMusicAccount makes up a login. Usernames are 16 characters from a

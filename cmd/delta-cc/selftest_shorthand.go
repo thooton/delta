@@ -21,7 +21,7 @@ import (
 // that a reading reaches the worker, with its image and region, and its
 // result or error comes back to the caller, who submits it and then polls
 // for it.
-func shorthandSelfTest(expect func(desc string, want int, method, path, tok string, body []byte) ([]byte, error), base, token, dir string) error {
+func shorthandSelfTest(expect expectFunc, base, token, dir string) error {
 	png := []byte("\x89PNG\r\n\x1a\n a page of shorthand")
 	const secret = shorthandSecretStart + "selftest"
 	steps := []struct {

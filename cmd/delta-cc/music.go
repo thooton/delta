@@ -6,7 +6,6 @@ import (
 	"io"
 	"net/http"
 	"os"
-	"path/filepath"
 	"strings"
 )
 
@@ -121,20 +120,7 @@ func (m *musicConfig) put(w http.ResponseWriter, r *http.Request) {
 	if !strings.HasSuffix(text, "\n") {
 		text += "\n"
 	}
-	tmp, err := os.CreateTemp(filepath.Dir(m.path), ".music-*")
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
-		return
-	}
-	defer os.Remove(tmp.Name())
-	_, err = io.WriteString(tmp, text)
-	if cerr := tmp.Close(); err == nil {
-		err = cerr
-	}
-	if err == nil {
-		err = os.Rename(tmp.Name(), m.path)
-	}
-	if err != nil {
+	if err := writePrivateFile(m.path, []byte(text)); err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}

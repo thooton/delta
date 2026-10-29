@@ -156,7 +156,7 @@ func newFakeCloud() *fakeCloud {
 // by looking up a still-good access token), listed without their logins,
 // handed out as access tokens that are renewed exactly when they must be,
 // asked for usage and removed, and that bad and rejected logins are refused.
-func cloudSelfTest(expect func(desc string, want int, method, path, tok string, body []byte) ([]byte, error), base, token, dir string, fake *fakeCloud) error {
+func cloudSelfTest(expect expectFunc, base, token, dir string, fake *fakeCloud) error {
 	if _, err := expect("cloud accounts require the token", 401, "GET", "/cloud-accounts", "", nil); err != nil {
 		return err
 	}
@@ -312,7 +312,7 @@ func cloudRelaySelfTest(base, token string, fake *fakeCloud) error {
 
 // conversationsSelfTest checks that a carried conversation can be stored,
 // listed by its title and read back whole, and that bad ids find nothing.
-func conversationsSelfTest(expect func(desc string, want int, method, path, tok string, body []byte) ([]byte, error), token string) error {
+func conversationsSelfTest(expect expectFunc, token string) error {
 	if _, err := expect("conversations require the token", 401, "GET", "/conversations", "", nil); err != nil {
 		return err
 	}

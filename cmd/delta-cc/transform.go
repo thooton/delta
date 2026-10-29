@@ -4,7 +4,6 @@ import (
 	"archive/zip"
 	"bytes"
 	"context"
-	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -214,11 +213,6 @@ func (t *transformService) register(mux *http.ServeMux) {
 
 type transformJobKey struct{}
 
-func keyHash(key string) string {
-	sum := sha256.Sum256([]byte(key))
-	return hex.EncodeToString(sum[:])
-}
-
 // job returns the running job whose key this is.
 func (t *transformService) job(key string) (string, bool) {
 	if t == nil || !strings.HasPrefix(key, transformKeyStart) {
@@ -285,23 +279,7 @@ func (t *transformService) save(jobs []transformJob) error {
 	if len(jobs) > maxTransformJobs {
 		jobs = jobs[:maxTransformJobs]
 	}
-	data, err := json.MarshalIndent(jobs, "", "  ")
-	if err != nil {
-		return err
-	}
-	tmp, err := os.CreateTemp(filepath.Dir(t.path), ".transforms-*")
-	if err != nil {
-		return err
-	}
-	defer os.Remove(tmp.Name())
-	if _, err := tmp.Write(data); err != nil {
-		tmp.Close()
-		return err
-	}
-	if err := tmp.Close(); err != nil {
-		return err
-	}
-	return os.Rename(tmp.Name(), t.path)
+	return writeJSONFile(t.path, jobs)
 }
 
 func (t *transformService) get(id string) (*transformJob, error) {
@@ -443,13 +421,8 @@ func (t *transformService) start(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// The id is listed; the key isn't, so they share nothing.
-	buf := make([]byte, 40)
-	if _, err := rand.Read(buf); err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
-		return
-	}
-	key := transformKeyStart + hex.EncodeToString(buf[:32])
-	id := "transform_" + hex.EncodeToString(buf[32:])
+	key := transformKeyStart + randomHex(32)
+	id := "transform_" + randomHex(8)
 	now := time.Now().UTC()
 	if _, err := t.change(id, func(j *transformJob) {
 		*j = transformJob{ID: id, Document: doc.ID, Name: doc.Name, Status: "running", Created: now, Formats: formats, KeyHash: keyHash(key)}

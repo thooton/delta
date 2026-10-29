@@ -16,6 +16,10 @@ import (
 	"time"
 )
 
+// expectFunc makes a request to the handler under test and checks its
+// status, returning the body.
+type expectFunc func(desc string, want int, method, path, tok string, body []byte) ([]byte, error)
+
 // selfTest runs the real handler against a temporary data directory and
 // checks the basics. An update only installs a binary whose selfTest passes,
 // so keep it covering anything that must never break.
@@ -166,7 +170,10 @@ func selfTest() error {
 	if err := musicSelfTest(expect, token, dir); err != nil {
 		return err
 	}
-	if err := booksSelfTest(expect, token); err != nil {
+	if err := loginSelfTest(expect, token, booksLoginStore(dir),
+		[]string{`{"email":"a@b.c"}`, `{"email":"ab","password":"x"}`},
+		booksLogin{Email: "reader@example.com", Password: "p@ss word"},
+	); err != nil {
 		return err
 	}
 	if err := qaSelfTest(expect, token, qa); err != nil {
@@ -178,7 +185,11 @@ func selfTest() error {
 	if err := flashcardsSelfTest(expect, token); err != nil {
 		return fmt.Errorf("flashcards: %w", err)
 	}
-	if err := gmailSelfTest(expect, token, dir); err != nil {
+	if err := loginSelfTest(expect, token, gmailLoginStore(dir),
+		[]string{`{"client_id":"a","client_secret":"b","refresh_token":"c"}`, `{"client_id":"a","client_secret":"b","email":"me@gmail.com"}`},
+		gmailLogin{ClientID: "id-1.apps.googleusercontent.com", ClientSecret: "secret-1", RefreshToken: "1//first", Email: "me@gmail.com"},
+		gmailLogin{ClientID: "id-2.apps.googleusercontent.com", ClientSecret: "secret-2", RefreshToken: "1//second", Email: "other@gmail.com"},
+	); err != nil {
 		return err
 	}
 	if err := cloudSelfTest(expect, ts.URL, token, dir, fake); err != nil {
@@ -218,7 +229,7 @@ func selfTest() error {
 // replaced and reset, and never stores a login; that bad downloads and
 // unknown jobs are refused; that re-login replaces the account; and that the
 // bundled engine (if this build has one) runs.
-func musicSelfTest(expect func(desc string, want int, method, path, tok string, body []byte) ([]byte, error), token, dir string) error {
+func musicSelfTest(expect expectFunc, token, dir string) error {
 	steps := []struct {
 		desc, method, path string
 		want               int
@@ -326,88 +337,52 @@ func musicEngineSelfTest(m *musicService) error {
 	return nil
 }
 
-// booksSelfTest checks that the book login can be set, read back and removed,
-// and that incomplete logins are rejected.
-func booksSelfTest(expect func(desc string, want int, method, path, tok string, body []byte) ([]byte, error), token string) error {
-	if _, err := expect("book login requires the token", 401, "GET", "/books-login", "", nil); err != nil {
+// loginSelfTest checks that a loginStore's login can be set, read back,
+// replaced and removed, that it is private, and that incomplete and
+// oversized logins are rejected.
+func loginSelfTest[T comparable](expect expectFunc, token string, s *loginStore[T], bad []string, logins ...T) error {
+	if _, err := expect(s.route+" requires the token", 401, "GET", s.route, "", nil); err != nil {
 		return err
 	}
-	if _, err := expect("no book login yet", 404, "GET", "/books-login", token, nil); err != nil {
+	if _, err := expect(s.route+" is unset", 404, "GET", s.route, token, nil); err != nil {
 		return err
 	}
-	for _, bad := range []string{"", "nope", `{"email":"a@b.c"}`, `{"email":"ab","password":"x"}`} {
-		if _, err := expect(fmt.Sprintf("book login %q is rejected", bad), 400, "PUT", "/books-login", token, []byte(bad)); err != nil {
+	for _, b := range append(bad, "", "nope") {
+		if _, err := expect(fmt.Sprintf("%s %q is rejected", s.route, b), 400, "PUT", s.route, token, []byte(b)); err != nil {
 			return err
 		}
 	}
-	login := booksLogin{Email: "reader@example.com", Password: "p@ss word"}
-	body, _ := json.Marshal(login)
-	if _, err := expect("set book login", 200, "PUT", "/books-login", token, body); err != nil {
+	if _, err := expect("oversized "+s.route+" is rejected", 413, "PUT", s.route, token, make([]byte, s.max+1)); err != nil {
 		return err
 	}
-	data, err := expect("read book login", 200, "GET", "/books-login", token, nil)
-	if err != nil {
-		return err
-	}
-	var got booksLogin
-	if err := json.Unmarshal(data, &got); err != nil || got != login {
-		return fmt.Errorf("read book login: got %s", data)
-	}
-	if _, err := expect("remove book login", 200, "DELETE", "/books-login", token, nil); err != nil {
-		return err
-	}
-	_, err = expect("book login after removal", 404, "GET", "/books-login", token, nil)
-	return err
-}
-
-// gmailSelfTest checks that the Gmail login can be set, read back, replaced
-// and removed, that it is private, and that incomplete logins are rejected.
-func gmailSelfTest(expect func(desc string, want int, method, path, tok string, body []byte) ([]byte, error), token, dir string) error {
-	if _, err := expect("gmail login requires the token", 401, "GET", "/gmail-login", "", nil); err != nil {
-		return err
-	}
-	if _, err := expect("no gmail login yet", 404, "GET", "/gmail-login", token, nil); err != nil {
-		return err
-	}
-	for _, bad := range []string{"", "nope", `{"client_id":"a","client_secret":"b","refresh_token":"c"}`, `{"client_id":"a","client_secret":"b","email":"me@gmail.com"}`} {
-		if _, err := expect(fmt.Sprintf("gmail login %q is rejected", bad), 400, "PUT", "/gmail-login", token, []byte(bad)); err != nil {
-			return err
-		}
-	}
-	if _, err := expect("oversized gmail login is rejected", 413, "PUT", "/gmail-login", token, make([]byte, maxGmailLogin+1)); err != nil {
-		return err
-	}
-	for _, login := range []gmailLogin{
-		{ClientID: "id-1.apps.googleusercontent.com", ClientSecret: "secret-1", RefreshToken: "1//first", Email: "me@gmail.com"},
-		{ClientID: "id-2.apps.googleusercontent.com", ClientSecret: "secret-2", RefreshToken: "1//second", Email: "other@gmail.com"},
-	} {
+	for _, login := range logins {
 		body, _ := json.Marshal(login)
-		if _, err := expect("set gmail login", 200, "PUT", "/gmail-login", token, body); err != nil {
+		if _, err := expect("set "+s.route, 200, "PUT", s.route, token, body); err != nil {
 			return err
 		}
-		data, err := expect("read gmail login", 200, "GET", "/gmail-login", token, nil)
+		data, err := expect("read "+s.route, 200, "GET", s.route, token, nil)
 		if err != nil {
 			return err
 		}
-		var got gmailLogin
+		var got T
 		if err := json.Unmarshal(data, &got); err != nil || got != login {
-			return fmt.Errorf("read gmail login: got %s", data)
+			return fmt.Errorf("read %s: got %s", s.route, data)
 		}
 	}
-	if info, err := os.Stat(filepath.Join(dir, gmailLoginFile)); err != nil || info.Mode().Perm() != 0o600 {
-		return fmt.Errorf("gmail login file: %v %v", info, err)
+	if info, err := os.Stat(s.path); err != nil || info.Mode().Perm() != 0o600 {
+		return fmt.Errorf("%s: %v %v", s.path, info, err)
 	}
-	if _, err := expect("remove gmail login", 200, "DELETE", "/gmail-login", token, nil); err != nil {
+	if _, err := expect("remove "+s.route, 200, "DELETE", s.route, token, nil); err != nil {
 		return err
 	}
-	_, err := expect("gmail login after removal", 404, "GET", "/gmail-login", token, nil)
+	_, err := expect(s.route+" after removal", 404, "GET", s.route, token, nil)
 	return err
 }
 
 // secretSelfTest checks that a secretStore's secret can be set and replaced,
 // that malformed values are rejected, and that it reads back, unless it is
 // write-only, in which case no request can read it.
-func secretSelfTest(expect func(desc string, want int, method, path, tok string, body []byte) ([]byte, error), token string, s *secretStore, values ...string) error {
+func secretSelfTest(expect expectFunc, token string, s *secretStore, values ...string) error {
 	if _, err := expect(s.route+" requires the token", 401, "PUT", s.route, "", []byte(values[0])); err != nil {
 		return err
 	}
@@ -459,7 +434,7 @@ func secretSelfTest(expect func(desc string, want int, method, path, tok string,
 // otpSelfTest checks that two-factor accounts can be added (one, then a list
 // with a duplicate in it), are tidied and given defaults, are refused when
 // malformed, can be changed, and can be removed.
-func otpSelfTest(expect func(desc string, want int, method, path, tok string, body []byte) ([]byte, error), token string) error {
+func otpSelfTest(expect expectFunc, token string) error {
 	if _, err := expect("two-factor accounts require the token", 401, "GET", "/otp", "", nil); err != nil {
 		return err
 	}

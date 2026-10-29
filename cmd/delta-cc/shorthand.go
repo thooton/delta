@@ -2,10 +2,8 @@ package main
 
 import (
 	"bytes"
-	"crypto/rand"
 	"crypto/sha256"
 	"crypto/subtle"
-	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -168,17 +166,9 @@ func genShorthandSecret(args []string) {
 	fs := flag.NewFlagSet("shorthand-secret", flag.ExitOnError)
 	dataDir := fs.String("data", "data", "data directory")
 	fs.Parse(args)
-	if err := os.MkdirAll(*dataDir, 0o700); err != nil {
-		log.Fatal(err)
-	}
-	buf := make([]byte, 32)
-	if _, err := rand.Read(buf); err != nil {
-		log.Fatal(err)
-	}
-	secret := shorthandSecretStart + base64.RawURLEncoding.EncodeToString(buf)
-	sum := sha256.Sum256([]byte(secret))
-	path := filepath.Join(*dataDir, shorthandSecretFile)
-	if err := writePrivateFile(path, []byte(hex.EncodeToString(sum[:])+"\n")); err != nil {
+	secret := shorthandSecretStart + randomToken(32)
+	path, err := writeKeyHash(*dataDir, shorthandSecretFile, secret)
+	if err != nil {
 		log.Fatal(err)
 	}
 	fmt.Fprintf(os.Stderr, "The shorthand worker's secret hash is in %s; it takes effect at once, and any earlier secret stops working.\n", path)
@@ -415,9 +405,7 @@ func (s *shorthandService) reload(w http.ResponseWriter, r *http.Request) {
 // enqueue gives job an id and queues it for the worker; a reading is kept
 // in s.reads too. It answers w itself, and returns false, when it can't.
 func (s *shorthandService) enqueue(w http.ResponseWriter, job *shorthandJob) bool {
-	id := make([]byte, 12)
-	rand.Read(id)
-	job.ID = hex.EncodeToString(id)
+	job.ID = randomHex(12)
 	job.created = time.Now()
 	s.mu.Lock()
 	defer s.mu.Unlock()

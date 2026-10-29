@@ -606,8 +606,7 @@ func (s *cloudAccountStore) save(accounts []cloudAccount) error {
 	if accounts == nil {
 		accounts = []cloudAccount{}
 	}
-	data, _ := json.MarshalIndent(accounts, "", "  ")
-	return writePrivateFile(s.path, append(data, '\n'))
+	return writeJSONFile(s.path, accounts)
 }
 
 // ---------------------------------------------------------------------------

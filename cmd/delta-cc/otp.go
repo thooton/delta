@@ -1,9 +1,7 @@
 package main
 
 import (
-	"crypto/rand"
 	"encoding/base32"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -129,9 +127,7 @@ func (o *otpStore) add(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusBadRequest, fmt.Sprintf("at most %d accounts are kept", maxOTPAccounts))
 			return
 		}
-		id := make([]byte, 8)
-		rand.Read(id)
-		a.ID = hex.EncodeToString(id)
+		a.ID = randomHex(8)
 		a.Added = now
 		accounts = append(accounts, a)
 		have[a.Secret] = true
@@ -244,11 +240,7 @@ func (o *otpStore) load() ([]otpAccount, error) {
 }
 
 func (o *otpStore) save(accounts []otpAccount) error {
-	out, err := json.MarshalIndent(accounts, "", "  ")
-	if err != nil {
-		return err
-	}
-	return writePrivateFile(o.path, append(out, '\n'))
+	return writeJSONFile(o.path, accounts)
 }
 
 // normalizeOTP fills in the defaults and tidies what was given, or says, for

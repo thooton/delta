@@ -453,16 +453,14 @@ func describeModelError(err error) string {
 // zenSessionID makes an OpenCode session id as the CLI does: "ses_", then
 // (Date.now() * 0x1000 + counter) bit-inverted, as 6 bytes of hex, then 14
 // random base62 characters.
-func zenSessionID() (string, error) {
+func zenSessionID() string {
 	const base62 = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz"
 	now := ^(uint64(time.Now().UnixMilli())*0x1000 + 1)
 	id := fmt.Sprintf("ses_%012x", now&(1<<48-1))
 	buf := make([]byte, 14)
-	if _, err := rand.Read(buf); err != nil {
-		return "", err
-	}
+	rand.Read(buf)
 	for _, b := range buf {
 		id += string(base62[int(b)%62])
 	}
-	return id, nil
+	return id
 }

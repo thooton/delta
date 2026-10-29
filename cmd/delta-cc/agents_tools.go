@@ -530,10 +530,7 @@ func (s *agentSession) toolBash(ctx context.Context, args toolArgs) (any, error)
 	if strings.TrimSpace(args.Command) == "" {
 		return nil, errors.New("no command was given")
 	}
-	id, err := randomUUID()
-	if err != nil {
-		return nil, err
-	}
+	id := randomUUID()
 	pidFile := "/tmp/.delta-exec-" + id
 	f, err := os.CreateTemp(s.dir, "output-*")
 	if err != nil {

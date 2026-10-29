@@ -193,8 +193,6 @@ func newTestAgents(dir string) (*agentService, error) {
 	})
 }
 
-type expectFunc func(desc string, want int, method, path, tok string, body []byte) ([]byte, error)
-
 // agentsSelfTest runs a backup session through its life (create, a reply,
 // a second message, delete) and checks what its token can reach.
 func agentsSelfTest(expect expectFunc, token, dir string, agents *agentService, agentHandler http.Handler, publicURL string) error {
@@ -577,10 +575,7 @@ func checkContainerSetup(dir string, agents *agentService) error {
 // checkZenSessionID checks that session ids come out as the OpenCode CLI
 // makes them (agents_model.go).
 func checkZenSessionID() error {
-	id, err := zenSessionID()
-	if err != nil {
-		return err
-	}
+	id := zenSessionID()
 	if !regexp.MustCompile(`^ses_[0-9a-f]{12}[0-9A-Za-z]{14}$`).MatchString(id) {
 		return fmt.Errorf("zenSessionID: malformed %q", id)
 	}

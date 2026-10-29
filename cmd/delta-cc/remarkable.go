@@ -6,7 +6,6 @@ import (
 	"bytes"
 	"crypto/hmac"
 	"crypto/pbkdf2"
-	"crypto/rand"
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
@@ -469,22 +468,7 @@ func (s *remarkableStore) writeBlob(name string, data []byte) (remarkableEntry, 
 	hash := hex.EncodeToString(sum[:])
 	path := filepath.Join(s.dir, hash)
 	if _, err := os.Stat(path); err != nil {
-		tmp, err := os.CreateTemp(s.dir, ".delta-*")
-		if err != nil {
-			return remarkableEntry{}, err
-		}
-		_, err = tmp.Write(data)
-		if cerr := tmp.Close(); err == nil {
-			err = cerr
-		}
-		if err == nil {
-			err = os.Chmod(tmp.Name(), 0o644)
-		}
-		if err == nil {
-			err = os.Rename(tmp.Name(), path)
-		}
-		if err != nil {
-			os.Remove(tmp.Name())
+		if err := writeFileAtomic(path, data, 0o644); err != nil {
 			return remarkableEntry{}, err
 		}
 	}
@@ -517,24 +501,7 @@ func (s *remarkableStore) writeIndex(entries []remarkableEntry) (string, error) 
 	if _, err := os.Stat(path); err == nil {
 		return hash, nil
 	}
-	tmp, err := os.CreateTemp(s.dir, ".delta-*")
-	if err != nil {
-		return "", err
-	}
-	_, err = tmp.Write(remarkableIndexText(entries))
-	if cerr := tmp.Close(); err == nil {
-		err = cerr
-	}
-	if err == nil {
-		err = os.Chmod(tmp.Name(), 0o644)
-	}
-	if err == nil {
-		err = os.Rename(tmp.Name(), path)
-	}
-	if err != nil {
-		os.Remove(tmp.Name())
-	}
-	return hash, err
+	return hash, writeFileAtomic(path, remarkableIndexText(entries), 0o644)
 }
 
 // docEntry writes a document's index and returns its root entry.
@@ -677,14 +644,6 @@ func rmfakecloudToken(secret, user string) (string, error) {
 	return unsigned + "." + enc.EncodeToString(mac.Sum(nil)), nil
 }
 
-func newRemarkableID() string {
-	b := make([]byte, 16)
-	rand.Read(b)
-	b[6] = b[6]&0x0f | 0x40
-	b[8] = b[8]&0x3f | 0x80
-	return fmt.Sprintf("%x-%x-%x-%x-%x", b[0:4], b[4:6], b[6:8], b[8:10], b[10:])
-}
-
 func remarkableNow() string { return strconv.FormatInt(time.Now().UnixMilli(), 10) }
 
 // newMetadata is a new document's or folder's metadata, as rmfakecloud
@@ -788,7 +747,7 @@ func (s *remarkableStore) add(name, parent string, data []byte) (string, error) 
 	default:
 		return "", errRemarkableKind
 	}
-	id := newRemarkableID()
+	id := randomUUID()
 	var files []remarkableEntry
 	for _, f := range []struct {
 		name string
@@ -813,7 +772,7 @@ func (s *remarkableStore) mkdir(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, `expected {"name": ..., "parent": ...}`)
 		return
 	}
-	id := newRemarkableID()
+	id := randomUUID()
 	meta, err := s.writeBlob(id+".metadata", newMetadata(req.Name, "CollectionType", req.Parent))
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())

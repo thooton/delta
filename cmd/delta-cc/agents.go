@@ -337,11 +337,7 @@ func (a *agentService) create(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusServiceUnavailable, a.disabled)
 		return
 	}
-	id, err := newAgentID()
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
-		return
-	}
+	id := newAgentID()
 	title := strings.TrimSpace(m.Title)
 	if title == "" {
 		title = "Untitled"
@@ -349,11 +345,7 @@ func (a *agentService) create(w http.ResponseWriter, r *http.Request) {
 	if len([]rune(title)) > agentMaxTitle {
 		title = string([]rune(title)[:agentMaxTitle])
 	}
-	zenSession, err := zenSessionID()
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
-		return
-	}
+	zenSession := zenSessionID()
 	now := time.Now().UTC()
 	s := &agentSession{
 		svc:     a,
@@ -510,11 +502,7 @@ func (a *agentService) load(dir string) (*agentSession, error) {
 
 // saveMeta writes session.json. Callers hold s.mu, or own s outright.
 func (s *agentSession) saveMeta() error {
-	data, err := json.MarshalIndent(s.meta, "", "  ")
-	if err != nil {
-		return err
-	}
-	return writePrivateFile(filepath.Join(s.dir, "session.json"), data)
+	return writeJSONFile(filepath.Join(s.dir, "session.json"), s.meta)
 }
 
 // record appends a frame to the session's stream and wakes its readers.
@@ -599,31 +587,14 @@ func (s *agentSession) status(line string) {
 // ---------------------------------------------------------------------------
 // Helpers
 
-func newAgentID() (string, error) {
+func newAgentID() string {
 	buf := make([]byte, 16)
-	if _, err := rand.Read(buf); err != nil {
-		return "", err
-	}
-	return agentIDPrefix + strings.ToLower(base32.StdEncoding.WithPadding(base32.NoPadding).EncodeToString(buf)), nil
+	rand.Read(buf)
+	return agentIDPrefix + strings.ToLower(base32.StdEncoding.WithPadding(base32.NoPadding).EncodeToString(buf))
 }
 
-func newAgentToken() (string, error) {
-	tok := make([]byte, 32)
-	if _, err := rand.Read(tok); err != nil {
-		return "", err
-	}
-	return "delta_agent_" + base64.RawURLEncoding.EncodeToString(tok), nil
-}
-
-func randomUUID() (string, error) {
-	b := make([]byte, 16)
-	if _, err := rand.Read(b); err != nil {
-		return "", err
-	}
-	b[6] = b[6]&0x0f | 0x40
-	b[8] = b[8]&0x3f | 0x80
-	h := hex.EncodeToString(b)
-	return h[:8] + "-" + h[8:12] + "-" + h[12:16] + "-" + h[16:20] + "-" + h[20:], nil
+func newAgentToken() string {
+	return "delta_agent_" + randomToken(32)
 }
 
 // defaultAgentSetup is the setup script a new container runs when

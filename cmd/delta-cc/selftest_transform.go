@@ -25,7 +25,7 @@ import (
 // document goes on the tablet, beside the original, and both in Files; and
 // that submitting or failing ends the job and its key. It needs the account
 // cloudSelfTest leaves.
-func transformSelfTest(expect func(desc string, want int, method, path, tok string, body []byte) ([]byte, error), token, filesDir string, rm *remarkableStore, fake *fakeCloud) error {
+func transformSelfTest(expect expectFunc, token, filesDir string, rm *remarkableStore, fake *fakeCloud) error {
 	fetch := transformFontSources
 	defer func() { transformFontSources = fetch }()
 	font := []byte("MSCF the self-test's font")
@@ -72,7 +72,7 @@ func transformSelfTest(expect func(desc string, want int, method, path, tok stri
 	if _, err := expect("transforms require the token", 401, "GET", "/transforms", "", nil); err != nil {
 		return err
 	}
-	folder := newRemarkableID()
+	folder := randomUUID()
 	meta, err := rm.writeBlob(folder+".metadata", newMetadata("Essays", "CollectionType", ""))
 	if err != nil {
 		return err

@@ -297,11 +297,7 @@ func (q *qaService) saveLocked() {
 		}
 		s.Findings = keep
 	}
-	data, err := json.MarshalIndent(s, "", "  ")
-	if err == nil {
-		err = writePrivateFile(filepath.Join(q.dir, qaStateFile), data)
-	}
-	if err != nil {
+	if err := writeJSONFile(filepath.Join(q.dir, qaStateFile), s); err != nil {
 		log.Printf("qa: saving: %v", err)
 	}
 }

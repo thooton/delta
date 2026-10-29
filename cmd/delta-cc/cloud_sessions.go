@@ -68,11 +68,11 @@ func (s *cloudAccountStore) startSession(ctx context.Context, account, org, env,
 		"title": title,
 		"events": []any{
 			map[string]any{"type": "event", "data": map[string]any{
-				"type": "control_request", "request_id": newRemarkableID(), "uuid": newRemarkableID(),
+				"type": "control_request", "request_id": randomUUID(), "uuid": randomUUID(),
 				"request": map[string]any{"subtype": "set_permission_mode", "mode": "auto"},
 			}},
 			map[string]any{"type": "event", "data": map[string]any{
-				"uuid": newRemarkableID(), "session_id": "", "type": "user", "parent_tool_use_id": nil,
+				"uuid": randomUUID(), "session_id": "", "type": "user", "parent_tool_use_id": nil,
 				"message": map[string]any{"role": "user", "content": prompt},
 			}},
 		},

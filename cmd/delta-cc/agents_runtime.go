@@ -69,10 +69,7 @@ func (a *agentService) ensureContainer(s *agentSession) error {
 	}
 	// Each container gets a token of its own, so one made again after it
 	// was gone doesn't need the old one, which is never kept.
-	token, err := newAgentToken()
-	if err != nil {
-		return err
-	}
+	token := newAgentToken()
 	// No --privileged, no host network and no runtime socket: the container
 	// reaches this machine only through the agent socket.
 	args := []string{"run", "-d",

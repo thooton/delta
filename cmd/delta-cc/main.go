@@ -13,9 +13,7 @@ package main
 
 import (
 	"context"
-	"crypto/rand"
 	"crypto/sha256"
-	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -134,17 +132,9 @@ func genToken(args []string) {
 	dataDir := fs.String("data", "data", "data directory")
 	fs.Parse(args)
 
-	if err := os.MkdirAll(*dataDir, 0o700); err != nil {
-		log.Fatal(err)
-	}
-	buf := make([]byte, 32)
-	if _, err := rand.Read(buf); err != nil {
-		log.Fatal(err)
-	}
-	token := "delta_" + base64.RawURLEncoding.EncodeToString(buf)
-	sum := sha256.Sum256([]byte(token))
-	path := filepath.Join(*dataDir, tokenHashFile)
-	if err := os.WriteFile(path, []byte(hex.EncodeToString(sum[:])+"\n"), 0o600); err != nil {
+	token := "delta_" + randomToken(32)
+	path, err := writeKeyHash(*dataDir, tokenHashFile, token)
+	if err != nil {
 		log.Fatal(err)
 	}
 	fmt.Fprintf(os.Stderr, "Token hash written to %s. Restart the server if it is running.\n", path)
@@ -329,8 +319,8 @@ func newHandler(tokenHash []byte, filesDir string, maxUpload int64, u *updater, 
 	// token and the maps key live in the data directory, next to files/.
 	dataDir := filepath.Dir(filesDir)
 	newMusicService(dataDir).register(mux)
-	(&booksLoginStore{path: filepath.Join(dataDir, booksLoginFile)}).register(mux)
-	(&gmailLoginStore{path: filepath.Join(dataDir, gmailLoginFile)}).register(mux)
+	booksLoginStore(dataDir).register(mux)
+	gmailLoginStore(dataDir).register(mux)
 	cloud := newCloudAccountStore(filepath.Join(dataDir, cloudAccountsFile))
 	cloud.register(mux)
 	(&conversationStore{dir: filepath.Join(dataDir, conversationsDir), max: maxUpload}).register(mux)

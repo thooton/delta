@@ -2,9 +2,7 @@ package main
 
 import (
 	"crypto/rand"
-	"crypto/sha256"
 	"crypto/subtle"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -511,9 +509,8 @@ func (f *flashcardService) approve(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	token := flashcardTokenStart + randomHex(24)
-	sum := sha256.Sum256([]byte(token))
 	now := time.Now().UTC()
-	d := flashDevice{ID: randomHex(8), Name: name, Hash: hex.EncodeToString(sum[:]), Added: now}
+	d := flashDevice{ID: randomHex(8), Name: name, Hash: keyHash(token), Added: now}
 	devices = append(devices, d)
 	if err := f.saveDevices(devices); err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
@@ -570,8 +567,7 @@ func (f *flashcardService) validToken(token string) bool {
 	if !strings.HasPrefix(token, flashcardTokenStart) {
 		return false
 	}
-	sum := sha256.Sum256([]byte(token))
-	want := hex.EncodeToString(sum[:])
+	want := keyHash(token)
 	f.devMu.Lock()
 	defer f.devMu.Unlock()
 	devices, err := f.loadDevices()
@@ -630,17 +626,7 @@ func (f *flashcardService) loadDevices() ([]flashDevice, error) {
 }
 
 func (f *flashcardService) saveDevices(devices []flashDevice) error {
-	out, err := json.MarshalIndent(devices, "", "  ")
-	if err != nil {
-		return err
-	}
-	return writePrivateFile(f.devicesPath, append(out, '\n'))
-}
-
-func randomHex(n int) string {
-	b := make([]byte, n)
-	rand.Read(b)
-	return hex.EncodeToString(b)
+	return writeJSONFile(f.devicesPath, devices)
 }
 
 func randomCode(n int) string {

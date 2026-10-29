@@ -9,7 +9,7 @@ import (
 // wins, an earlier one loses and is answered with what is kept, a removal
 // stays) and pairing
 // (a device's token reaches the flashcards and nothing else, until unpaired).
-func flashcardsSelfTest(expect func(desc string, want int, method, path, tok string, body []byte) ([]byte, error), token string) error {
+func flashcardsSelfTest(expect expectFunc, token string) error {
 	type collection struct {
 		USN   int64        `json:"usn"`
 		Zone  string       `json:"zone,omitempty"`

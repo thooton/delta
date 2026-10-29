@@ -4,7 +4,6 @@ import (
 	"bufio"
 	"bytes"
 	"context"
-	"crypto/rand"
 	"crypto/sha256"
 	"crypto/subtle"
 	"encoding/base64"
@@ -100,13 +99,8 @@ func writeSMTPLogin(dataDir, user string) (string, error) {
 	if err := os.MkdirAll(dataDir, 0o700); err != nil {
 		return "", err
 	}
-	buf := make([]byte, 24)
-	if _, err := rand.Read(buf); err != nil {
-		return "", err
-	}
-	password := base64.RawURLEncoding.EncodeToString(buf)
-	sum := sha256.Sum256([]byte(password))
-	data, _ := json.Marshal(smtpLogin{Username: user, PasswordSHA256: hex.EncodeToString(sum[:])})
+	password := randomToken(24)
+	data, _ := json.Marshal(smtpLogin{Username: user, PasswordSHA256: keyHash(password)})
 	return password, writePrivateFile(filepath.Join(dataDir, smtpLoginFile), append(data, '\n'))
 }
 
