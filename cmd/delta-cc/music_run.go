@@ -5,7 +5,6 @@ import (
 	"bufio"
 	"compress/gzip"
 	"context"
-	"crypto/rand"
 	"embed"
 	"encoding/hex"
 	"encoding/json"
@@ -13,7 +12,6 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
-	"math/big"
 	"net/http"
 	"os"
 	"os/exec"
@@ -631,20 +629,9 @@ func (m *musicService) account(renew bool) (musicAccount, error) {
 func newMusicAccount() musicAccount {
 	const lower = "abcdefghijklmnopqrstuvwxyz"
 	const digits = "0123456789"
-	randString := func(alphabet string, n int) string {
-		b := make([]byte, n)
-		for i := range b {
-			k, err := rand.Int(rand.Reader, big.NewInt(int64(len(alphabet))))
-			if err != nil {
-				panic(err)
-			}
-			b[i] = alphabet[k.Int64()]
-		}
-		return string(b)
-	}
 	return musicAccount{
-		Username: randString(lower, 1) + randString(lower+digits, 15),
-		Password: randString(lower+strings.ToUpper(lower)+digits, 24),
+		Username: randomString(lower, 1) + randomString(lower+digits, 15),
+		Password: randomString(lower+strings.ToUpper(lower)+digits, 24),
 	}
 }
 

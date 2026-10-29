@@ -1,13 +1,11 @@
 package main
 
 import (
-	"crypto/rand"
 	"crypto/subtle"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
-	"math/big"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -445,7 +443,7 @@ func (f *flashcardService) startPairing(w http.ResponseWriter, r *http.Request) 
 	}
 	p := &flashPairing{name: name, secret: randomHex(24), expires: time.Now().Add(flashcardPairLifetime)}
 	for {
-		p.code = randomCode(6)
+		p.code = randomString(flashcardCodeAlphabet, 6)
 		if f.pairing(p.code) == nil {
 			break
 		}
@@ -618,14 +616,4 @@ func (f *flashcardService) loadDevices() ([]flashDevice, error) {
 
 func (f *flashcardService) saveDevices(devices []flashDevice) error {
 	return writeJSONFile(f.devicesPath, devices)
-}
-
-func randomCode(n int) string {
-	out := make([]byte, n)
-	max := big.NewInt(int64(len(flashcardCodeAlphabet)))
-	for i := range out {
-		k, _ := rand.Int(rand.Reader, max)
-		out[i] = flashcardCodeAlphabet[k.Int64()]
-	}
-	return string(out)
 }

@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math/big"
 	"os"
 	"path/filepath"
 )
@@ -105,4 +106,15 @@ func readJSONList[T any](path string) ([]T, error) {
 		list = []T{}
 	}
 	return list, nil
+}
+
+// randomString returns n characters picked at random from alphabet.
+func randomString(alphabet string, n int) string {
+	b := make([]byte, n)
+	max := big.NewInt(int64(len(alphabet)))
+	for i := range b {
+		k, _ := rand.Int(rand.Reader, max)
+		b[i] = alphabet[k.Int64()]
+	}
+	return string(b)
 }
