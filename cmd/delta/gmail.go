@@ -1,7 +1,6 @@
 package main
 
 import (
-	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -59,27 +58,13 @@ func runGmail(args []string) error {
 	}
 }
 
-// ---- the login and the API client ----
+// ---- the login and Google ----
 
 type gmailLogin struct {
 	ClientID     string `json:"client_id"`
 	ClientSecret string `json:"client_secret"`
 	RefreshToken string `json:"refresh_token"`
 	Email        string `json:"email"`
-}
-
-func fetchGmailLogin() (gmailLogin, error) {
-	var l gmailLogin
-	cfg, err := loadConfig()
-	if err != nil {
-		return l, err
-	}
-	data, err := do(cfg, http.MethodGet, "/gmail-login", nil)
-	if err != nil {
-		return l, err
-	}
-	err = json.Unmarshal(data, &l)
-	return l, err
 }
 
 var errGmailLoginExpired = errors.New("the Gmail login has expired or was revoked (a password change does this); ask the user to run `delta gmail login` again on a computer")
@@ -125,11 +110,6 @@ func stripURL(err error) error {
 	return err
 }
 
-type gmailClient struct {
-	http  *http.Client
-	token string
-}
-
 // gmailAPIError is an error response from Gmail.
 type gmailAPIError struct {
 	Code    int
@@ -154,33 +134,21 @@ func (e *gmailAPIError) Error() string {
 	return fmt.Sprintf("Gmail: %s (HTTP %d)", msg, e.Code)
 }
 
-// do sends a request to the Gmail API (path is relative to
-// /gmail/v1/users/me, or a full /upload/... path) and decodes the JSON
-// response into out.
-func (c *gmailClient) do(method, path string, query url.Values, contentType string, body io.Reader, out any) error {
-	u := gmailAPI + path
-	if !strings.HasPrefix(path, "/upload/") {
-		u = gmailAPI + "/gmail/v1/users/me" + path
-	}
-	if len(query) > 0 {
-		u += "?" + query.Encode()
-	}
-	req, err := http.NewRequest(method, u, body)
+// gmailAddress asks Gmail, with an access token, for the account's address.
+func gmailAddress(token string) (string, error) {
+	req, err := http.NewRequest(http.MethodGet, gmailAPI+"/gmail/v1/users/me/profile", nil)
 	if err != nil {
-		return err
+		return "", err
 	}
-	req.Header.Set("Authorization", "Bearer "+c.token)
-	if contentType != "" {
-		req.Header.Set("Content-Type", contentType)
-	}
-	resp, err := c.http.Do(req)
+	req.Header.Set("Authorization", "Bearer "+token)
+	resp, err := (&http.Client{Timeout: 30 * time.Second}).Do(req)
 	if err != nil {
-		return fmt.Errorf("Gmail can't be reached: %w", stripURL(err))
+		return "", fmt.Errorf("Gmail can't be reached: %w", stripURL(err))
 	}
 	defer resp.Body.Close()
-	data, err := io.ReadAll(io.LimitReader(resp.Body, 64<<20))
+	data, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 	if err != nil {
-		return err
+		return "", err
 	}
 	if resp.StatusCode/100 != 2 {
 		var e struct {
@@ -189,16 +157,13 @@ func (c *gmailClient) do(method, path string, query url.Values, contentType stri
 			} `json:"error"`
 		}
 		json.Unmarshal(data, &e)
-		return &gmailAPIError{Code: resp.StatusCode, Message: strings.TrimSpace(e.Error.Message)}
+		return "", &gmailAPIError{Code: resp.StatusCode, Message: strings.TrimSpace(e.Error.Message)}
 	}
-	if out != nil && len(bytes.TrimSpace(data)) > 0 {
-		if err := json.Unmarshal(data, out); err != nil {
-			return fmt.Errorf("unexpected response from Gmail: %w", err)
-		}
+	var prof struct {
+		Email string `json:"emailAddress"`
 	}
-	return nil
-}
-
-func (c *gmailClient) get(path string, query url.Values, out any) error {
-	return c.do(http.MethodGet, path, query, "", nil, out)
+	if err := json.Unmarshal(data, &prof); err != nil {
+		return "", fmt.Errorf("unexpected response from Gmail: %w", err)
+	}
+	return prof.Email, nil
 }

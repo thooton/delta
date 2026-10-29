@@ -1,9 +1,7 @@
 package main
 
 import (
-	"bytes"
 	"encoding/base64"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -118,12 +116,8 @@ func qaBrief() error {
 	if err != nil {
 		return err
 	}
-	body, err := do(c, http.MethodGet, "/qa/job", nil)
-	if err != nil {
-		return err
-	}
 	var res struct{ Instructions string }
-	if err := json.Unmarshal(body, &res); err != nil {
+	if err := callJSON(c, http.MethodGet, "/qa/job", nil, &res); err != nil {
 		return err
 	}
 	fmt.Print(res.Instructions)
@@ -143,21 +137,13 @@ func qaGet(path string) error {
 	return nil
 }
 
-// qaPost sends v as JSON and decodes the answer into out (if not nil).
+// qaPost is callJSON with the saved credentials.
 func qaPost(method, path string, v, out any) error {
 	c, err := loadConfig()
 	if err != nil {
 		return err
 	}
-	data, _ := json.Marshal(v)
-	body, err := do(c, method, path, bytes.NewReader(data))
-	if err != nil {
-		return err
-	}
-	if out != nil {
-		return json.Unmarshal(body, out)
-	}
-	return nil
+	return callJSON(c, method, path, v, out)
 }
 
 func qaShot(name, dest string) error {
@@ -323,10 +309,6 @@ func qaStatus() error {
 	if err != nil {
 		return err
 	}
-	body, err := do(c, http.MethodGet, "/qa", nil)
-	if err != nil {
-		return err
-	}
 	var o struct {
 		Settings struct {
 			Enabled  bool
@@ -349,7 +331,7 @@ func qaStatus() error {
 			Created                    time.Time
 		}
 	}
-	if err := json.Unmarshal(body, &o); err != nil {
+	if err := callJSON(c, http.MethodGet, "/qa", nil, &o); err != nil {
 		return err
 	}
 	if o.Settings.Enabled {
@@ -408,7 +390,7 @@ func qaRun(apps []string) error {
 		req["server"] = c.Server
 	}
 	var run struct{ ID string }
-	if err := qaPost(http.MethodPost, "/qa/runs", req, &run); err != nil {
+	if err := callJSON(c, http.MethodPost, "/qa/runs", req, &run); err != nil {
 		return err
 	}
 	fmt.Printf("Started %s. `delta qa status` follows it.\n", run.ID)
@@ -420,12 +402,8 @@ func qaCancel() error {
 	if err != nil {
 		return err
 	}
-	body, err := do(c, http.MethodGet, "/qa", nil)
-	if err != nil {
-		return err
-	}
 	var o struct{ Running *struct{ ID string } }
-	if err := json.Unmarshal(body, &o); err != nil {
+	if err := callJSON(c, http.MethodGet, "/qa", nil, &o); err != nil {
 		return err
 	}
 	if o.Running == nil {
@@ -449,11 +427,11 @@ func qaSetup() error {
 	if strings.HasPrefix(c.Server, "http://"+unixHost) {
 		return errors.New("run this from a regular (●) session: the emulators reach the command center over the internet")
 	}
-	if err := qaPost(http.MethodPut, "/qa/settings", map[string]string{"server": c.Server}, nil); err != nil {
+	if err := callJSON(c, http.MethodPut, "/qa/settings", map[string]string{"server": c.Server}, nil); err != nil {
 		return err
 	}
 	var res struct{ Token string }
-	if err := qaPost(http.MethodPost, "/qa/device-token", nil, &res); err != nil {
+	if err := callJSON(c, http.MethodPost, "/qa/device-token", nil, &res); err != nil {
 		return err
 	}
 	for name, value := range map[string]string{"QA_DELTA_SERVER": c.Server, "QA_DEVICE_TOKEN": res.Token} {

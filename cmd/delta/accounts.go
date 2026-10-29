@@ -124,15 +124,8 @@ func runAccounts(args []string) error {
 }
 
 func fetchAccounts(c config) ([]cloudAccount, error) {
-	body, err := do(c, http.MethodGet, "/cloud-accounts", nil)
-	if err != nil {
-		return nil, err
-	}
 	var accounts []cloudAccount
-	if err := json.Unmarshal(body, &accounts); err != nil {
-		return nil, err
-	}
-	return accounts, nil
+	return accounts, callJSON(c, http.MethodGet, "/cloud-accounts", nil, &accounts)
 }
 
 type usageWindow struct {
@@ -203,11 +196,7 @@ func listAccounts() error {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			body, err := do(c, http.MethodGet, "/cloud-accounts/"+url.PathEscape(a.ID)+"/usage", nil)
-			if err == nil {
-				err = json.Unmarshal(body, &usages[i])
-			}
-			usages[i].err = err
+			usages[i].err = callJSON(c, http.MethodGet, "/cloud-accounts/"+url.PathEscape(a.ID)+"/usage", nil, &usages[i])
 		}()
 	}
 	wg.Wait()
@@ -239,13 +228,8 @@ type cloudLogin struct {
 }
 
 func saveLogin(c config, l cloudLogin) error {
-	data, _ := json.Marshal(l)
-	body, err := do(c, http.MethodPost, "/cloud-accounts", bytes.NewReader(data))
-	if err != nil {
-		return err
-	}
 	var a cloudAccount
-	if err := json.Unmarshal(body, &a); err != nil {
+	if err := callJSON(c, http.MethodPost, "/cloud-accounts", l, &a); err != nil {
 		return err
 	}
 	plan := ""

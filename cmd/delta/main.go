@@ -388,26 +388,11 @@ func pull(name, dest string) error {
 	if info, err := os.Stat(dest); err == nil && info.IsDir() {
 		dest = filepath.Join(dest, filepath.Base(name))
 	}
-	req, err := http.NewRequest(http.MethodGet, c.Server+"/files/"+url.PathEscape(name), nil)
-	if err != nil {
-		return err
-	}
-	req.Header.Set("Authorization", "Bearer "+c.Token)
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := stream(c, http.MethodGet, "/files/"+url.PathEscape(name), nil)
 	if err != nil {
 		return err
 	}
 	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		data, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
-		var e struct {
-			Error string `json:"error"`
-		}
-		if json.Unmarshal(data, &e) == nil && e.Error != "" {
-			return fmt.Errorf("server: %s (HTTP %d)", e.Error, resp.StatusCode)
-		}
-		return fmt.Errorf("server returned HTTP %d", resp.StatusCode)
-	}
 	f, err := os.Create(dest)
 	if err != nil {
 		return err
@@ -428,16 +413,12 @@ func list() error {
 	if err != nil {
 		return err
 	}
-	body, err := do(c, http.MethodGet, "/files", nil)
-	if err != nil {
-		return err
-	}
 	var files []struct {
 		Name     string    `json:"name"`
 		Size     int64     `json:"size"`
 		Modified time.Time `json:"modified"`
 	}
-	if err := json.Unmarshal(body, &files); err != nil {
+	if err := callJSON(c, http.MethodGet, "/files", nil, &files); err != nil {
 		return err
 	}
 	if len(files) == 0 {
@@ -472,16 +453,12 @@ func updateCC() error {
 	if err != nil {
 		return err
 	}
-	req, _ := json.Marshal(map[string]string{"url": "https://github.com/thooton/delta/releases/download/latest/delta-cc-linux-amd64"})
-	body, err := do(c, http.MethodPost, "/update", bytes.NewReader(req))
-	if err != nil {
-		return err
-	}
 	var res struct {
 		Old string `json:"old"`
 		New string `json:"new"`
 	}
-	if err := json.Unmarshal(body, &res); err != nil {
+	req := map[string]string{"url": "https://github.com/thooton/delta/releases/download/latest/delta-cc-linux-amd64"}
+	if err := callJSON(c, http.MethodPost, "/update", req, &res); err != nil {
 		return err
 	}
 	fmt.Printf("Installed delta-cc %s (was %s). Waiting for restart...\n", res.New, res.Old)
@@ -493,19 +470,30 @@ func updateCC() error {
 	deadline := time.Now().Add(30 * time.Second)
 	for time.Now().Before(deadline) {
 		time.Sleep(500 * time.Millisecond)
-		body, err := do(c, http.MethodGet, "/version", nil)
-		if err != nil {
-			continue
-		}
 		var v struct {
 			Version string `json:"version"`
 		}
-		if json.Unmarshal(body, &v) == nil && v.Version == res.New {
+		if callJSON(c, http.MethodGet, "/version", nil, &v) == nil && v.Version == res.New {
 			fmt.Printf("Command center is running %s.\n", v.Version)
 			return nil
 		}
 	}
 	return errors.New("command center did not come back with the new version within 30s")
+}
+
+// callJSON sends in (unless nil) as JSON and decodes the answer into out
+// (unless nil).
+func callJSON(c config, method, path string, in, out any) error {
+	var body io.Reader
+	if in != nil {
+		data, _ := json.Marshal(in)
+		body = bytes.NewReader(data)
+	}
+	data, err := do(c, method, path, body)
+	if err != nil || out == nil {
+		return err
+	}
+	return json.Unmarshal(data, out)
 }
 
 // do sends an authenticated request and returns the response body, turning

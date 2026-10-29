@@ -2,7 +2,6 @@ package main
 
 import (
 	"bytes"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -74,17 +73,13 @@ func listConversations() error {
 	if err != nil {
 		return err
 	}
-	body, err := do(c, http.MethodGet, "/conversations", nil)
-	if err != nil {
-		return err
-	}
 	var conversations []struct {
 		ID       string    `json:"id"`
 		Size     int64     `json:"size"`
 		Modified time.Time `json:"modified"`
 		Title    string    `json:"title"`
 	}
-	if err := json.Unmarshal(body, &conversations); err != nil {
+	if err := callJSON(c, http.MethodGet, "/conversations", nil, &conversations); err != nil {
 		return err
 	}
 	if len(conversations) == 0 {

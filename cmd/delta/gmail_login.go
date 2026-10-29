@@ -178,18 +178,15 @@ func gmailLoginCmd(args []string) error {
 	if !strings.Contains(" "+t.Scope+" ", " "+gmailScope+" ") {
 		return errors.New("the Gmail permission wasn't granted (leave its box checked on Google's consent page); nothing was saved")
 	}
-	c := &gmailClient{http: &http.Client{Timeout: 30 * time.Second}, token: t.AccessToken}
-	var prof struct {
-		Email string `json:"emailAddress"`
-	}
-	if err := c.get("/profile", nil, &prof); err != nil {
+	email, err := gmailAddress(t.AccessToken)
+	if err != nil {
 		return err
 	}
-	body, _ := json.Marshal(gmailLogin{ClientID: clientID, ClientSecret: clientSecret, RefreshToken: t.RefreshToken, Email: prof.Email})
-	if _, err := do(cfg, http.MethodPut, "/gmail-login", strings.NewReader(string(body))); err != nil {
+	login := gmailLogin{ClientID: clientID, ClientSecret: clientSecret, RefreshToken: t.RefreshToken, Email: email}
+	if err := callJSON(cfg, http.MethodPut, "/gmail-login", login, nil); err != nil {
 		return err
 	}
-	fmt.Printf("\nGmail account %s saved on the command center.\n", prof.Email)
+	fmt.Printf("\nGmail account %s saved on the command center.\n", email)
 	return nil
 }
 
@@ -220,8 +217,8 @@ func gmailLogoutCmd(args []string) error {
 	if err != nil {
 		return err
 	}
-	login, err := fetchGmailLogin()
-	if err != nil {
+	var login gmailLogin
+	if err := callJSON(cfg, http.MethodGet, "/gmail-login", nil, &login); err != nil {
 		return err
 	}
 	// Revoke the grant too, so the token is useless wherever it was seen.
