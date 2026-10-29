@@ -608,18 +608,9 @@ func (f *flashcardService) prune() {
 }
 
 func (f *flashcardService) loadDevices() ([]flashDevice, error) {
-	data, err := os.ReadFile(f.devicesPath)
-	if errors.Is(err, os.ErrNotExist) {
-		return []flashDevice{}, nil
-	} else if err != nil {
+	devices, err := readJSONList[flashDevice](f.devicesPath)
+	if err != nil {
 		return nil, err
-	}
-	var devices []flashDevice
-	if err := json.Unmarshal(data, &devices); err != nil {
-		return nil, fmt.Errorf("malformed %s: %v", flashcardDevicesFile, err)
-	}
-	if devices == nil {
-		devices = []flashDevice{}
 	}
 	sort.SliceStable(devices, func(i, j int) bool { return devices[i].Added.Before(devices[j].Added) })
 	return devices, nil

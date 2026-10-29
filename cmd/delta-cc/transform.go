@@ -249,15 +249,9 @@ func (t *transformService) forJob(h func(w http.ResponseWriter, r *http.Request,
 // ---------------------------------------------------------------------------
 
 func (t *transformService) load() ([]transformJob, error) {
-	data, err := os.ReadFile(t.path)
-	if errors.Is(err, os.ErrNotExist) {
-		return nil, nil
-	} else if err != nil {
+	jobs, err := readJSONList[transformJob](t.path)
+	if err != nil {
 		return nil, err
-	}
-	var jobs []transformJob
-	if err := json.Unmarshal(data, &jobs); err != nil {
-		return nil, fmt.Errorf("%s: %w", t.path, err)
 	}
 	// Jobs never submitted have failed.
 	for i := range jobs {

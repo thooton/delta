@@ -6,6 +6,7 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -85,4 +86,23 @@ func randomUUID() string {
 	b[6] = b[6]&0x0f | 0x40
 	b[8] = b[8]&0x3f | 0x80
 	return fmt.Sprintf("%x-%x-%x-%x-%x", b[0:4], b[4:6], b[6:8], b[8:10], b[10:])
+}
+
+// readJSONList reads a file holding a JSON list, which is empty while the
+// file is missing.
+func readJSONList[T any](path string) ([]T, error) {
+	list := []T{}
+	data, err := os.ReadFile(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return list, nil
+	} else if err != nil {
+		return nil, err
+	}
+	if err := json.Unmarshal(data, &list); err != nil {
+		return nil, fmt.Errorf("malformed %s: %v", filepath.Base(path), err)
+	}
+	if list == nil {
+		list = []T{}
+	}
+	return list, nil
 }

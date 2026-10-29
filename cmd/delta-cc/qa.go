@@ -119,7 +119,6 @@ type qaFinding struct {
 }
 
 var qaKinds = []string{"bug", "problem", "inconsistency", "feature"}
-var qaStatuses = []string{"open", "fixed", "passed", "declined", "grown", "reverted"}
 
 type qaJob struct {
 	ID      string    `json:"id"`

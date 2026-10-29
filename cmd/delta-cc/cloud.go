@@ -9,7 +9,6 @@ import (
 	"io"
 	"log"
 	"net/http"
-	"os"
 	"strings"
 	"sync"
 	"time"
@@ -590,17 +589,7 @@ func (s *cloudAccountStore) update(id string, change func(*cloudAccount)) error 
 
 // load reads every account; none while the file doesn't exist. Callers hold mu.
 func (s *cloudAccountStore) load() ([]cloudAccount, error) {
-	data, err := os.ReadFile(s.path)
-	if errors.Is(err, os.ErrNotExist) {
-		return nil, nil
-	} else if err != nil {
-		return nil, err
-	}
-	var accounts []cloudAccount
-	if err := json.Unmarshal(data, &accounts); err != nil {
-		return nil, fmt.Errorf("malformed %s: %v", cloudAccountsFile, err)
-	}
-	return accounts, nil
+	return readJSONList[cloudAccount](s.path)
 }
 
 // save replaces the file. Callers hold mu.

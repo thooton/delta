@@ -3,11 +3,9 @@ package main
 import (
 	"encoding/base32"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"net/http"
-	"os"
 	"strings"
 	"sync"
 	"time"
@@ -223,20 +221,7 @@ func (o *otpStore) remove(w http.ResponseWriter, r *http.Request) {
 
 // load reads the accounts; none at all is an empty list, never null.
 func (o *otpStore) load() ([]otpAccount, error) {
-	data, err := os.ReadFile(o.path)
-	if errors.Is(err, os.ErrNotExist) {
-		return []otpAccount{}, nil
-	} else if err != nil {
-		return nil, err
-	}
-	var accounts []otpAccount
-	if err := json.Unmarshal(data, &accounts); err != nil {
-		return nil, fmt.Errorf("malformed %s: %v", otpFile, err)
-	}
-	if accounts == nil {
-		accounts = []otpAccount{}
-	}
-	return accounts, nil
+	return readJSONList[otpAccount](o.path)
 }
 
 func (o *otpStore) save(accounts []otpAccount) error {
