@@ -1,6 +1,7 @@
 package main
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -71,6 +72,9 @@ func (q *qaService) safely(f func(ctx context.Context)) {
 	defer cancel()
 	f(ctx)
 }
+
+// qaNoRoom is why an app is skipped when the accounts have no room.
+const qaNoRoom = "There was no room left on the Claude accounts."
 
 // schedule starts the night's run in its hour, once a night.
 func (q *qaService) schedule(ctx context.Context) {
@@ -219,6 +223,7 @@ func (q *qaService) step(ctx context.Context) {
 	now := q.now().UTC()
 	var launches []qaLaunch
 	var checks []qaJob
+	runID := run.ID
 	running := 0
 	for i := range run.Jobs {
 		j := &run.Jobs[i]
@@ -227,7 +232,7 @@ func (q *qaService) step(ctx context.Context) {
 		}
 		switch {
 		case now.Sub(j.Created) > qaJobLife[j.Role]:
-			q.endJobLocked(run, j, "failed", "It timed out.")
+			q.endJobLocked(j, "failed", "It timed out.")
 			continue
 		case j.Session != "" && now.Sub(j.Created) >= 15*time.Minute && now.Sub(j.Checked) >= qaIdleCheck:
 			j.Checked = now
@@ -254,7 +259,7 @@ func (q *qaService) step(ctx context.Context) {
 				}
 				switch {
 				case run.NoRoom:
-					q.settleAppLocked(ra, "skipped", "There was no room left on the Claude accounts.")
+					q.settleAppLocked(ra, "skipped", qaNoRoom)
 					continue
 				case running >= qaMaxSessions:
 					continue
@@ -329,18 +334,16 @@ func (q *qaService) step(ctx context.Context) {
 			continue
 		}
 		q.mu.Lock()
-		if r := q.runLocked(runOf(q, j.ID)); r != nil {
-			if job := jobIn(r, j.ID); job != nil && job.Status == "running" {
-				switch {
-				case !idle:
-					job.IdleSince = time.Time{}
-				case job.IdleSince.IsZero():
-					job.IdleSince = q.now().UTC()
-				case q.now().Sub(job.IdleSince) >= qaIdleCheck:
-					q.endJobLocked(r, job, "done", "The session stopped without saying it was done.")
-				}
-				q.saveLocked()
+		if _, job := q.jobLocked(runID, j.ID); job != nil && job.Status == "running" {
+			switch {
+			case !idle:
+				job.IdleSince = time.Time{}
+			case job.IdleSince.IsZero():
+				job.IdleSince = q.now().UTC()
+			case q.now().Sub(job.IdleSince) >= qaIdleCheck:
+				q.endJobLocked(job, "done", "The session stopped without saying it was done.")
 			}
+			q.saveLocked()
 		}
 		q.mu.Unlock()
 	}
@@ -349,23 +352,14 @@ func (q *qaService) step(ctx context.Context) {
 	}
 }
 
-// runOf is the id of the run job id is in; q.mu is held.
-func runOf(q *qaService, job string) string {
-	for _, r := range q.state.Runs {
-		if jobIn(&r, job) != nil {
-			return r.ID
-		}
+// jobLocked returns the run with id runID and its job with id jobID; the
+// job is nil when either is missing. q.mu is held.
+func (q *qaService) jobLocked(runID, jobID string) (*qaRun, *qaJob) {
+	run := q.runLocked(runID)
+	if run == nil {
+		return nil, nil
 	}
-	return ""
-}
-
-func jobIn(run *qaRun, id string) *qaJob {
-	for i := range run.Jobs {
-		if run.Jobs[i].ID == id {
-			return &run.Jobs[i]
-		}
-	}
-	return nil
+	return run, findPtr(run.Jobs, func(j *qaJob) bool { return j.ID == jobID })
 }
 
 // lastJobLocked is the app's newest job in the run.
@@ -401,7 +395,7 @@ func (q *qaService) settleAppLocked(ra *qaRunApp, status, why string) {
 
 // endJobLocked ends a job: its key stops working, and its session leaves
 // the user's chats.
-func (q *qaService) endJobLocked(run *qaRun, j *qaJob, status, summary string) {
+func (q *qaService) endJobLocked(j *qaJob, status, summary string) {
 	j.Status, j.Ended, j.KeyHash = status, q.now().UTC(), ""
 	if summary != "" {
 		j.Summary = summary
@@ -427,7 +421,7 @@ func (q *qaService) endJobLocked(run *qaRun, j *qaJob, status, summary string) {
 func (q *qaService) finishLocked(run *qaRun, status string) {
 	for i := range run.Jobs {
 		if j := &run.Jobs[i]; j.Status == "running" {
-			q.endJobLocked(run, j, "cancelled", "The run was cancelled.")
+			q.endJobLocked(j, "cancelled", "The run was cancelled.")
 		}
 	}
 	for i := range run.Apps {
@@ -443,11 +437,7 @@ func (q *qaService) finishLocked(run *qaRun, status string) {
 // startJob starts a job's cloud session.
 func (q *qaService) startJob(ctx context.Context, l qaLaunch) {
 	q.mu.Lock()
-	run := q.runLocked(l.run)
-	var job *qaJob
-	if run != nil {
-		job = jobIn(run, l.job)
-	}
+	run, job := q.jobLocked(l.run, l.job)
 	if job == nil {
 		q.mu.Unlock()
 		return
@@ -459,11 +449,7 @@ func (q *qaService) startJob(ctx context.Context, l qaLaunch) {
 
 	q.mu.Lock()
 	defer q.mu.Unlock()
-	run = q.runLocked(l.run)
-	if run == nil {
-		return
-	}
-	job = jobIn(run, l.job)
+	run, job = q.jobLocked(l.run, l.job)
 	if job == nil {
 		return
 	}
@@ -471,29 +457,20 @@ func (q *qaService) startJob(ctx context.Context, l qaLaunch) {
 	switch {
 	case job.Status != "running":
 		// Cancelled while it started.
-		q.endJobLocked(run, job, job.Status, "")
+		q.endJobLocked(job, job.Status, "")
 	case err != nil:
-		log.Printf("qa: %s %s: %v", job.Role, firstNonEmptyString(job.App, job.Repo), err)
-		q.endJobLocked(run, job, "failed", "Couldn't start it: "+err.Error())
+		log.Printf("qa: %s %s: %v", job.Role, cmp.Or(job.App, job.Repo), err)
+		q.endJobLocked(job, "failed", "Couldn't start it: "+err.Error())
 		if errors.Is(err, errQANoRoom) {
 			run.NoRoom = true
 			for i := range run.Apps {
 				if ra := &run.Apps[i]; ra.App == job.App && job.App != "" {
-					q.settleAppLocked(ra, "skipped", "There was no room left on the Claude accounts.")
+					q.settleAppLocked(ra, "skipped", qaNoRoom)
 				}
 			}
 		}
 	}
 	q.saveLocked()
-}
-
-func firstNonEmptyString(ss ...string) string {
-	for _, s := range ss {
-		if s != "" {
-			return s
-		}
-	}
-	return ""
 }
 
 // qaTitle is a job's session's title.

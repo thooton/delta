@@ -3,14 +3,9 @@ package main
 import (
 	"bytes"
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"fmt"
-	"io"
 	"net/http"
-	"os"
-	"path/filepath"
 	"strings"
 	"time"
 )
@@ -24,39 +19,25 @@ import (
 func shorthandSelfTest(expect expectFunc, base, token, dir string) error {
 	png := []byte("\x89PNG\r\n\x1a\n a page of shorthand")
 	const secret = shorthandSecretStart + "selftest"
-	steps := []struct {
-		desc, method, path, tok string
-		want                    int
-		body                    []byte
-	}{
-		{"the shorthand reader requires the token", "POST", "/shorthand", "", 401, png},
-		{"the shorthand reader is offline with no worker", "POST", "/shorthand", token, 503, png},
-		{"the worker routes need a secret set", "POST", "/shorthand/worker/next", secret, 503, nil},
-		{"the delta token reaches no transform job's shorthand", "POST", "/transform/shorthand", token, 403, png},
-	}
-	for _, s := range steps {
-		if _, err := expect(s.desc, s.want, s.method, s.path, s.tok, s.body); err != nil {
-			return err
-		}
-	}
-	sum := sha256.Sum256([]byte(secret))
-	if err := os.WriteFile(filepath.Join(dir, shorthandSecretFile), []byte(hex.EncodeToString(sum[:])+"\n"), 0o600); err != nil {
+	if err := runSteps(expect,
+		step{"the shorthand reader requires the token", 401, "POST", "/shorthand", "", png},
+		step{"the shorthand reader is offline with no worker", 503, "POST", "/shorthand", token, png},
+		step{"the worker routes need a secret set", 503, "POST", "/shorthand/worker/next", secret, nil},
+		step{"the delta token reaches no transform job's shorthand", 403, "POST", "/transform/shorthand", token, png},
+	); err != nil {
 		return err
 	}
-	for _, s := range []struct {
-		desc, method, path, tok string
-		want                    int
-	}{
-		{"the worker routes refuse the delta token", "POST", "/shorthand/worker/next", token, 401},
-		{"the worker routes refuse a wrong secret", "POST", "/shorthand/worker/next", secret + "x", 401},
-		{"the worker's secret isn't the delta token", "GET", "/files", secret, 401},
-		{"the worker's secret starts no reading", "POST", "/shorthand", secret, 401},
-		{"no result for a request never made", "POST", "/shorthand/worker/result/0123", secret, 404},
-	} {
-		body := []byte("{}")
-		if _, err := expect(s.desc, s.want, s.method, s.path, s.tok, body); err != nil {
-			return err
-		}
+	if _, err := writeKeyHash(dir, shorthandSecretFile, secret); err != nil {
+		return err
+	}
+	if err := runSteps(expect,
+		step{"the worker routes refuse the delta token", 401, "POST", "/shorthand/worker/next", token, []byte("{}")},
+		step{"the worker routes refuse a wrong secret", 401, "POST", "/shorthand/worker/next", secret + "x", []byte("{}")},
+		step{"the worker's secret isn't the delta token", 401, "GET", "/files", secret, []byte("{}")},
+		step{"the worker's secret starts no reading", 401, "POST", "/shorthand", secret, []byte("{}")},
+		step{"no result for a request never made", 404, "POST", "/shorthand/worker/result/0123", secret, []byte("{}")},
+	); err != nil {
+		return err
 	}
 
 	// The stand-in worker: it takes requests and answers each as told.
@@ -70,15 +51,11 @@ func shorthandSelfTest(expect expectFunc, base, token, dir string) error {
 	defer cancel()
 	stop := ctx.Done()
 	post := func(path string, body []byte) (int, []byte, error) {
-		req, _ := http.NewRequestWithContext(ctx, "POST", base+path, bytes.NewReader(body))
-		req.Header.Set("Authorization", "Bearer "+secret)
-		resp, err := http.DefaultClient.Do(req)
+		resp, data, err := testRequest(ctx, "POST", base+path, secret, body)
 		if err != nil {
 			return 0, nil, err
 		}
-		defer resp.Body.Close()
-		data, err := io.ReadAll(resp.Body)
-		return resp.StatusCode, data, err
+		return resp.StatusCode, data, nil
 	}
 	go func() {
 		for {
@@ -119,19 +96,13 @@ func shorthandSelfTest(expect expectFunc, base, token, dir string) error {
 	if !online {
 		return fmt.Errorf("the reader isn't online while a worker polls")
 	}
-	for _, s := range []struct {
-		desc, path string
-		want       int
-		body       []byte
-	}{
-		{"a reading takes images only", "/shorthand", 400, []byte("%PDF-1.4")},
-		{"a reading's mode is page or line", "/shorthand?mode=word", 400, png},
-		{"a region is four numbers", "/shorthand?region=1,2,3", 400, png},
-		{"a region has a size", "/shorthand?region=1,2,0,4", 400, png},
-	} {
-		if _, err := expect(s.desc, s.want, "POST", s.path, token, s.body); err != nil {
-			return err
-		}
+	if err := runSteps(expect,
+		step{"a reading takes images only", 400, "POST", "/shorthand", token, []byte("%PDF-1.4")},
+		step{"a reading's mode is page or line", 400, "POST", "/shorthand?mode=word", token, png},
+		step{"a region is four numbers", 400, "POST", "/shorthand?region=1,2,3", token, png},
+		step{"a region has a size", 400, "POST", "/shorthand?region=1,2,0,4", token, png},
+	); err != nil {
+		return err
 	}
 
 	// read submits a reading and polls for it until it is no longer pending.
@@ -182,10 +153,10 @@ func shorthandSelfTest(expect expectFunc, base, token, dir string) error {
 	} else if !strings.Contains(string(data), `"done"`) {
 		return fmt.Errorf("the kept result came back as %s", data)
 	}
-	if _, err := expect("a reading never submitted isn't there", 404, "GET", "/shorthand/0123", token, nil); err != nil {
-		return err
-	}
-	if _, err := expect("a reading is fetched with the token", 401, "GET", "/shorthand/"+id, "", nil); err != nil {
+	if err := runSteps(expect,
+		step{"a reading never submitted isn't there", 404, "GET", "/shorthand/0123", token, nil},
+		step{"a reading is fetched with the token", 401, "GET", "/shorthand/" + id, "", nil},
+	); err != nil {
 		return err
 	}
 	t := <-got
@@ -209,8 +180,6 @@ func shorthandSelfTest(expect expectFunc, base, token, dir string) error {
 	if t := <-got; t.job.Kind != "reload" || t.job.G2E != "state/best" {
 		return fmt.Errorf("the worker got %+v for a reload", t.job)
 	}
-	if _, err := expect("a reload's checkpoint stays in the repository", 400, "POST", "/shorthand/reload", token, []byte(`{"g2e":"../x"}`)); err != nil {
-		return err
-	}
-	return nil
+	_, err = expect("a reload's checkpoint stays in the repository", 400, "POST", "/shorthand/reload", token, []byte(`{"g2e":"../x"}`))
+	return err
 }

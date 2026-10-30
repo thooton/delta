@@ -5,10 +5,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"net/http"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -173,20 +173,24 @@ func flashcardsAllowed(r *http.Request) bool {
 		(r.Method == http.MethodGet && r.URL.Path == "/auth")
 }
 
-func (f *flashcardService) get(w http.ResponseWriter, r *http.Request) {
+// locked runs fn with the collection loaded, under the lock.
+func (f *flashcardService) locked(w http.ResponseWriter, fn func()) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if err := f.load(); err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	writeJSON(w, http.StatusOK, f.collection)
+	fn()
+}
+
+func (f *flashcardService) get(w http.ResponseWriter, r *http.Request) {
+	f.locked(w, func() { writeJSON(w, http.StatusOK, f.collection) })
 }
 
 func (f *flashcardService) sync(w http.ResponseWriter, r *http.Request) {
-	data, err := io.ReadAll(http.MaxBytesReader(w, r.Body, maxFlashcardsBody))
-	if err != nil {
-		writeError(w, http.StatusRequestEntityTooLarge, fmt.Sprintf("a sync exceeds %d bytes", maxFlashcardsBody))
+	data, ok := readBody(w, r, maxFlashcardsBody, "a sync exceeds %d bytes")
+	if !ok {
 		return
 	}
 	var given flashCollection
@@ -207,12 +211,12 @@ func (f *flashcardService) sync(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	if err := f.load(); err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
-		return
-	}
+	f.locked(w, func() { f.merge(w, &given) })
+}
+
+// merge takes a sync's changes into the collection and answers with what the
+// device hasn't seen.
+func (f *flashcardService) merge(w http.ResponseWriter, given *flashCollection) {
 	since := given.USN
 	if since > f.collection.USN {
 		// The device saw a collection this one never was (it was reset):
@@ -274,39 +278,42 @@ func (f *flashcardService) sync(w http.ResponseWriter, r *http.Request) {
 	if changed {
 		f.collection.USN = usn
 		if err := f.save(); err != nil {
-			// What is in memory is ahead of the file; read it again next time.
-			f.loaded = false
 			writeError(w, http.StatusInternalServerError, err.Error())
 			return
 		}
 	}
 
-	out := flashCollection{USN: f.collection.USN, Zone: f.collection.Zone, Decks: []*flashDeck{}, Cards: []*flashCard{}}
+	writeJSON(w, http.StatusOK, flashCollection{
+		USN:   f.collection.USN,
+		Zone:  f.collection.Zone,
+		Decks: changedSince(f.collection.Decks, lostDecks, since),
+		Cards: changedSince(f.collection.Cards, lostCards, since),
+	})
+}
+
+// A flashRecord is a deck or a card.
+type flashRecord interface{ record() (id string, usn int64) }
+
+func (d *flashDeck) record() (string, int64) { return d.ID, d.USN }
+func (c *flashCard) record() (string, int64) { return c.ID, c.USN }
+
+// changedSince returns the records changed past usn since, and then those
+// of lost not among them.
+func changedSince[T flashRecord](all, lost []T, since int64) []T {
+	out := []T{}
 	sent := map[string]bool{}
-	for _, d := range f.collection.Decks {
-		if d.USN > since {
-			out.Decks = append(out.Decks, d)
-			sent[d.ID] = true
+	for _, r := range all {
+		if id, usn := r.record(); usn > since {
+			out = append(out, r)
+			sent[id] = true
 		}
 	}
-	for _, d := range lostDecks {
-		if !sent[d.ID] {
-			out.Decks = append(out.Decks, d)
+	for _, r := range lost {
+		if id, _ := r.record(); !sent[id] {
+			out = append(out, r)
 		}
 	}
-	sent = map[string]bool{}
-	for _, c := range f.collection.Cards {
-		if c.USN > since {
-			out.Cards = append(out.Cards, c)
-			sent[c.ID] = true
-		}
-	}
-	for _, c := range lostCards {
-		if !sent[c.ID] {
-			out.Cards = append(out.Cards, c)
-		}
-	}
-	writeJSON(w, http.StatusOK, out)
+	return out
 }
 
 func (f *flashcardService) editCard(w http.ResponseWriter, r *http.Request) {
@@ -317,13 +324,12 @@ func (f *flashcardService) editCard(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, `expected {"front"?, "back"?, "aux"?}`)
 		return
 	}
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	if err := f.load(); err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
-		return
-	}
-	have := f.cards[r.PathValue("id")]
+	f.locked(w, func() { f.edit(w, r.PathValue("id"), given.Front, given.Back, given.Aux) })
+}
+
+// edit corrects a card's text: the parts not nil.
+func (f *flashcardService) edit(w http.ResponseWriter, id string, front, back, aux *string) {
+	have := f.cards[id]
 	if have == nil || have.Deleted {
 		writeError(w, http.StatusNotFound, "no such card")
 		return
@@ -332,7 +338,7 @@ func (f *flashcardService) editCard(w http.ResponseWriter, r *http.Request) {
 	for _, e := range []struct {
 		to   *string
 		from *string
-	}{{&edited.Front, given.Front}, {&edited.Back, given.Back}, {&edited.Aux, given.Aux}} {
+	}{{&edited.Front, front}, {&edited.Back, back}, {&edited.Aux, aux}} {
 		if e.from != nil {
 			*e.to = *e.from
 		}
@@ -344,12 +350,7 @@ func (f *flashcardService) editCard(w http.ResponseWriter, r *http.Request) {
 	f.collection.USN++
 	edited.USN = f.collection.USN
 	*have = edited
-	if err := f.save(); err != nil {
-		f.loaded = false
-		writeError(w, http.StatusInternalServerError, err.Error())
-		return
-	}
-	writeJSON(w, http.StatusOK, have)
+	writeResult(w, f.save(), http.StatusOK, have)
 }
 
 func checkFlashDeck(d *flashDeck) string {
@@ -415,12 +416,17 @@ func (f *flashcardService) load() error {
 	return nil
 }
 
+// save writes the collection. When it can't, what is in memory is ahead of
+// the file, so it is read again next time.
 func (f *flashcardService) save() error {
 	out, err := json.Marshal(f.collection)
-	if err != nil {
-		return err
+	if err == nil {
+		err = writePrivateFile(f.path, append(out, '\n'))
 	}
-	return writePrivateFile(f.path, append(out, '\n'))
+	if err != nil {
+		f.loaded = false
+	}
+	return err
 }
 
 // Pairing
@@ -510,7 +516,7 @@ func (f *flashcardService) approve(w http.ResponseWriter, r *http.Request) {
 	now := time.Now().UTC()
 	d := flashDevice{ID: randomHex(8), Name: name, Hash: keyHash(token), Added: now}
 	devices = append(devices, d)
-	if err := f.saveDevices(devices); err != nil {
+	if err := writeJSONFile(f.devicesPath, devices); err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
@@ -542,21 +548,12 @@ func (f *flashcardService) removeDevice(w http.ResponseWriter, r *http.Request) 
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	kept := devices[:0]
-	for _, d := range devices {
-		if d.ID != id {
-			kept = append(kept, d)
-		}
-	}
+	kept := slices.DeleteFunc(slices.Clone(devices), func(d flashDevice) bool { return d.ID == id })
 	if len(kept) == len(devices) {
 		writeError(w, http.StatusNotFound, "no such device")
 		return
 	}
-	if err := f.saveDevices(kept); err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
-		return
-	}
-	writeJSON(w, http.StatusOK, map[string]string{"removed": id})
+	writeResult(w, writeJSONFile(f.devicesPath, kept), http.StatusOK, map[string]string{"removed": id})
 }
 
 // validToken says whether token is a paired device's, and notes when it
@@ -577,7 +574,7 @@ func (f *flashcardService) validToken(token string) bool {
 			// Only a few times a day: every sync needn't rewrite the file.
 			if time.Since(d.Seen) > time.Hour {
 				devices[i].Seen = time.Now().UTC()
-				f.saveDevices(devices)
+				writeJSONFile(f.devicesPath, devices)
 			}
 			return true
 		}
@@ -612,8 +609,4 @@ func (f *flashcardService) loadDevices() ([]flashDevice, error) {
 	}
 	sort.SliceStable(devices, func(i, j int) bool { return devices[i].Added.Before(devices[j].Added) })
 	return devices, nil
-}
-
-func (f *flashcardService) saveDevices(devices []flashDevice) error {
-	return writeJSONFile(f.devicesPath, devices)
 }

@@ -17,6 +17,7 @@
 package fkv
 
 import (
+	"errors"
 	"fmt"
 	"strconv"
 	"strings"
@@ -31,7 +32,7 @@ type Card struct {
 // Parse reads an FKV file, or says what is wrong with it, naming the line.
 func Parse(data []byte) ([]Card, error) {
 	if !utf8.Valid(data) {
-		return nil, fmt.Errorf("an FKV file must be UTF-8")
+		return nil, errors.New("an FKV file must be UTF-8")
 	}
 	text := strings.TrimPrefix(string(data), "\uFEFF")
 	var cards []Card
@@ -40,7 +41,7 @@ func Parse(data []byte) ([]Card, error) {
 		if strings.TrimSpace(line) == "" {
 			continue
 		}
-		card, err := ParseLine(line)
+		card, err := parseLine(line)
 		if err != nil {
 			return nil, fmt.Errorf("line %d: %v", i+1, err)
 		}
@@ -49,8 +50,8 @@ func Parse(data []byte) ([]Card, error) {
 	return cards, nil
 }
 
-// ParseLine reads one line, key||value or key||value||metadata.
-func ParseLine(line string) (Card, error) {
+// parseLine reads one line, key||value or key||value||metadata.
+func parseLine(line string) (Card, error) {
 	var parts [3]strings.Builder
 	part := 0
 	for i := 0; i < len(line); {
@@ -64,7 +65,7 @@ func ParseLine(line string) (Card, error) {
 			i += n
 		case c == '|' && i+1 < len(line) && line[i+1] == '|':
 			if part == 2 {
-				return Card{}, fmt.Errorf(`a third || (write a literal one as \|\|)`)
+				return Card{}, errors.New(`a third || (write a literal one as \|\|)`)
 			}
 			part++
 			i += 2
@@ -75,11 +76,11 @@ func ParseLine(line string) (Card, error) {
 	}
 	switch {
 	case part == 0:
-		return Card{}, fmt.Errorf("no || between the key and the value")
+		return Card{}, errors.New("no || between the key and the value")
 	case parts[0].Len() == 0:
-		return Card{}, fmt.Errorf("the key is empty")
+		return Card{}, errors.New("the key is empty")
 	case parts[1].Len() == 0:
-		return Card{}, fmt.Errorf("the value is empty")
+		return Card{}, errors.New("the value is empty")
 	}
 	return Card{parts[0].String(), parts[1].String(), parts[2].String()}, nil
 }
@@ -92,7 +93,7 @@ var simple = map[byte]rune{
 // unescape reads the escape s starts with: the character, and its length.
 func unescape(s string) (rune, int, error) {
 	if len(s) < 2 {
-		return 0, 0, fmt.Errorf(`a lone \ at the end of the line (write a literal one as \\)`)
+		return 0, 0, errors.New(`a lone \ at the end of the line (write a literal one as \\)`)
 	}
 	if r, ok := simple[s[1]]; ok {
 		return r, 2, nil

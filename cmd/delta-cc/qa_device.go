@@ -1,12 +1,10 @@
 package main
 
 import (
-	"encoding/json"
 	"fmt"
-	"io"
+	"maps"
 	"net/http"
 	"slices"
-	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -116,14 +114,17 @@ func (d *qaDevices) expireLocked() {
 		for cid, c := range d.sent {
 			if c.runner == id {
 				delete(d.sent, cid)
-				c.done <- qaDeviceResult{Error: "the emulator went away"}
+				c.done <- qaDeviceResult{Error: qaDeviceGone}
 			}
 		}
 		for _, c := range rn.queue {
-			c.done <- qaDeviceResult{Error: "the emulator went away"}
+			c.done <- qaDeviceResult{Error: qaDeviceGone}
 		}
 	}
 }
+
+// qaDeviceGone is a command's error when its emulator's runner went away.
+const qaDeviceGone = "the emulator went away"
 
 // lease gives app an emulator of run's, if it hasn't one, and says whether
 // it has one now.
@@ -138,12 +139,7 @@ func (d *qaDevices) lease(run, app string) bool {
 	for _, dev := range d.leases {
 		taken[dev] = true
 	}
-	ids := make([]string, 0, len(d.runners))
-	for id := range d.runners {
-		ids = append(ids, id)
-	}
-	sort.Strings(ids)
-	for _, id := range ids {
+	for _, id := range slices.Sorted(maps.Keys(d.runners)) {
 		rn := d.runners[id]
 		if rn.run != run {
 			continue
@@ -185,7 +181,7 @@ func (d *qaDevices) hello(w http.ResponseWriter, r *http.Request) {
 		Runner, Run string
 		Serials     []string
 	}
-	if err := json.NewDecoder(io.LimitReader(r.Body, 64<<10)).Decode(&req); err != nil || req.Runner == "" || len(req.Serials) == 0 || len(req.Serials) > 8 {
+	if err := decodeBody(r, 64<<10, &req); err != nil || req.Runner == "" || len(req.Serials) == 0 || len(req.Serials) > 8 {
 		writeError(w, http.StatusBadRequest, `expected {"runner": ..., "run": ..., "serials": [...]}`)
 		return
 	}
@@ -284,7 +280,7 @@ func (d *qaDevices) result(w http.ResponseWriter, r *http.Request) {
 		ID string `json:"id"`
 		qaDeviceResult
 	}
-	if err := json.NewDecoder(io.LimitReader(r.Body, 16<<20)).Decode(&req); err != nil || req.ID == "" {
+	if err := decodeBody(r, 16<<20, &req); err != nil || req.ID == "" {
 		writeError(w, http.StatusBadRequest, `expected {"id": ..., "ok": ..., "output": ...}`)
 		return
 	}
@@ -304,11 +300,7 @@ func (d *qaDevices) result(w http.ResponseWriter, r *http.Request) {
 func (d *qaDevices) do(r *http.Request, run, app, dir, op string, args []string) (qaDeviceResult, int, error) {
 	limit, ok := qaDeviceOps[op]
 	if !ok {
-		ops := make([]string, 0, len(qaDeviceOps))
-		for k := range qaDeviceOps {
-			ops = append(ops, k)
-		}
-		sort.Strings(ops)
+		ops := slices.Sorted(maps.Keys(qaDeviceOps))
 		return qaDeviceResult{}, http.StatusBadRequest, fmt.Errorf("%q isn't something the emulator does (%s)", op, strings.Join(ops, ", "))
 	}
 	if !d.lease(run, app) {
@@ -342,7 +334,7 @@ func (d *qaDevices) do(r *http.Request, run, app, dir, op string, args []string)
 	}
 	select {
 	case res := <-c.done:
-		if res.Error == "the emulator went away" {
+		if res.Error == qaDeviceGone {
 			return res, http.StatusServiceUnavailable, fmt.Errorf("the emulator went away; try again, and you'll get another (install the app's branch again if you had)")
 		}
 		return res, http.StatusOK, nil

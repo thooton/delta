@@ -1,9 +1,7 @@
 package main
 
 import (
-	"encoding/json"
 	"fmt"
-	"io"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -34,7 +32,7 @@ const (
 
 type qaJobKey struct{}
 
-// job finds the running job whose key this is: its run and job ids.
+// jobKey finds the running job whose key this is: its run and job ids.
 func (q *qaService) jobKey(key string) (string, string, bool) {
 	if q == nil || !strings.HasPrefix(key, qaKeyStart) {
 		return "", "", false
@@ -85,34 +83,43 @@ func (q *qaService) registerJob(mux *http.ServeMux) {
 // forJob runs h with the job the request's key is for, with q.mu held.
 func (q *qaService) forJob(h func(w http.ResponseWriter, r *http.Request, run *qaRun, j *qaJob)) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		ids, _ := r.Context().Value(qaJobKey{}).([2]string)
-		if scopeOf(r) != scopeQA || ids[1] == "" {
-			writeError(w, http.StatusForbidden, "these routes are for a QA job's key")
+		ids, ok := jobIDs(w, r)
+		if !ok {
 			return
 		}
 		q.mu.Lock()
 		defer q.mu.Unlock()
-		run := q.runLocked(ids[0])
-		var j *qaJob
-		if run != nil {
-			j = jobIn(run, ids[1])
+		if run, j := q.liveJobLocked(w, ids); j != nil {
+			h(w, r, run, j)
 		}
-		if j == nil || j.Status != "running" || run.Status != "running" {
-			writeError(w, http.StatusUnauthorized, "this QA job is over, so its key no longer works")
-			return
-		}
-		h(w, r, run, j)
 	}
+}
+
+// jobIDs returns the run and job ids of the request's key, and refuses
+// requests made without a QA job's key.
+func jobIDs(w http.ResponseWriter, r *http.Request) ([2]string, bool) {
+	ids, _ := r.Context().Value(qaJobKey{}).([2]string)
+	if scopeOf(r) != scopeQA || ids[1] == "" {
+		writeError(w, http.StatusForbidden, "these routes are for a QA job's key")
+		return ids, false
+	}
+	return ids, true
+}
+
+// liveJobLocked returns the running job with ids, or answers that it is
+// over; q.mu is held.
+func (q *qaService) liveJobLocked(w http.ResponseWriter, ids [2]string) (*qaRun, *qaJob) {
+	run, j := q.jobLocked(ids[0], ids[1])
+	if j == nil || j.Status != "running" || run.Status != "running" {
+		writeError(w, http.StatusUnauthorized, "this QA job is over, so its key no longer works")
+		return nil, nil
+	}
+	return run, j
 }
 
 // runAppLocked is the run's entry for the job's app.
 func runAppLocked(run *qaRun, app string) *qaRunApp {
-	for i := range run.Apps {
-		if run.Apps[i].App == app {
-			return &run.Apps[i]
-		}
-	}
-	return nil
+	return findPtr(run.Apps, func(ra *qaRunApp) bool { return ra.App == app })
 }
 
 func (q *qaService) jobInfo(w http.ResponseWriter, r *http.Request, run *qaRun, j *qaJob) {
@@ -136,7 +143,7 @@ func (q *qaService) find(w http.ResponseWriter, r *http.Request, run *qaRun, j *
 		Kind, Title, Detail string
 		Shots               []string
 	}
-	if err := json.NewDecoder(io.LimitReader(r.Body, 16<<20)).Decode(&req); err != nil {
+	if err := decodeBody(r, 16<<20, &req); err != nil {
 		writeError(w, http.StatusBadRequest, `expected {"kind", "title", "detail", "shots"?: [base64 PNG]}`)
 		return
 	}
@@ -201,7 +208,7 @@ func (q *qaService) triage(w http.ResponseWriter, r *http.Request, run *qaRun, j
 	var req struct {
 		ID, Status, Reason, Commit string
 	}
-	if err := json.NewDecoder(io.LimitReader(r.Body, 64<<10)).Decode(&req); err != nil {
+	if err := decodeBody(r, 64<<10, &req); err != nil {
 		writeError(w, http.StatusBadRequest, `expected {"id", "status", "reason", "commit"?}`)
 		return
 	}
@@ -270,7 +277,7 @@ func (q *qaService) done(w http.ResponseWriter, r *http.Request, run *qaRun, j *
 		Summary string
 		Force   bool
 	}
-	if err := json.NewDecoder(io.LimitReader(r.Body, 64<<10)).Decode(&req); err != nil {
+	if err := decodeBody(r, 64<<10, &req); err != nil {
 		writeError(w, http.StatusBadRequest, `expected {"summary", "force"?}`)
 		return
 	}
@@ -289,35 +296,29 @@ func (q *qaService) done(w http.ResponseWriter, r *http.Request, run *qaRun, j *
 			return
 		}
 	}
-	q.endJobLocked(run, j, "done", req.Summary)
+	q.endJobLocked(j, "done", req.Summary)
 	q.saveLocked()
 	q.poke()
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 }
 
 func (q *qaService) jobDevice(w http.ResponseWriter, r *http.Request) {
-	ids, _ := r.Context().Value(qaJobKey{}).([2]string)
-	if scopeOf(r) != scopeQA || ids[1] == "" {
-		writeError(w, http.StatusForbidden, "these routes are for a QA job's key")
+	ids, ok := jobIDs(w, r)
+	if !ok {
 		return
 	}
 	var req struct {
 		Op   string
 		Args []string
 	}
-	if err := json.NewDecoder(io.LimitReader(r.Body, 1<<20)).Decode(&req); err != nil {
+	if err := decodeBody(r, 1<<20, &req); err != nil {
 		writeError(w, http.StatusBadRequest, `expected {"op", "args"}`)
 		return
 	}
 	q.mu.Lock()
-	run := q.runLocked(ids[0])
-	var j *qaJob
-	if run != nil {
-		j = jobIn(run, ids[1])
-	}
-	if j == nil || j.Status != "running" {
+	run, j := q.liveJobLocked(w, ids)
+	if j == nil {
 		q.mu.Unlock()
-		writeError(w, http.StatusUnauthorized, "this QA job is over, so its key no longer works")
 		return
 	}
 	ra := runAppLocked(run, j.App)

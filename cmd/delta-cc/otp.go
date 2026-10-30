@@ -4,8 +4,8 @@ import (
 	"encoding/base32"
 	"encoding/json"
 	"fmt"
-	"io"
 	"net/http"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -72,21 +72,33 @@ func (o *otpStore) register(mux *http.ServeMux) {
 func (o *otpStore) list(w http.ResponseWriter, r *http.Request) {
 	o.mu.Lock()
 	defer o.mu.Unlock()
-	accounts, err := o.load()
+	accounts, err := readJSONList[otpAccount](o.path)
+	writeResult(w, err, http.StatusOK, accounts)
+}
+
+// edit has change change the accounts, under the lock, and saves them and
+// answers status with them, unless change answered the request itself
+// (returning false).
+func (o *otpStore) edit(w http.ResponseWriter, status int, change func([]otpAccount) ([]otpAccount, bool)) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	accounts, err := readJSONList[otpAccount](o.path)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	writeJSON(w, http.StatusOK, accounts)
+	if accounts, ok := change(accounts); ok {
+		writeResult(w, writeJSONFile(o.path, accounts), status, accounts)
+	}
 }
 
 func (o *otpStore) add(w http.ResponseWriter, r *http.Request) {
-	data, err := io.ReadAll(http.MaxBytesReader(w, r.Body, maxOTPBody))
-	if err != nil {
-		writeError(w, http.StatusRequestEntityTooLarge, fmt.Sprintf("accounts exceed %d bytes", maxOTPBody))
+	data, ok := readBody(w, r, maxOTPBody, "accounts exceed %d bytes")
+	if !ok {
 		return
 	}
 	var given []otpAccount
+	var err error
 	if trimmed := strings.TrimSpace(string(data)); strings.HasPrefix(trimmed, "[") {
 		err = json.Unmarshal(data, &given)
 	} else {
@@ -105,43 +117,33 @@ func (o *otpStore) add(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	o.mu.Lock()
-	defer o.mu.Unlock()
-	accounts, err := o.load()
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
-		return
-	}
-	have := map[string]bool{}
-	for _, a := range accounts {
-		have[a.Secret] = true
-	}
-	now := time.Now().UTC()
-	for _, a := range given {
-		if have[a.Secret] {
-			continue
+	o.edit(w, http.StatusCreated, func(accounts []otpAccount) ([]otpAccount, bool) {
+		have := map[string]bool{}
+		for _, a := range accounts {
+			have[a.Secret] = true
 		}
-		if len(accounts) >= maxOTPAccounts {
-			writeError(w, http.StatusBadRequest, fmt.Sprintf("at most %d accounts are kept", maxOTPAccounts))
-			return
+		now := time.Now().UTC()
+		for _, a := range given {
+			if have[a.Secret] {
+				continue
+			}
+			if len(accounts) >= maxOTPAccounts {
+				writeError(w, http.StatusBadRequest, fmt.Sprintf("at most %d accounts are kept", maxOTPAccounts))
+				return nil, false
+			}
+			a.ID = randomHex(8)
+			a.Added = now
+			accounts = append(accounts, a)
+			have[a.Secret] = true
 		}
-		a.ID = randomHex(8)
-		a.Added = now
-		accounts = append(accounts, a)
-		have[a.Secret] = true
-	}
-	if err := o.save(accounts); err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
-		return
-	}
-	writeJSON(w, http.StatusCreated, accounts)
+		return accounts, true
+	})
 }
 
 func (o *otpStore) update(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
-	data, err := io.ReadAll(http.MaxBytesReader(w, r.Body, maxOTPBody))
-	if err != nil {
-		writeError(w, http.StatusRequestEntityTooLarge, fmt.Sprintf("an account exceeds %d bytes", maxOTPBody))
+	data, ok := readBody(w, r, maxOTPBody, "an account exceeds %d bytes")
+	if !ok {
 		return
 	}
 	var given otpAccount
@@ -150,82 +152,43 @@ func (o *otpStore) update(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	o.mu.Lock()
-	defer o.mu.Unlock()
-	accounts, err := o.load()
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
-		return
-	}
-	at := -1
-	for i, a := range accounts {
-		if a.ID == id {
-			at = i
+	o.edit(w, http.StatusOK, func(accounts []otpAccount) ([]otpAccount, bool) {
+		at := slices.IndexFunc(accounts, func(a otpAccount) bool { return a.ID == id })
+		if at < 0 {
+			writeError(w, http.StatusNotFound, "no such account")
+			return nil, false
 		}
-	}
-	if at < 0 {
-		writeError(w, http.StatusNotFound, "no such account")
-		return
-	}
-	if strings.TrimSpace(given.Secret) == "" {
-		given.Secret = accounts[at].Secret
-	}
-	if why := normalizeOTP(&given); why != "" {
-		writeError(w, http.StatusBadRequest, why)
-		return
-	}
-	for i, a := range accounts {
-		if i != at && a.Secret == given.Secret {
-			writeError(w, http.StatusBadRequest, "another account already has that secret key")
-			return
+		if strings.TrimSpace(given.Secret) == "" {
+			given.Secret = accounts[at].Secret
 		}
-	}
-	given.ID = accounts[at].ID
-	given.Added = accounts[at].Added
-	accounts[at] = given
-	if err := o.save(accounts); err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
-		return
-	}
-	writeJSON(w, http.StatusOK, accounts)
+		if why := normalizeOTP(&given); why != "" {
+			writeError(w, http.StatusBadRequest, why)
+			return nil, false
+		}
+		for i, a := range accounts {
+			if i != at && a.Secret == given.Secret {
+				writeError(w, http.StatusBadRequest, "another account already has that secret key")
+				return nil, false
+			}
+		}
+		given.ID = accounts[at].ID
+		given.Added = accounts[at].Added
+		accounts[at] = given
+		return accounts, true
+	})
 }
 
 func (o *otpStore) remove(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
-	o.mu.Lock()
-	defer o.mu.Unlock()
-	accounts, err := o.load()
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
-		return
-	}
-	kept := accounts[:0]
-	found := false
-	for _, a := range accounts {
-		if a.ID == id {
-			found = true
-			continue
+	o.edit(w, http.StatusOK, func(accounts []otpAccount) ([]otpAccount, bool) {
+		n := len(accounts)
+		accounts = slices.DeleteFunc(accounts, func(a otpAccount) bool { return a.ID == id })
+		if len(accounts) == n {
+			writeError(w, http.StatusNotFound, "no such account")
+			return nil, false
 		}
-		kept = append(kept, a)
-	}
-	if !found {
-		writeError(w, http.StatusNotFound, "no such account")
-		return
-	}
-	if err := o.save(kept); err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
-		return
-	}
-	writeJSON(w, http.StatusOK, kept)
-}
-
-// load reads the accounts; none at all is an empty list, never null.
-func (o *otpStore) load() ([]otpAccount, error) {
-	return readJSONList[otpAccount](o.path)
-}
-
-func (o *otpStore) save(accounts []otpAccount) error {
-	return writeJSONFile(o.path, accounts)
+		return accounts, true
+	})
 }
 
 // normalizeOTP fills in the defaults and tidies what was given, or says, for

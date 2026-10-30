@@ -48,23 +48,23 @@ func TestTailOf(t *testing.T) {
 		f.WriteString(content)
 		return f
 	}
-	text, from, to, lines := tailOf(write("a\nb\n"))
-	if text != "a\nb" || from != 1 || to != 2 || lines != 2 {
-		t.Errorf("short: %q %d-%d of %d", text, from, to, lines)
+	text, from, lines := tailOf(write("a\nb\n"))
+	if text != "a\nb" || from != 1 || lines != 2 {
+		t.Errorf("short: %q from %d of %d", text, from, lines)
 	}
 	var b strings.Builder
 	for i := 1; i <= 5000; i++ {
 		b.WriteString(strings.Repeat("x", 3) + "\n")
 	}
-	text, from, to, _ = tailOf(write(b.String()))
-	if from != 3001 || to != 5000 || strings.Count(text, "\n") != toolMaxLines-1 {
-		t.Errorf("many lines: %d-%d, %d lines", from, to, strings.Count(text, "\n")+1)
+	text, from, lines = tailOf(write(b.String()))
+	if from != 3001 || lines != 5000 || strings.Count(text, "\n") != toolMaxLines-1 {
+		t.Errorf("many lines: %d-%d, %d lines", from, lines, strings.Count(text, "\n")+1)
 	}
-	text, from, _, lines = tailOf(write(strings.Repeat("y", 200<<10) + "\nlast"))
+	text, from, lines = tailOf(write(strings.Repeat("y", 200<<10) + "\nlast"))
 	if text != "last" || from != 2 || lines != 2 {
 		t.Errorf("a long line then a short one: %.20q from %d of %d", text, from, lines)
 	}
-	text, _, _, _ = tailOf(write(strings.Repeat("z", 200<<10)))
+	text, _, _ = tailOf(write(strings.Repeat("z", 200<<10)))
 	if len(text) != toolMaxBytes {
 		t.Errorf("one long line: %d bytes", len(text))
 	}

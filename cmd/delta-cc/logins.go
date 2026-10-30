@@ -2,9 +2,7 @@ package main
 
 import (
 	"encoding/json"
-	"errors"
 	"fmt"
-	"io"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -36,27 +34,32 @@ func (s *loginStore[T]) register(mux *http.ServeMux) {
 	mux.HandleFunc("DELETE "+s.route, s.reset)
 }
 
-func (s *loginStore[T]) get(w http.ResponseWriter, r *http.Request) {
-	data, err := os.ReadFile(s.path)
-	if errors.Is(err, os.ErrNotExist) {
-		writeError(w, http.StatusNotFound, s.missing)
-		return
-	} else if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
-		return
-	}
+// read returns the login, or an error satisfying os.ErrNotExist while none
+// is set.
+func (s *loginStore[T]) read() (T, error) {
 	var l T
+	data, err := os.ReadFile(s.path)
+	if err != nil {
+		return l, err
+	}
 	if err := json.Unmarshal(data, &l); err != nil {
-		writeError(w, http.StatusInternalServerError, fmt.Sprintf("malformed %s: %v", filepath.Base(s.path), err))
+		return l, fmt.Errorf("malformed %s: %v", filepath.Base(s.path), err)
+	}
+	return l, nil
+}
+
+func (s *loginStore[T]) get(w http.ResponseWriter, r *http.Request) {
+	l, err := s.read()
+	if err != nil {
+		writeReadError(w, err, s.missing)
 		return
 	}
 	writeJSON(w, http.StatusOK, l)
 }
 
 func (s *loginStore[T]) put(w http.ResponseWriter, r *http.Request) {
-	data, err := io.ReadAll(http.MaxBytesReader(w, r.Body, s.max))
-	if err != nil {
-		writeError(w, http.StatusRequestEntityTooLarge, fmt.Sprintf("login exceeds %d bytes", s.max))
+	data, ok := readBody(w, r, s.max, "login exceeds %d bytes")
+	if !ok {
 		return
 	}
 	var l T
@@ -70,19 +73,11 @@ func (s *loginStore[T]) put(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	out, _ := json.Marshal(l)
-	if err := writePrivateFile(s.path, append(out, '\n')); err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
-		return
-	}
-	writeJSON(w, http.StatusOK, map[string]string{"email": email})
+	writeResult(w, writePrivateFile(s.path, append(out, '\n')), http.StatusOK, map[string]string{"email": email})
 }
 
 func (s *loginStore[T]) reset(w http.ResponseWriter, r *http.Request) {
-	if err := os.Remove(s.path); err != nil && !errors.Is(err, os.ErrNotExist) {
-		writeError(w, http.StatusInternalServerError, err.Error())
-		return
-	}
-	writeJSON(w, http.StatusOK, map[string]bool{"removed": true})
+	writeResult(w, removeIfExists(s.path), http.StatusOK, map[string]bool{"removed": true})
 }
 
 // The book source login. Source on the phone fetches it whenever it has to

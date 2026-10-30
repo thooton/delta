@@ -3,13 +3,11 @@ package main
 import (
 	"archive/zip"
 	"bytes"
-	"crypto/sha256"
-	"encoding/hex"
-	"encoding/json"
 	"fmt"
 	"net/url"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 )
 
@@ -17,56 +15,41 @@ import (
 // store, and checks that what they write is what rmfakecloud and the tablet
 // expect: blobs named by their hash, index hashes from their entries, and a
 // history line per root.
-func selfTestRemarkable(s *remarkableStore, expect func(desc string, want int, method, path string, body []byte) ([]byte, error)) error {
-	id := func(data []byte) string {
-		var r struct{ ID string }
-		json.Unmarshal(data, &r)
-		return r.ID
-	}
-	data, err := expect("empty list", 200, "GET", "/remarkable", nil)
+func selfTestRemarkable(s *remarkableStore, expect expectFunc, token string) error {
+	var created struct{ ID string }
+	data, err := expect("empty list", 200, "GET", "/remarkable", token, nil)
 	if err != nil {
 		return err
 	}
 	if strings.TrimSpace(string(data)) != "[]" {
 		return fmt.Errorf("empty store listed %s", data)
 	}
-	data, err = expect("mkdir", 201, "POST", "/remarkable/folders", []byte(`{"name":"School","parent":""}`))
-	if err != nil {
+	if _, err := expectJSON(expect, &created, "mkdir", 201, "POST", "/remarkable/folders", token, []byte(`{"name":"School","parent":""}`)); err != nil {
 		return err
 	}
-	folder := id(data)
+	folder := created.ID
 	pdf := []byte("%PDF-1.4\n% delta self-test\n")
-	data, err = expect("upload", 201, "POST", "/remarkable/documents?name=Worksheet&parent="+url.QueryEscape(folder), pdf)
-	if err != nil {
+	if _, err := expectJSON(expect, &created, "upload", 201, "POST", "/remarkable/documents?name=Worksheet&parent="+url.QueryEscape(folder), token, pdf); err != nil {
 		return err
 	}
-	doc := id(data)
-	steps := []struct {
-		desc         string
-		want         int
-		method, path string
-		body         []byte
-	}{
-		{"a file that's neither PDF nor EPUB is refused", 400, "POST", "/remarkable/documents?name=x", []byte("hello")},
-		{"a missing parent is refused", 400, "POST", "/remarkable/documents?name=x&parent=nope", pdf},
-		{"a document isn't a folder", 400, "POST", "/remarkable/folders", []byte(`{"name":"x","parent":"` + doc + `"}`)},
-		{"a folder can't go inside itself", 400, "PATCH", "/remarkable/" + folder, []byte(`{"parent":"` + folder + `"}`)},
-		{"rename", 200, "PATCH", "/remarkable/" + doc, []byte(`{"name":"Worksheet 1"}`)},
-		{"move to the top", 200, "POST", "/remarkable/" + doc, []byte(`{"parent":""}`)},
-		{"trash", 200, "PATCH", "/remarkable/" + folder, []byte(`{"parent":"trash"}`)},
-		{"missing document", 404, "GET", "/remarkable/nope", nil},
-	}
-	for _, st := range steps {
-		if _, err := expect(st.desc, st.want, st.method, st.path, st.body); err != nil {
-			return err
-		}
-	}
-	data, err = expect("list", 200, "GET", "/remarkable", nil)
-	if err != nil {
+	doc := created.ID
+	if err := runSteps(expect,
+		step{"a file that's neither PDF nor EPUB is refused", 400, "POST", "/remarkable/documents?name=x", token, []byte("hello")},
+		step{"a missing parent is refused", 400, "POST", "/remarkable/documents?name=x&parent=nope", token, pdf},
+		step{"a document isn't a folder", 400, "POST", "/remarkable/folders", token, []byte(`{"name":"x","parent":"` + doc + `"}`)},
+		step{"a folder can't go inside itself", 400, "PATCH", "/remarkable/" + folder, token, []byte(`{"parent":"` + folder + `"}`)},
+		step{"rename", 200, "PATCH", "/remarkable/" + doc, token, []byte(`{"name":"Worksheet 1"}`)},
+		step{"move to the top", 200, "POST", "/remarkable/" + doc, token, []byte(`{"parent":""}`)},
+		step{"trash", 200, "PATCH", "/remarkable/" + folder, token, []byte(`{"parent":"trash"}`)},
+		step{"missing document", 404, "GET", "/remarkable/nope", token, nil},
+	); err != nil {
 		return err
 	}
 	var items []remarkableItem
-	json.Unmarshal(data, &items)
+	data, err = expectJSON(expect, &items, "list", 200, "GET", "/remarkable", token, nil)
+	if err != nil {
+		return err
+	}
 	got := map[string]remarkableItem{}
 	for _, it := range items {
 		got[it.ID] = it
@@ -74,7 +57,7 @@ func selfTestRemarkable(s *remarkableStore, expect func(desc string, want int, m
 	if d := got[doc]; len(items) != 2 || d.Name != "Worksheet 1" || d.Type != "pdf" || d.Parent != "" || got[folder].Parent != "trash" || got[folder].Type != "folder" {
 		return fmt.Errorf("unexpected list %s", data)
 	}
-	data, err = expect("download", 200, "GET", "/remarkable/"+doc, nil)
+	data, err = expect("download", 200, "GET", "/remarkable/"+doc, token, nil)
 	if err != nil {
 		return err
 	}
@@ -82,13 +65,7 @@ func selfTestRemarkable(s *remarkableStore, expect func(desc string, want int, m
 	if err != nil {
 		return fmt.Errorf("download: %w", err)
 	}
-	found := false
-	for _, f := range zr.File {
-		if f.Name == doc+".pdf" {
-			found = true
-		}
-	}
-	if len(zr.File) != 3 || !found {
+	if len(zr.File) != 3 || !slices.ContainsFunc(zr.File, func(f *zip.File) bool { return f.Name == doc+".pdf" }) {
 		return fmt.Errorf("download: unexpected files")
 	}
 
@@ -112,8 +89,7 @@ func selfTestRemarkable(s *remarkableStore, expect func(desc string, want int, m
 			continue
 		}
 		data, _ := os.ReadFile(b)
-		sum := sha256.Sum256(data)
-		if hex.EncodeToString(sum[:]) == name {
+		if keyHash(string(data)) == name {
 			continue
 		}
 		entries, err := parseRemarkableIndex(data)
@@ -123,43 +99,33 @@ func selfTestRemarkable(s *remarkableStore, expect func(desc string, want int, m
 	}
 
 	// Pages one at a time, for the phone's Tablet app.
-	data, err = expect("upload a readable PDF", 201, "POST", "/remarkable/documents?name=Essay", selfTestPDF())
-	if err != nil {
+	if _, err := expectJSON(expect, &created, "upload a readable PDF", 201, "POST", "/remarkable/documents?name=Essay", token, selfTestPDF()); err != nil {
 		return err
 	}
-	essay := id(data)
-	data, err = expect("page 1", 200, "GET", "/remarkable/"+essay+"/pages/1", nil)
+	essay := created.ID
+	data, err = expect("page 1", 200, "GET", "/remarkable/"+essay+"/pages/1", token, nil)
 	if err != nil {
 		return err
 	}
 	if !bytes.HasPrefix(data, []byte("%PDF-")) || !bytes.Contains(data, []byte("/Count 1")) {
 		return fmt.Errorf("page 1 isn't a one-page PDF")
 	}
-	data, err = expect("whole PDF", 200, "GET", "/remarkable/"+essay+"/pdf", nil)
+	data, err = expect("whole PDF", 200, "GET", "/remarkable/"+essay+"/pdf", token, nil)
 	if err != nil {
 		return err
 	}
 	if !bytes.HasPrefix(data, []byte("%PDF-")) || !bytes.Contains(data, []byte("/Count 1")) {
 		return fmt.Errorf("the whole PDF isn't the document's one page")
 	}
-	for _, st := range []struct {
-		desc string
-		want int
-		path string
-	}{
-		{"no page past the end", 404, "/remarkable/" + essay + "/pages/2"},
-		{"pages count from 1", 400, "/remarkable/" + essay + "/pages/0"},
-		{"an unreadable PDF has nothing to show", 404, "/remarkable/" + doc + "/pages/1"},
-		{"a folder has no pages", 400, "/remarkable/" + folder + "/pages/1"},
-		{"no such document's pages", 404, "/remarkable/nope/pages/1"},
-		{"a folder has no PDF", 400, "/remarkable/" + folder + "/pdf"},
-		{"no such document's PDF", 404, "/remarkable/nope/pdf"},
-	} {
-		if _, err := expect(st.desc, st.want, "GET", st.path, nil); err != nil {
-			return err
-		}
-	}
-	return nil
+	return runSteps(expect,
+		step{"no page past the end", 404, "GET", "/remarkable/" + essay + "/pages/2", token, nil},
+		step{"pages count from 1", 400, "GET", "/remarkable/" + essay + "/pages/0", token, nil},
+		step{"an unreadable PDF has nothing to show", 404, "GET", "/remarkable/" + doc + "/pages/1", token, nil},
+		step{"a folder has no pages", 400, "GET", "/remarkable/" + folder + "/pages/1", token, nil},
+		step{"no such document's pages", 404, "GET", "/remarkable/nope/pages/1", token, nil},
+		step{"a folder has no PDF", 400, "GET", "/remarkable/" + folder + "/pdf", token, nil},
+		step{"no such document's PDF", 404, "GET", "/remarkable/nope/pdf", token, nil},
+	)
 }
 
 // selfTestPDF is the smallest readable PDF: one blank Letter page.

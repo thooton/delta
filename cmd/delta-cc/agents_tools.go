@@ -18,7 +18,7 @@ import (
 	"os"
 	"os/exec"
 	"regexp"
-	"sort"
+	"slices"
 	"strings"
 	"time"
 	"unicode"
@@ -332,10 +332,7 @@ func readImage(data []byte, mime string) (any, error) {
 func scaleDown(img image.Image, side int) image.Image {
 	b := img.Bounds()
 	w, h := b.Dx(), b.Dy()
-	scale := float64(side) / float64(max(w, h))
-	if scale > 1 {
-		scale = 1
-	}
+	scale := min(1, float64(side)/float64(max(w, h)))
 	nw, nh := max(1, int(float64(w)*scale)), max(1, int(float64(h)*scale))
 	src := image.NewRGBA(image.Rect(0, 0, w, h))
 	draw.Draw(src, src.Bounds(), image.White, image.Point{}, draw.Src)
@@ -427,6 +424,9 @@ func applyEdits(content string, edits []textEdit, name string) (string, error) {
 		if len(edits) > 1 {
 			which = fmt.Sprintf(" (edit %d)", i+1)
 		}
+		notUnique := func(n int) error {
+			return fmt.Errorf("found %d occurrences of oldText%s in %s; it must be unique, so include more of the text around it", n, which, name)
+		}
 		if old == "" {
 			return "", fmt.Errorf("oldText%s is empty", which)
 		}
@@ -436,7 +436,7 @@ func applyEdits(content string, edits []textEdit, name string) (string, error) {
 			start = strings.Index(content, old)
 			end = start + len(old)
 		case n > 1:
-			return "", fmt.Errorf("found %d occurrences of oldText%s in %s; it must be unique, so include more of the text around it", n, which, name)
+			return "", notUnique(n)
 		default:
 			if at == nil {
 				fuzzy, at = fuzzyView(content)
@@ -446,7 +446,7 @@ func applyEdits(content string, edits []textEdit, name string) (string, error) {
 			case n == 0 || needle == "":
 				return "", fmt.Errorf("could not find oldText%s in %s; it must match the file exactly, including whitespace and line breaks", which, name)
 			case n > 1:
-				return "", fmt.Errorf("found %d occurrences of oldText%s in %s; it must be unique, so include more of the text around it", n, which, name)
+				return "", notUnique(n)
 			}
 			i := strings.Index(fuzzy, needle)
 			start = at[i]
@@ -456,7 +456,7 @@ func applyEdits(content string, edits []textEdit, name string) (string, error) {
 		}
 		spans = append(spans, span{start, end, toLF(e.NewText)})
 	}
-	sort.Slice(spans, func(i, j int) bool { return spans[i].start < spans[j].start })
+	slices.SortFunc(spans, func(a, b span) int { return a.start - b.start })
 	for i := 1; i < len(spans); i++ {
 		if spans[i].start < spans[i-1].end {
 			return "", errors.New("two edits overlap; merge them into one")
@@ -578,7 +578,7 @@ func (s *agentSession) toolBash(ctx context.Context, args toolArgs) (any, error)
 		s.inContainer(rctx, nil, 0, "rm", "-f", pidFile)
 	}()
 
-	text, shownFrom, shownTo, lines := tailOf(f)
+	text, shownFrom, lines := tailOf(f)
 	text = setsidNote.ReplaceAllString(text, "")
 	var b strings.Builder
 	b.WriteString(text)
@@ -591,9 +591,9 @@ func (s *agentSession) toolBash(ctx context.Context, args toolArgs) (any, error)
 		}
 		sctx, cancel := context.WithTimeout(context.Background(), time.Minute)
 		if s.writeWhole(sctx, saved, f) == nil {
-			fmt.Fprintf(&b, "\n\n[Showing lines %d-%d of %d. Full output%s: %s]", shownFrom, shownTo, lines, note, saved)
+			fmt.Fprintf(&b, "\n\n[Showing lines %d-%d of %d. Full output%s: %s]", shownFrom, lines, lines, note, saved)
 		} else {
-			fmt.Fprintf(&b, "\n\n[Showing lines %d-%d of %d.]", shownFrom, shownTo, lines)
+			fmt.Fprintf(&b, "\n\n[Showing lines %d-%d of %d.]", shownFrom, lines, lines)
 		}
 		cancel()
 	}
@@ -611,9 +611,9 @@ func (s *agentSession) toolBash(ctx context.Context, args toolArgs) (any, error)
 }
 
 // tailOf returns the end of a command's output, at most toolMaxLines lines
-// and toolMaxBytes bytes, with the numbers of the first and last lines it
-// shows and how many lines there are in all.
-func tailOf(f *os.File) (text string, from, to, lines int) {
+// and toolMaxBytes bytes, with the number of the first line it shows and how
+// many lines there are in all (the last it shows).
+func tailOf(f *os.File) (text string, from, lines int) {
 	f.Seek(0, io.SeekStart)
 	var size int64
 	var last byte
@@ -630,7 +630,7 @@ func tailOf(f *os.File) (text string, from, to, lines int) {
 		}
 	}
 	if size == 0 {
-		return "", 1, 0, 0
+		return "", 1, 0
 	}
 	if last != '\n' {
 		lines++ // an unfinished last line
@@ -651,5 +651,5 @@ func tailOf(f *os.File) (text string, from, to, lines int) {
 	if len(all) > toolMaxLines {
 		all = all[len(all)-toolMaxLines:]
 	}
-	return strings.Join(all, "\n"), lines - len(all) + 1, lines, lines
+	return strings.Join(all, "\n"), lines - len(all) + 1, lines
 }

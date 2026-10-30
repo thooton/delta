@@ -128,18 +128,27 @@ Canvas relay (see canvas.go):
 }
 
 func genToken(args []string) {
-	fs := flag.NewFlagSet("gen-token", flag.ExitOnError)
+	genSecret("gen-token", args, "delta_", tokenHashFile,
+		"Token hash written to %s. Restart the server if it is running.\n",
+		"Save this token now; it cannot be shown again:")
+}
+
+// genSecret is a command that makes a new secret starting with prefix,
+// keeps its hash in file in the data directory, and prints it once, after
+// saying where the hash is (saved, a format for the path) and what to do
+// with the secret (keep).
+func genSecret(name string, args []string, prefix, file, saved, keep string) {
+	fs := flag.NewFlagSet(name, flag.ExitOnError)
 	dataDir := fs.String("data", "data", "data directory")
 	fs.Parse(args)
-
-	token := "delta_" + randomToken(32)
-	path, err := writeKeyHash(*dataDir, tokenHashFile, token)
+	secret := prefix + randomToken(32)
+	path, err := writeKeyHash(*dataDir, file, secret)
 	if err != nil {
 		log.Fatal(err)
 	}
-	fmt.Fprintf(os.Stderr, "Token hash written to %s. Restart the server if it is running.\n", path)
-	fmt.Fprintln(os.Stderr, "Save this token now; it cannot be shown again:")
-	fmt.Println(token)
+	fmt.Fprintf(os.Stderr, saved, path)
+	fmt.Fprintln(os.Stderr, keep)
+	fmt.Println(secret)
 }
 
 func serve(args []string) {
@@ -426,21 +435,31 @@ func (s *server) getFile(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	w.Header().Set("Content-Disposition", fmt.Sprintf("attachment; filename=%q", name))
+	serveFile(w, r, path, name, "no such file")
+}
+
+// serveFile serves the file at path as name, answering 404 with notFound
+// when it is missing. An error drops the caller's Content-Disposition.
+func serveFile(w http.ResponseWriter, r *http.Request, path, name, notFound string) {
+	fail := func(status int, msg string) {
+		w.Header().Del("Content-Disposition")
+		writeError(w, status, msg)
+	}
 	f, err := os.Open(path)
 	if errors.Is(err, os.ErrNotExist) {
-		writeError(w, http.StatusNotFound, "no such file")
+		fail(http.StatusNotFound, notFound)
 		return
 	} else if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		fail(http.StatusInternalServerError, err.Error())
 		return
 	}
 	defer f.Close()
 	info, err := f.Stat()
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		fail(http.StatusInternalServerError, err.Error())
 		return
 	}
-	w.Header().Set("Content-Disposition", fmt.Sprintf("attachment; filename=%q", name))
 	http.ServeContent(w, r, name, info.ModTime(), f)
 }
 
@@ -457,27 +476,13 @@ func (s *server) putFile(w http.ResponseWriter, r *http.Request) {
 	}
 	// Write to a hidden temp file and link it into place, so readers never
 	// see a partial upload.
-	tmp, err := os.CreateTemp(s.filesDir, ".upload-*")
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+	tmp, n, ok := receiveUpload(w, r, s.filesDir, s.maxUpload, "file")
+	if !ok {
 		return
 	}
-	defer os.Remove(tmp.Name())
-	n, err := io.Copy(tmp, http.MaxBytesReader(w, r.Body, s.maxUpload))
-	if cerr := tmp.Close(); err == nil {
-		err = cerr
-	}
-	if err != nil {
-		var tooBig *http.MaxBytesError
-		if errors.As(err, &tooBig) {
-			writeError(w, http.StatusRequestEntityTooLarge, fmt.Sprintf("file exceeds %d bytes", s.maxUpload))
-		} else {
-			writeError(w, http.StatusBadRequest, "upload failed: "+err.Error())
-		}
-		return
-	}
+	defer os.Remove(tmp)
 	// Unlike a rename, a link fails if another upload took the name meanwhile.
-	if err := os.Link(tmp.Name(), path); errors.Is(err, os.ErrExist) {
+	if err := os.Link(tmp, path); errors.Is(err, os.ErrExist) {
 		writeExists(w, name)
 		return
 	} else if err != nil {
@@ -485,6 +490,32 @@ func (s *server) putFile(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusCreated, map[string]any{"name": name, "size": n})
+}
+
+// receiveUpload writes the request's body, up to max bytes, to a new hidden
+// file in dir, and returns its path, which the caller removes, and size. If
+// that fails it answers the request, saying what was too big.
+func receiveUpload(w http.ResponseWriter, r *http.Request, dir string, max int64, what string) (string, int64, bool) {
+	tmp, err := os.CreateTemp(dir, ".upload-*")
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return "", 0, false
+	}
+	n, err := io.Copy(tmp, http.MaxBytesReader(w, r.Body, max))
+	if cerr := tmp.Close(); err == nil {
+		err = cerr
+	}
+	if err != nil {
+		os.Remove(tmp.Name())
+		var tooBig *http.MaxBytesError
+		if errors.As(err, &tooBig) {
+			writeError(w, http.StatusRequestEntityTooLarge, fmt.Sprintf("%s exceeds %d bytes", what, max))
+		} else {
+			writeError(w, http.StatusBadRequest, "upload failed: "+err.Error())
+		}
+		return "", 0, false
+	}
+	return tmp.Name(), n, true
 }
 
 func writeExists(w http.ResponseWriter, name string) {

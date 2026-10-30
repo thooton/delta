@@ -1,9 +1,9 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
-	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -152,6 +152,13 @@ func newFakeCloud() *fakeCloud {
 	return f
 }
 
+// made is the environments and sessions made so far, as sent.
+func (f *fakeCloud) made() (envs, sessions []map[string]any) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.envs, f.sessions
+}
+
 // cloudSelfTest checks that accounts can be added (by renewing the login, or
 // by looking up a still-good access token), listed without their logins,
 // handed out as access tokens that are renewed exactly when they must be,
@@ -165,46 +172,38 @@ func cloudSelfTest(expect expectFunc, base, token, dir string, fake *fakeCloud) 
 	} else if strings.TrimSpace(string(data)) != "[]" {
 		return fmt.Errorf("no cloud accounts yet: got %s", data)
 	}
+	var steps []step
 	for _, bad := range []string{"", "nope", `{"access_token":"at-1"}`, `{"refresh_token":"two words"}`} {
-		if _, err := expect(fmt.Sprintf("cloud account %q is rejected", bad), 400, "POST", "/cloud-accounts", token, []byte(bad)); err != nil {
-			return err
-		}
+		steps = append(steps, step{fmt.Sprintf("cloud account %q is rejected", bad), 400, "POST", "/cloud-accounts", token, []byte(bad)})
 	}
-	if _, err := expect("a dead login is refused", 403, "POST", "/cloud-accounts", token, []byte(`{"refresh_token":"rt-0"}`)); err != nil {
-		return err
-	}
-	if _, err := expect("add an account by renewing its login", 201, "POST", "/cloud-accounts", token, []byte(`{"refresh_token":"rt-1"}`)); err != nil {
-		return err
-	}
-	if _, err := expect("add an account by its access token", 201, "POST", "/cloud-accounts", token,
-		[]byte(`{"access_token":"at-other","refresh_token":"rt-other","expires_at":99999999999999}`)); err != nil {
-		return err
-	}
-	if _, err := expect("re-adding an account replaces it", 200, "POST", "/cloud-accounts", token,
-		[]byte(`{"access_token":"at-other","refresh_token":"rt-other","expires_at":99999999999999}`)); err != nil {
-		return err
-	}
-	data, err := expect("list cloud accounts", 200, "GET", "/cloud-accounts", token, nil)
-	if err != nil {
+	if err := runSteps(expect, append(steps,
+		step{"a dead login is refused", 403, "POST", "/cloud-accounts", token, []byte(`{"refresh_token":"rt-0"}`)},
+		step{"add an account by renewing its login", 201, "POST", "/cloud-accounts", token, []byte(`{"refresh_token":"rt-1"}`)},
+		step{"add an account by its access token", 201, "POST", "/cloud-accounts", token, []byte(`{"access_token":"at-other","refresh_token":"rt-other","expires_at":99999999999999}`)},
+		step{"re-adding an account replaces it", 200, "POST", "/cloud-accounts", token, []byte(`{"access_token":"at-other","refresh_token":"rt-other","expires_at":99999999999999}`)},
+	)...); err != nil {
 		return err
 	}
 	var listed []cloudAccountInfo
-	if err := json.Unmarshal(data, &listed); err != nil || len(listed) != 2 ||
+	data, err := expectJSON(expect, &listed, "list cloud accounts", 200, "GET", "/cloud-accounts", token, nil)
+	if err != nil {
+		return err
+	}
+	if len(listed) != 2 ||
 		listed[0].ID != "11111111-aaaa" || listed[0].Email != "first@example.com" || listed[0].Plan != "claude_pro" ||
 		listed[1].ID != "22222222-bbbb" || strings.Contains(string(data), "rt-") || strings.Contains(string(data), "at-") {
 		return fmt.Errorf("list cloud accounts: got %s", data)
 	}
 
 	tokenOf := func(desc, body string) (string, error) {
-		data, err := expect(desc, 200, "POST", "/cloud-accounts/11111111-aaaa/token", token, []byte(body))
-		if err != nil {
-			return "", err
-		}
 		var t struct {
 			AccessToken string `json:"access_token"`
 			ExpiresAt   int64  `json:"expires_at"`
 		}
-		if err := json.Unmarshal(data, &t); err != nil || t.ExpiresAt == 0 {
+		data, err := expectJSON(expect, &t, desc, 200, "POST", "/cloud-accounts/11111111-aaaa/token", token, []byte(body))
+		if err != nil {
+			return "", err
+		} else if t.ExpiresAt == 0 {
 			return "", fmt.Errorf("%s: got %s", desc, data)
 		}
 		return t.AccessToken, nil
@@ -241,26 +240,19 @@ func cloudSelfTest(expect expectFunc, base, token, dir string, fake *fakeCloud) 
 	if err := cloudRelaySelfTest(base, token, fake); err != nil {
 		return err
 	}
-	if _, err := expect("relay to a route it doesn't reach", 404, "GET", "/cloud-accounts/11111111-aaaa/api/api/oauth/usage", token, nil); err != nil {
+	if err := runSteps(expect,
+		step{"relay to a route it doesn't reach", 404, "GET", "/cloud-accounts/11111111-aaaa/api/api/oauth/usage", token, nil},
+		step{"relay for an unknown account", 404, "GET", "/cloud-accounts/nobody/api/v1/code/sessions", token, nil},
+		step{"the relay requires the token", 401, "GET", "/cloud-accounts/11111111-aaaa/api/v1/code/sessions", "", nil},
+		step{"remove a cloud account", 200, "DELETE", "/cloud-accounts/22222222-bbbb", token, nil},
+		step{"remove it again", 404, "DELETE", "/cloud-accounts/22222222-bbbb", token, nil},
+	); err != nil {
 		return err
 	}
-	if _, err := expect("relay for an unknown account", 404, "GET", "/cloud-accounts/nobody/api/v1/code/sessions", token, nil); err != nil {
+	if data, err = expectJSON(expect, &listed, "list after removal", 200, "GET", "/cloud-accounts", token, nil); err != nil {
 		return err
 	}
-	if _, err := expect("the relay requires the token", 401, "GET", "/cloud-accounts/11111111-aaaa/api/v1/code/sessions", "", nil); err != nil {
-		return err
-	}
-	if _, err := expect("remove a cloud account", 200, "DELETE", "/cloud-accounts/22222222-bbbb", token, nil); err != nil {
-		return err
-	}
-	if _, err := expect("remove it again", 404, "DELETE", "/cloud-accounts/22222222-bbbb", token, nil); err != nil {
-		return err
-	}
-	data, err = expect("list after removal", 200, "GET", "/cloud-accounts", token, nil)
-	if err != nil {
-		return err
-	}
-	if err := json.Unmarshal(data, &listed); err != nil || len(listed) != 1 || listed[0].ID != "11111111-aaaa" {
+	if len(listed) != 1 || listed[0].ID != "11111111-aaaa" {
 		return fmt.Errorf("list after removal: got %s", data)
 	}
 	return nil
@@ -272,17 +264,11 @@ func cloudSelfTest(expect expectFunc, base, token, dir string, fake *fakeCloud) 
 // themselves. It needs the request's own headers, which expect doesn't set.
 func cloudRelaySelfTest(base, token string, fake *fakeCloud) error {
 	get := func(desc string) (string, error) {
-		req, _ := http.NewRequest("GET", base+"/cloud-accounts/11111111-aaaa/api/v1/code/sessions?limit=5", nil)
-		req.Header.Set("Authorization", "Bearer "+token)
-		req.Header.Set("x-organization-uuid", "org-1")
-		req.Header.Set("Cookie", "site=mine")
-		req.Header.Set("Origin", "https://example.com")
-		resp, err := http.DefaultClient.Do(req)
+		resp, data, err := testRequest(context.Background(), "GET", base+"/cloud-accounts/11111111-aaaa/api/v1/code/sessions?limit=5", token, nil,
+			"x-organization-uuid", "org-1", "Cookie", "site=mine", "Origin", "https://example.com")
 		if err != nil {
 			return "", fmt.Errorf("%s: %v", desc, err)
 		}
-		defer resp.Body.Close()
-		data, _ := io.ReadAll(resp.Body)
 		if resp.StatusCode != 200 || resp.Header.Get("Set-Cookie") != "" {
 			return "", fmt.Errorf("%s: HTTP %d %s (Set-Cookie %q)", desc, resp.StatusCode, data, resp.Header.Get("Set-Cookie"))
 		}
@@ -325,12 +311,12 @@ func conversationsSelfTest(expect expectFunc, token string) error {
 		return err
 	}
 	text := "# Fix the list app\n\n[User]\nhello\n\n" + strings.Repeat("tool output\n", 20000)
-	data, err := expect("store a conversation", 201, "POST", "/conversations", token, []byte(text))
+	var stored struct{ ID string }
+	data, err := expectJSON(expect, &stored, "store a conversation", 201, "POST", "/conversations", token, []byte(text))
 	if err != nil {
 		return err
 	}
-	var stored struct{ ID string }
-	if err := json.Unmarshal(data, &stored); err != nil || !conversationID(stored.ID) {
+	if !conversationID(stored.ID) {
 		return fmt.Errorf("store a conversation: got %s", data)
 	}
 	if back, err := expect("read it back", 200, "GET", "/conversations/"+stored.ID, token, nil); err != nil {
@@ -338,19 +324,17 @@ func conversationsSelfTest(expect expectFunc, token string) error {
 	} else if string(back) != text {
 		return fmt.Errorf("read it back: got %d bytes, want %d", len(back), len(text))
 	}
-	data, err = expect("list conversations", 200, "GET", "/conversations", token, nil)
-	if err != nil {
+	var listed []conversationInfo
+	if data, err = expectJSON(expect, &listed, "list conversations", 200, "GET", "/conversations", token, nil); err != nil {
 		return err
 	}
-	var listed []conversationInfo
-	if err := json.Unmarshal(data, &listed); err != nil || len(listed) != 1 || listed[0].ID != stored.ID ||
+	if len(listed) != 1 || listed[0].ID != stored.ID ||
 		listed[0].Title != "Fix the list app" || listed[0].Size != int64(len(text)) {
 		return fmt.Errorf("list conversations: got %s", data)
 	}
+	var steps []step
 	for _, bad := range []string{"aaaaaaaaaaaaaaaa", "..%2Ffiles%2Fx", "short"} {
-		if _, err := expect("conversation "+bad+" is not found", 404, "GET", "/conversations/"+bad, token, nil); err != nil {
-			return err
-		}
+		steps = append(steps, step{"conversation " + bad + " is not found", 404, "GET", "/conversations/" + bad, token, nil})
 	}
-	return nil
+	return runSteps(expect, steps...)
 }

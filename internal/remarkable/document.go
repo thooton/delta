@@ -187,7 +187,6 @@ func SafeFileName(name string) string {
 // rmContent is the part of a document's .content file that orders its
 // pages: cPages in firmware 3, pages and redirectionPageMap before.
 type rmContent struct {
-	FileType string   `json:"fileType"`
 	Pages    []string `json:"pages"`
 	Redirect []int    `json:"redirectionPageMap"`
 	CPages   struct {

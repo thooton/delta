@@ -12,25 +12,16 @@ import (
 	"strings"
 )
 
-// Pens (the tool ids in a page file).
+// Pens (the tool ids in a page file) that draw differently from the rest.
 const (
-	rmPaintbrush1   = 0
 	rmPencil1       = 1
-	rmBallpoint1    = 2
-	rmMarker1       = 3
-	rmFineliner1    = 4
 	rmHighlighter1  = 5
 	rmEraser        = 6
 	rmMechPencil1   = 7
 	rmEraserArea    = 8
-	rmPaintbrush2   = 12
 	rmMechPencil2   = 13
 	rmPencil2       = 14
-	rmBallpoint2    = 15
-	rmMarker2       = 16
-	rmFineliner2    = 17
 	rmHighlighter2  = 18
-	rmCalligraphy   = 21
 	rmShader        = 23
 	rmColorARGB     = 9 // newer firmware: the color is in the stroke
 	rmColorDefaultH = 3 // yellow, for highlighters
@@ -104,24 +95,19 @@ func pointWidth(s rmStroke, p rmPoint) float64 {
 
 // rmBounds is the area a page covers, in page coordinates: at least the
 // screen, and more where it was scrolled.
-func rmBounds(pages ...*rmPage) (minX, minY, maxX, maxY float64) {
+func rmBounds(p *rmPage) (minX, minY, maxX, maxY float64) {
 	minX, minY, maxX, maxY = -rmWidth/2, 0, rmWidth/2, rmHeight
-	for _, p := range pages {
-		if p == nil {
-			continue
+	for _, s := range p.Strokes {
+		for _, q := range s.Points {
+			w := q.Width
+			minX, maxX = min(minX, q.X-w), max(maxX, q.X+w)
+			minY, maxY = min(minY, q.Y-w), max(maxY, q.Y+w)
 		}
-		for _, s := range p.Strokes {
-			for _, q := range s.Points {
-				w := q.Width
-				minX, maxX = min(minX, q.X-w), max(maxX, q.X+w)
-				minY, maxY = min(minY, q.Y-w), max(maxY, q.Y+w)
-			}
-		}
-		for _, im := range p.Images {
-			for _, v := range im.Vertices {
-				minX, maxX = min(minX, v[0]), max(maxX, v[0])
-				minY, maxY = min(minY, v[1]), max(maxY, v[1])
-			}
+	}
+	for _, im := range p.Images {
+		for _, v := range im.Vertices {
+			minX, maxX = min(minX, v[0]), max(maxX, v[0])
+			minY, maxY = min(minY, v[1]), max(maxY, v[1])
 		}
 	}
 	return
@@ -165,7 +151,7 @@ func inkOps(p *rmPage, m [6]float64) *pdfInk {
 			c = rmColors[rmColorDefaultH]
 		}
 		out.alphas["DeltaGS45m"], out.blend["DeltaGS45m"] = 0.45, true
-		fmt.Fprintf(b, "q /DeltaGS45m gs %s %s %s rg\n", pdfNum(float64(c.R)/255), pdfNum(float64(c.G)/255), pdfNum(float64(c.B)/255))
+		fmt.Fprintf(b, "q /DeltaGS45m gs %s rg\n", pdfRGB(c))
 		for _, r := range h.Rects {
 			fmt.Fprintf(b, "%s %s %s %s re\n", pdfNum(r[0]), pdfNum(r[1]), pdfNum(r[2]), pdfNum(r[3]))
 		}
@@ -186,7 +172,7 @@ func inkOps(p *rmPage, m [6]float64) *pdfInk {
 			out.blend[name] = ink.multiply
 			fmt.Fprintf(b, "/%s gs\n", name)
 		}
-		fmt.Fprintf(b, "%s %s %s RG\n", pdfNum(float64(ink.color.R)/255), pdfNum(float64(ink.color.G)/255), pdfNum(float64(ink.color.B)/255))
+		fmt.Fprintf(b, "%s RG\n", pdfRGB(ink.color))
 		// One path per run of points of about the same width.
 		pts := s.Points
 		if len(pts) == 1 {
@@ -263,8 +249,6 @@ func textOps(b *bytes.Buffer, p *rmPage) {
 		size, height := 32.0, 71.0
 		if t, ok := strings.CutPrefix(para, "# "); ok {
 			para, size, height = t, 52, 150
-		} else if strings.HasPrefix(para, "- ") || strings.HasPrefix(para, "  - ") || strings.HasPrefix(para, "[") {
-			height = 71
 		}
 		for i, line := range wrapText(para, width, size) {
 			if i > 0 {
@@ -337,6 +321,11 @@ func notebookPage(p *rmPage, s float64) outPage {
 	minX, minY, maxX, maxY := rmBounds(p)
 	w, h := (maxX-minX)*s, (maxY-minY)*s
 	return outPage{width: w, height: h, ink: inkOps(p, [6]float64{s, 0, 0, -s, -minX * s, h + minY*s})}
+}
+
+// pdfRGB writes a color as PDF's three components.
+func pdfRGB(c color.RGBA) string {
+	return pdfNum(float64(c.R)/255) + " " + pdfNum(float64(c.G)/255) + " " + pdfNum(float64(c.B)/255)
 }
 
 // pointsPerPixel is the tablet's screen resolution, 226 dpi.

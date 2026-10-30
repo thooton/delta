@@ -4,7 +4,6 @@ import (
 	"bufio"
 	"bytes"
 	"context"
-	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -35,6 +34,9 @@ type fakeModel struct {
 }
 
 var testModel *fakeModel
+
+// zenSessionPattern is an OpenCode session id, as the CLI makes them.
+var zenSessionPattern = regexp.MustCompile(`^ses_[0-9a-f]{12}[0-9A-Za-z]{14}$`)
 
 func newFakeModel() *fakeModel {
 	m := &fakeModel{outputs: map[string]string{}}
@@ -83,7 +85,7 @@ func (m *fakeModel) serve(w http.ResponseWriter, r *http.Request) {
 	switch {
 	case !strings.Contains(r.Header.Get("User-Agent"), "opencode/1."):
 		m.problem("model request has User-Agent %q", r.Header.Get("User-Agent"))
-	case !regexp.MustCompile(`^ses_[0-9a-f]{12}[0-9A-Za-z]{14}$`).MatchString(ses):
+	case !zenSessionPattern.MatchString(ses):
 		m.problem("model request has OpenCode session %q", ses)
 	case req.Model != agentModelID || !strings.HasSuffix(req.Model, "-free"):
 		m.problem("model request asks for %q", req.Model)
@@ -201,23 +203,23 @@ func agentsSelfTest(expect expectFunc, token, dir string, agents *agentService, 
 		b, _ := json.Marshal(agentMessage{Title: "Fix the list app", UUID: "u-" + text, Text: text})
 		return b
 	}
-	if _, err := expect("backup sessions require the token", 401, "GET", "/agent-sessions", "", nil); err != nil {
-		return err
-	}
-	if _, err := expect("empty backup session message is refused", 400, "POST", "/agent-sessions", token, []byte(`{"text":" "}`)); err != nil {
+	if err := runSteps(expect,
+		step{"backup sessions require the token", 401, "GET", "/agent-sessions", "", nil},
+		step{"empty backup session message is refused", 400, "POST", "/agent-sessions", token, []byte(`{"text":" "}`)},
+	); err != nil {
 		return err
 	}
 	if err := checkZenSessionID(); err != nil {
 		return err
 	}
-	data, err := expect("create a backup session", 201, "POST", "/agent-sessions", token, msg("ping"))
-	if err != nil {
-		return err
-	}
 	var created struct {
 		ID string `json:"id"`
 	}
-	if err := json.Unmarshal(data, &created); err != nil || !strings.HasPrefix(created.ID, agentIDPrefix) {
+	data, err := expectJSON(expect, &created, "create a backup session", 201, "POST", "/agent-sessions", token, msg("ping"))
+	if err != nil {
+		return err
+	}
+	if !strings.HasPrefix(created.ID, agentIDPrefix) {
 		return fmt.Errorf("create a backup session: got %s", data)
 	}
 	id := created.ID
@@ -307,65 +309,41 @@ func agentsSelfTest(expect expectFunc, token, dir string, agents *agentService, 
 	// What a session's token may reach, on the agent socket only.
 	const agentToken = "delta_agent_selftest"
 	agents.mu.Lock()
-	agents.tokens[sha256.Sum256([]byte(agentToken))] = agents.sessions[id]
+	agents.tokens[keyHash(agentToken)] = agents.sessions[id]
 	agents.mu.Unlock()
 	as := httptest.NewServer(agentHandler)
 	defer as.Close()
-	agentCall := func(desc string, want int, method, path, tok string, body []byte) error {
-		req, _ := http.NewRequest(method, as.URL+path, bytes.NewReader(body))
-		if tok != "" {
-			req.Header.Set("Authorization", "Bearer "+tok)
-		}
-		resp, err := as.Client().Do(req)
-		if err != nil {
-			return fmt.Errorf("%s: %w", desc, err)
-		}
-		data, _ := io.ReadAll(resp.Body)
-		resp.Body.Close()
-		if resp.StatusCode != want {
-			return fmt.Errorf("%s: got HTTP %d, want %d (%s)", desc, resp.StatusCode, want, strings.TrimSpace(string(data)))
-		}
-		if desc == "session token's scope" && !bytes.Contains(data, []byte(`"scope":"agent"`)) {
-			return fmt.Errorf("%s: got %s", desc, data)
-		}
-		return nil
+	agentExpect := expectAt(as.URL)
+	if data, err := agentExpect("session token's scope", 200, "GET", "/auth", agentToken, nil); err != nil {
+		return err
+	} else if !bytes.Contains(data, []byte(`"scope":"agent"`)) {
+		return fmt.Errorf("session token's scope: got %s", data)
 	}
-	checks := []struct {
-		desc         string
-		want         int
-		method, path string
-		tok          string
-		body         string
-	}{
-		{"session token's scope", 200, "GET", "/auth", agentToken, ""},
-		{"session token lists files", 200, "GET", "/files", agentToken, ""},
-		{"session token can't read Gmail", 403, "GET", "/gmail-login", agentToken, ""},
-		{"session token can't read the two-factor accounts", 403, "GET", "/otp", agentToken, ""},
-		{"session token can't use Canvas", 403, "GET", "/canvas/api/v1/users/self", agentToken, ""},
-		{"session token can't replace the GitHub token", 403, "PUT", "/personal-access-token", agentToken, "ghp_x"},
-		{"session token can't change the maps key", 403, "PUT", "/maps-key", agentToken, "x"},
-		{"session token can't run backup sessions", 403, "GET", "/agent-sessions", agentToken, ""},
-		{"session token lists the Claude accounts", 200, "GET", "/cloud-accounts", agentToken, ""},
-		{"session token takes a Claude account's token", 200, "POST", "/cloud-accounts/11111111-aaaa/token", agentToken, ""},
-		{"session token can't store a conversation", 403, "POST", "/conversations", agentToken, "x"},
-		{"session token reads carried conversations", 200, "GET", "/conversations", agentToken, ""},
-		{"GitHub relay reaches only GitHub", 404, "GET", "/github/example.com/x", agentToken, ""},
-		{"the delta token isn't taken on the agent socket", 401, "GET", "/auth", token, ""},
-		{"a made-up session token is refused", 401, "GET", "/auth", "delta_agent_nope", ""},
-	}
-	for _, c := range checks {
-		if err := agentCall(c.desc, c.want, c.method, c.path, c.tok, []byte(c.body)); err != nil {
-			return err
-		}
-	}
-	if _, err := expect("a session token isn't taken on the public listener", 401, "GET", "/auth", agentToken, nil); err != nil {
+	if err := runSteps(agentExpect,
+		step{"session token lists files", 200, "GET", "/files", agentToken, nil},
+		step{"session token can't read Gmail", 403, "GET", "/gmail-login", agentToken, nil},
+		step{"session token can't read the two-factor accounts", 403, "GET", "/otp", agentToken, nil},
+		step{"session token can't use Canvas", 403, "GET", "/canvas/api/v1/users/self", agentToken, nil},
+		step{"session token can't replace the GitHub token", 403, "PUT", "/personal-access-token", agentToken, []byte("ghp_x")},
+		step{"session token can't change the maps key", 403, "PUT", "/maps-key", agentToken, []byte("x")},
+		step{"session token can't run backup sessions", 403, "GET", "/agent-sessions", agentToken, nil},
+		step{"session token lists the Claude accounts", 200, "GET", "/cloud-accounts", agentToken, nil},
+		step{"session token takes a Claude account's token", 200, "POST", "/cloud-accounts/11111111-aaaa/token", agentToken, nil},
+		step{"session token can't store a conversation", 403, "POST", "/conversations", agentToken, []byte("x")},
+		step{"session token reads carried conversations", 200, "GET", "/conversations", agentToken, nil},
+		step{"GitHub relay reaches only GitHub", 404, "GET", "/github/example.com/x", agentToken, nil},
+		step{"the delta token isn't taken on the agent socket", 401, "GET", "/auth", token, nil},
+		step{"a made-up session token is refused", 401, "GET", "/auth", "delta_agent_nope", nil},
+	); err != nil {
 		return err
 	}
-
-	if _, err := expect("delete the backup session", 200, "DELETE", "/agent-sessions/"+id, token, nil); err != nil {
+	if err := runSteps(expect,
+		step{"a session token isn't taken on the public listener", 401, "GET", "/auth", agentToken, nil},
+		step{"delete the backup session", 200, "DELETE", "/agent-sessions/" + id, token, nil},
+	); err != nil {
 		return err
 	}
-	if err := agentCall("a deleted session's token is refused", 401, "GET", "/auth", agentToken, nil); err != nil {
+	if _, err := agentExpect("a deleted session's token is refused", 401, "GET", "/auth", agentToken, nil); err != nil {
 		return err
 	}
 	if _, err := os.Stat(filepath.Join(dir, "agents", id)); err == nil {
@@ -576,7 +554,7 @@ func checkContainerSetup(dir string, agents *agentService) error {
 // makes them (agents_model.go).
 func checkZenSessionID() error {
 	id := zenSessionID()
-	if !regexp.MustCompile(`^ses_[0-9a-f]{12}[0-9A-Za-z]{14}$`).MatchString(id) {
+	if !zenSessionPattern.MatchString(id) {
 		return fmt.Errorf("zenSessionID: malformed %q", id)
 	}
 	// Descending: the hex is the bit-inverted (ms * 0x1000 + 1), low 48 bits.

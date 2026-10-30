@@ -2,10 +2,7 @@ package main
 
 import (
 	"bufio"
-	"crypto/rand"
-	"encoding/base32"
 	"errors"
-	"fmt"
 	"io"
 	"net/http"
 	"os"
@@ -49,9 +46,7 @@ func conversationID(id string) bool {
 }
 
 func newConversationID() string {
-	b := make([]byte, 10)
-	rand.Read(b)
-	return strings.ToLower(base32.StdEncoding.EncodeToString(b))
+	return randomString("abcdefghijklmnopqrstuvwxyz234567", 16)
 }
 
 func (c *conversationStore) put(w http.ResponseWriter, r *http.Request) {
@@ -59,25 +54,11 @@ func (c *conversationStore) put(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	tmp, err := os.CreateTemp(c.dir, ".upload-*")
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+	tmp, n, ok := receiveUpload(w, r, c.dir, c.max, "conversation")
+	if !ok {
 		return
 	}
-	defer os.Remove(tmp.Name())
-	n, err := io.Copy(tmp, http.MaxBytesReader(w, r.Body, c.max))
-	if cerr := tmp.Close(); err == nil {
-		err = cerr
-	}
-	if err != nil {
-		var tooBig *http.MaxBytesError
-		if errors.As(err, &tooBig) {
-			writeError(w, http.StatusRequestEntityTooLarge, fmt.Sprintf("conversation exceeds %d bytes", c.max))
-		} else {
-			writeError(w, http.StatusBadRequest, "upload failed: "+err.Error())
-		}
-		return
-	}
+	defer os.Remove(tmp)
 	if n == 0 {
 		writeError(w, http.StatusBadRequest, "the conversation is empty")
 		return
@@ -85,7 +66,7 @@ func (c *conversationStore) put(w http.ResponseWriter, r *http.Request) {
 	for {
 		id := newConversationID()
 		// A link fails rather than replace, should two ids ever collide.
-		err := os.Link(tmp.Name(), filepath.Join(c.dir, id+".txt"))
+		err := os.Link(tmp, filepath.Join(c.dir, id+".txt"))
 		if errors.Is(err, os.ErrExist) {
 			continue
 		} else if err != nil {
@@ -103,22 +84,8 @@ func (c *conversationStore) get(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "no such conversation")
 		return
 	}
-	f, err := os.Open(filepath.Join(c.dir, id+".txt"))
-	if errors.Is(err, os.ErrNotExist) {
-		writeError(w, http.StatusNotFound, "no such conversation")
-		return
-	} else if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
-		return
-	}
-	defer f.Close()
-	info, err := f.Stat()
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
-		return
-	}
 	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
-	http.ServeContent(w, r, id+".txt", info.ModTime(), f)
+	serveFile(w, r, filepath.Join(c.dir, id+".txt"), id+".txt", "no such conversation")
 }
 
 type conversationInfo struct {

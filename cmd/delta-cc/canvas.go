@@ -8,12 +8,13 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"maps"
 	"mime/multipart"
 	"net/http"
 	"net/textproto"
 	"net/url"
 	"os"
-	"sort"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -24,8 +25,8 @@ import (
 // canvas-cookie service (see the canvas-cookie README), which keeps a
 // logged-in Canvas browser session alive and hands out its Cookie header to
 // local clients holding its API token. The relay attaches that cookie (and the
-// matching CSRF token) to requests the CLI makes, so the agent gets full
-// student access to Canvas without ever seeing the session.
+// matching CSRF token) to the requests Canvas on the phone makes, so it gets
+// full student access to Canvas without ever seeing the session.
 //
 // Routes (all behind the delta bearer token):
 //
@@ -237,11 +238,15 @@ func (p *canvasProxy) sessionExpired(resp *http.Response) bool {
 	return !bytes.Contains(data, []byte(`"unauthorized"`))
 }
 
+// origin is the Canvas origin, as scheme://host.
+func (p *canvasProxy) origin() string {
+	return p.base.Scheme + "://" + p.base.Host
+}
+
 // target maps a relay request path onto the Canvas origin, keeping the
 // original escaping of the path.
 func (p *canvasProxy) target(r *http.Request, prefix string) string {
-	path := strings.TrimPrefix(r.URL.EscapedPath(), prefix)
-	t := p.base.Scheme + "://" + p.base.Host + path
+	t := p.origin() + strings.TrimPrefix(r.URL.EscapedPath(), prefix)
 	if r.URL.RawQuery != "" {
 		t += "?" + r.URL.RawQuery
 	}
@@ -255,11 +260,7 @@ func (p *canvasProxy) relay(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	header := http.Header{}
-	for _, k := range []string{"Accept", "Content-Type", "Range", "If-None-Match", "If-Modified-Since"} {
-		if v := r.Header.Values(k); len(v) > 0 {
-			header[k] = v
-		}
-	}
+	copyListed(header, r.Header, "Accept", "Content-Type", "Range", "If-None-Match", "If-Modified-Since")
 	if header.Get("Accept") == "" {
 		header.Set("Accept", "application/json")
 	}
@@ -273,15 +274,20 @@ func (p *canvasProxy) relay(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadGateway, "canvas: the Canvas session was rejected even after refreshing the cookie; the user may need to log in to Canvas again and reseed the canvas-cookie service")
 		return
 	}
-	for _, k := range []string{"Content-Type", "Content-Length", "Content-Disposition", "Content-Range", "Link", "Location", "ETag", "Last-Modified", "X-Rate-Limit-Remaining"} {
-		if v := resp.Header.Values(k); len(v) > 0 {
-			w.Header()[k] = v
-		}
-	}
+	copyListed(w.Header(), resp.Header, "Content-Type", "Content-Length", "Content-Disposition", "Content-Range", "Link", "Location", "ETag", "Last-Modified", "X-Rate-Limit-Remaining")
 	w.Header().Set("X-Delta-Canvas", "1")
 	w.Header().Set("X-Canvas-Url", resp.Request.URL.String())
 	w.WriteHeader(resp.StatusCode)
 	io.Copy(w, resp.Body)
+}
+
+// copyListed copies the headers named from src to dst.
+func copyListed(dst, src http.Header, names ...string) {
+	for _, k := range names {
+		if v := src.Values(k); len(v) > 0 {
+			dst[k] = v
+		}
+	}
 }
 
 func (p *canvasProxy) status(w http.ResponseWriter, r *http.Request) {
@@ -304,7 +310,6 @@ func (p *canvasProxy) status(w http.ResponseWriter, r *http.Request) {
 // GET when the storage server asks for one. It responds with the Canvas file
 // object, whose "id" can then be attached to a submission, comment or message.
 func (p *canvasProxy) upload(w http.ResponseWriter, r *http.Request) {
-	ctx := r.Context()
 	q := r.URL.Query()
 	name := q.Get("name")
 	size := r.ContentLength
@@ -324,51 +329,64 @@ func (p *canvasProxy) upload(w http.ResponseWriter, r *http.Request) {
 		contentType = "application/octet-stream"
 	}
 
-	// Step 1: preflight. Every query parameter is passed on (name,
-	// content_type, parent_folder_path, on_duplicate, ...), plus the size.
+	pre, ok := p.preflight(w, r, size, contentType)
+	if !ok {
+		return
+	}
+	resp, data, ok := p.store(w, r, pre, name, contentType, size)
+	if !ok {
+		return
+	}
+	if file, ok := p.confirm(r.Context(), w, resp, data); ok {
+		writeJSON(w, http.StatusOK, file)
+	}
+}
+
+// canvasPreflight is where Canvas says to send a file.
+type canvasPreflight struct {
+	UploadURL    string         `json:"upload_url"`
+	UploadParams map[string]any `json:"upload_params"`
+	FileParam    string         `json:"file_param"`
+}
+
+// preflight is the upload's first step. Every query parameter is passed on
+// (name, content_type, parent_folder_path, on_duplicate, ...), plus the size.
+func (p *canvasProxy) preflight(w http.ResponseWriter, r *http.Request, size int64, contentType string) (pre canvasPreflight, ok bool) {
 	form := url.Values{}
-	for k, vs := range q {
+	for k, vs := range r.URL.Query() {
 		form[k] = vs
 	}
 	form.Set("size", strconv.FormatInt(size, 10))
 	form.Set("content_type", contentType)
-	preflightURL := p.base.Scheme + "://" + p.base.Host + strings.TrimPrefix(r.URL.EscapedPath(), "/canvas-upload")
-	resp, err := p.do(ctx, p.client, http.MethodPost, preflightURL,
+	resp, err := p.do(r.Context(), p.client, http.MethodPost, p.origin()+strings.TrimPrefix(r.URL.EscapedPath(), "/canvas-upload"),
 		http.Header{"Content-Type": {"application/x-www-form-urlencoded"}, "Accept": {"application/json"}},
 		[]byte(form.Encode()))
 	if err != nil {
 		writeError(w, http.StatusBadGateway, "canvas upload preflight: "+err.Error())
-		return
+		return pre, false
 	}
-	data, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
-	resp.Body.Close()
+	data := readSmall(resp)
 	if resp.StatusCode/100 != 2 {
 		relayCanvasError(w, resp.StatusCode, "upload preflight", data)
-		return
-	}
-	var pre struct {
-		UploadURL    string         `json:"upload_url"`
-		UploadParams map[string]any `json:"upload_params"`
-		FileParam    string         `json:"file_param"`
+		return pre, false
 	}
 	if err := json.Unmarshal(stripWhile(data), &pre); err != nil || pre.UploadURL == "" {
 		writeError(w, http.StatusBadGateway, "canvas upload preflight: unexpected response: "+snippet(data))
-		return
+		return pre, false
 	}
 	if pre.FileParam == "" {
 		pre.FileParam = "file"
 	}
+	return pre, true
+}
 
-	// Step 2: multipart POST to the storage server. The length is computed
-	// up front because storage backends reject chunked uploads.
+// store is the upload's second step: a multipart POST of the request's body
+// to the storage server. The length is computed up front because storage
+// backends reject chunked uploads. It returns the storage server's answer.
+func (p *canvasProxy) store(w http.ResponseWriter, r *http.Request, pre canvasPreflight, name, contentType string, size int64) (*http.Response, []byte, bool) {
 	var head bytes.Buffer
 	mw := multipart.NewWriter(&head)
-	keys := make([]string, 0, len(pre.UploadParams))
-	for k := range pre.UploadParams {
-		keys = append(keys, k)
-	}
-	sort.Strings(keys)
-	for _, k := range keys {
+	for _, k := range slices.Sorted(maps.Keys(pre.UploadParams)) {
 		v := pre.UploadParams[k]
 		s, ok := v.(string)
 		if !ok {
@@ -382,34 +400,36 @@ func (p *canvasProxy) upload(w http.ResponseWriter, r *http.Request) {
 	part.Set("Content-Type", contentType)
 	mw.CreatePart(part)
 	tail := "\r\n--" + mw.Boundary() + "--\r\n"
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, pre.UploadURL,
+	req, err := http.NewRequestWithContext(r.Context(), http.MethodPost, pre.UploadURL,
 		io.MultiReader(&head, io.LimitReader(r.Body, size), strings.NewReader(tail)))
 	if err != nil {
 		writeError(w, http.StatusBadGateway, "canvas upload: bad upload_url: "+err.Error())
-		return
+		return nil, nil, false
 	}
 	req.ContentLength = int64(head.Len()) + size + int64(len(tail))
 	req.Header.Set("Content-Type", mw.FormDataContentType())
 	req.Header.Set("User-Agent", canvasUserAgent)
 	if req.URL.Host == p.base.Host { // local Canvas storage needs the session
-		cookie, err := p.getCookie(ctx, false)
+		cookie, err := p.getCookie(r.Context(), false)
 		if err != nil {
 			writeError(w, http.StatusBadGateway, "canvas upload: "+err.Error())
-			return
+			return nil, nil, false
 		}
 		req.Header.Set("Cookie", cookie)
 		req.Header.Set("X-CSRF-Token", csrfToken(cookie))
 	}
-	resp, err = p.noFollow.Do(req)
+	resp, err := p.noFollow.Do(req)
 	if err != nil {
 		writeError(w, http.StatusBadGateway, "canvas upload: "+err.Error())
-		return
+		return nil, nil, false
 	}
-	data, _ = io.ReadAll(io.LimitReader(resp.Body, 1<<20))
-	resp.Body.Close()
+	return resp, readSmall(resp), true
+}
 
-	// Step 3: confirm. A redirect must be followed with the session to mark
-	// the file available; a 2xx usually carries the file object already.
+// confirm is the upload's last step. A redirect must be followed with the
+// session to mark the file available; a 2xx usually carries the file object
+// already. It returns the file object.
+func (p *canvasProxy) confirm(ctx context.Context, w http.ResponseWriter, resp *http.Response, data []byte) (map[string]any, bool) {
 	confirm := ""
 	var file map[string]any
 	switch {
@@ -419,44 +439,41 @@ func (p *canvasProxy) upload(w http.ResponseWriter, r *http.Request) {
 		json.Unmarshal(stripWhile(data), &file)
 		if file["id"] == nil {
 			if confirm = resp.Header.Get("Location"); confirm == "" {
-				if loc, ok := file["location"].(string); ok {
-					confirm = loc
-				}
+				confirm, _ = file["location"].(string)
 			}
 		}
 	default:
 		writeError(w, http.StatusBadGateway, fmt.Sprintf("canvas upload: storage server returned HTTP %d: %s", resp.StatusCode, snippet(data)))
-		return
+		return nil, false
 	}
 	if confirm != "" {
 		loc, err := resp.Request.URL.Parse(confirm)
 		if err != nil || loc.Host != p.base.Host {
 			writeError(w, http.StatusBadGateway, "canvas upload: unexpected confirmation URL "+confirm)
-			return
+			return nil, false
 		}
 		cresp, err := p.do(ctx, p.client, http.MethodGet, loc.String(), http.Header{"Accept": {"application/json"}}, nil)
 		if err != nil {
 			writeError(w, http.StatusBadGateway, "canvas upload confirmation: "+err.Error())
-			return
+			return nil, false
 		}
-		data, _ = io.ReadAll(io.LimitReader(cresp.Body, 1<<20))
-		cresp.Body.Close()
+		data = readSmall(cresp)
 		if cresp.StatusCode/100 != 2 {
 			relayCanvasError(w, cresp.StatusCode, "upload confirmation", data)
-			return
+			return nil, false
 		}
 		file = nil
 		json.Unmarshal(stripWhile(data), &file)
 	}
 	if file["id"] == nil {
 		writeError(w, http.StatusBadGateway, "canvas upload: no file id in response: "+snippet(data))
-		return
+		return nil, false
 	}
-	writeJSON(w, http.StatusOK, file)
+	return file, true
 }
 
 // relayCanvasError passes a Canvas error through, marked as coming from
-// Canvas so the CLI can explain it.
+// Canvas so the client can explain it.
 func relayCanvasError(w http.ResponseWriter, status int, step string, data []byte) {
 	w.Header().Set("X-Delta-Canvas", "1")
 	if json.Valid(stripWhile(data)) {

@@ -30,9 +30,7 @@ func accessTokenStore(dataDir string) *secretStore {
 	return &secretStore{
 		path:      filepath.Join(dataDir, accessTokenFile),
 		route:     "/personal-access-token",
-		field:     "token",
 		what:      "token",
-		missing:   "no personal access token is set; ask the user for one and run `delta set-personal-access-token -`",
 		writeOnly: true,
 	}
 }
@@ -47,13 +45,13 @@ var githubHosts = map[string]bool{
 }
 
 type githubRelay struct {
-	tokenFile string
-	client    *http.Client
+	token  *secretStore
+	client *http.Client
 }
 
 func newGitHubRelay(dataDir string) *githubRelay {
 	return &githubRelay{
-		tokenFile: filepath.Join(dataDir, accessTokenFile),
+		token: accessTokenStore(dataDir),
 		// Redirects go back to the caller, which sends them through the
 		// relay again if they lead to GitHub.
 		client: &http.Client{CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }},
@@ -85,7 +83,7 @@ func (g *githubRelay) relay(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "the GitHub relay only reaches "+strings.Join(sortedKeys(githubHosts), ", "))
 		return
 	}
-	data, err := os.ReadFile(g.tokenFile)
+	token, err := g.token.read()
 	if errors.Is(err, os.ErrNotExist) {
 		writeError(w, http.StatusServiceUnavailable, "no GitHub token is set on the command center; ask the user for one and save it with `delta set-personal-access-token -` (from a regular (●) session)")
 		return
@@ -93,7 +91,6 @@ func (g *githubRelay) relay(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	token := strings.TrimSpace(string(data))
 
 	// The escaped path, so %2F and friends reach GitHub as sent.
 	rest := strings.TrimPrefix(r.URL.EscapedPath(), "/github/"+host)

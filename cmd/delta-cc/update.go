@@ -83,11 +83,8 @@ func (u *updater) handle(w http.ResponseWriter, r *http.Request) {
 // install downloads the binary at url, checks that it runs and is a delta-cc
 // build, and atomically moves it over the current executable.
 func install(ctx context.Context, url string) (string, error) {
-	exe, err := os.Executable()
+	exe, err := executable()
 	if err != nil {
-		return "", err
-	}
-	if exe, err = filepath.EvalSymlinks(exe); err != nil {
 		return "", err
 	}
 
@@ -147,12 +144,18 @@ func install(ctx context.Context, url string) (string, error) {
 // reexec replaces the current process with the (new) binary on disk, keeping
 // the same arguments, environment, and PID.
 func reexec() error {
-	exe, err := os.Executable()
+	exe, err := executable()
 	if err != nil {
 		return err
 	}
-	if exe, err = filepath.EvalSymlinks(exe); err != nil {
-		return err
-	}
 	return syscall.Exec(exe, os.Args, os.Environ())
+}
+
+// executable is the running binary's path, with symlinks resolved.
+func executable() (string, error) {
+	exe, err := os.Executable()
+	if err != nil {
+		return "", err
+	}
+	return filepath.EvalSymlinks(exe)
 }

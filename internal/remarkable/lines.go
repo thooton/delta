@@ -41,11 +41,9 @@ type rmID struct {
 func (id rmID) less(o rmID) bool { return id.a < o.a || id.a == o.a && id.b < o.b }
 
 type rmPoint struct {
-	X, Y      float64
-	Speed     float64
-	Width     float64 // in screen pixels
-	Direction float64
-	Pressure  float64 // 0 to 1
+	X, Y     float64
+	Width    float64 // in screen pixels
+	Pressure float64 // 0 to 1
 }
 
 type rmStroke struct {
@@ -59,7 +57,6 @@ type rmStroke struct {
 
 type rmHighlight struct {
 	Color int
-	Text  string
 	Rects [][4]float64 // x, y, w, h
 }
 
@@ -448,12 +445,15 @@ func parseRMStroke(b *rmReader, version uint8) (rmStroke, bool) {
 	for range n {
 		var p rmPoint
 		p.X, p.Y = pts.f32(), pts.f32()
+		// Each point also has its speed and direction, which aren't drawn.
 		if version < 2 {
-			p.Speed, p.Direction, p.Width, p.Pressure = pts.f32(), pts.f32(), pts.f32(), pts.f32()
+			pts.f32()
+			pts.f32()
+			p.Width, p.Pressure = pts.f32(), pts.f32()
 		} else {
-			p.Speed = float64(pts.u16()) / 4
+			pts.u16()
 			p.Width = float64(pts.u16()) / 4
-			p.Direction = float64(pts.u8()) / 255 * 2 * math.Pi
+			pts.u8()
 			p.Pressure = float64(pts.u8()) / 255
 		}
 		s.Points = append(s.Points, p)
@@ -478,9 +478,7 @@ func parseRMGlyph(b *rmReader) (rmHighlight, bool) {
 	}
 	v.tagU32(3) // length
 	h.Color = int(v.tagU32(4))
-	if s := v.optSub(5); s != nil {
-		h.Text = s.rmString()
-	}
+	v.optSub(5) // the text highlighted, which isn't drawn
 	if s := v.optSub(6); s != nil {
 		n := s.varuint()
 		for i := uint64(0); i < n && s.err == nil; i++ {
@@ -608,7 +606,6 @@ func parseRMText(b *rmReader, page *rmPage) ([]rmTextItem, map[rmID]int) {
 const (
 	rmStylePlain    = 1
 	rmStyleHeading  = 2
-	rmStyleBold     = 3
 	rmStyleBullet   = 4
 	rmStyleBullet2  = 5
 	rmStyleCheckbox = 6

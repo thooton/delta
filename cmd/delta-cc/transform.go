@@ -4,7 +4,6 @@ import (
 	"archive/zip"
 	"bytes"
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -98,11 +97,7 @@ func checkFormats(asked []string) ([]string, error) {
 		if f == "jpeg" {
 			f = "jpg"
 		}
-		known := false
-		for _, k := range transformFormats {
-			known = known || k == f
-		}
-		if !known {
+		if !slices.Contains(transformFormats, f) {
 			return nil, fmt.Errorf("%q isn't a format a job makes (%s)", f, strings.Join(transformFormats, ", "))
 		}
 		want[f] = true
@@ -277,10 +272,8 @@ func (t *transformService) get(id string) (*transformJob, error) {
 	if err != nil {
 		return nil, err
 	}
-	for i := range jobs {
-		if jobs[i].ID == id {
-			return &jobs[i], nil
-		}
+	if j := findPtr(jobs, func(j *transformJob) bool { return j.ID == id }); j != nil {
+		return j, nil
 	}
 	return nil, os.ErrNotExist
 }
@@ -293,20 +286,15 @@ func (t *transformService) change(id string, edit func(j *transformJob)) (transf
 	if err != nil {
 		return transformJob{}, err
 	}
-	i := -1
-	for k := range jobs {
-		if jobs[k].ID == id {
-			i = k
-		}
-	}
-	if i < 0 {
+	j := findPtr(jobs, func(j *transformJob) bool { return j.ID == id })
+	if j == nil {
 		jobs = append(jobs, transformJob{ID: id})
-		i = len(jobs) - 1
+		j = &jobs[len(jobs)-1]
 	}
-	edit(&jobs[i])
-	jobs[i].Updated = time.Now().UTC()
-	j := jobs[i]
-	return j, t.save(jobs)
+	edit(j)
+	j.Updated = time.Now().UTC()
+	out := *j
+	return out, t.save(jobs)
 }
 
 // end finishes a running job: done or failed, and its key dead.
@@ -374,7 +362,7 @@ func (t *transformService) start(w http.ResponseWriter, r *http.Request) {
 		Document, Server string
 		Formats          []string
 	}
-	if err := json.NewDecoder(io.LimitReader(r.Body, 64<<10)).Decode(&req); err != nil || req.Document == "" {
+	if err := decodeBody(r, 64<<10, &req); err != nil || req.Document == "" {
 		writeError(w, http.StatusBadRequest, `expected {"document": ..., "formats"?: [...], "server"?: ...}`)
 		return
 	}
@@ -387,8 +375,8 @@ func (t *transformService) start(w http.ResponseWriter, r *http.Request) {
 	if server == "" {
 		server = "https://" + r.Host
 	}
-	if u, err := url.Parse(server); err != nil || u.Scheme != "https" || u.Host == "" || u.User != nil || u.RawQuery != "" || u.Fragment != "" {
-		writeError(w, http.StatusBadRequest, "server must be the command center's https:// address")
+	if err := checkServer(server); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
 	doc, err := t.rm.find(req.Document)
@@ -851,7 +839,7 @@ func (t *transformService) status(w http.ResponseWriter, r *http.Request, j *tra
 		Status  *string `json:"status"`
 		Percent *int    `json:"percent"`
 	}
-	if err := json.NewDecoder(io.LimitReader(r.Body, 64<<10)).Decode(&req); err != nil || req.Title == nil && req.Status == nil && req.Percent == nil {
+	if err := decodeBody(r, 64<<10, &req); err != nil || req.Title == nil && req.Status == nil && req.Percent == nil {
 		writeError(w, http.StatusBadRequest, `expected {"title"?: ..., "status"?: ..., "percent"?: ...}`)
 		return
 	}
@@ -898,7 +886,7 @@ func (t *transformService) status(w http.ResponseWriter, r *http.Request, j *tra
 
 func (t *transformService) fail(w http.ResponseWriter, r *http.Request, j *transformJob) {
 	var req struct{ Reason string }
-	json.NewDecoder(io.LimitReader(r.Body, 64<<10)).Decode(&req)
+	decodeBody(r, 64<<10, &req)
 	reason := strings.TrimSpace(req.Reason)
 	if reason == "" {
 		writeError(w, http.StatusBadRequest, `expected {"reason": ...}`)

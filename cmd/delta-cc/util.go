@@ -8,7 +8,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"math/big"
+	"net/http"
 	"os"
 	"path/filepath"
 )
@@ -117,4 +119,64 @@ func randomString(alphabet string, n int) string {
 		b[i] = alphabet[k.Int64()]
 	}
 	return string(b)
+}
+
+// readBody reads a request body of at most max bytes. One that can't be read
+// whole is answered 413 with tooBig, a format given max, and ok is false.
+func readBody(w http.ResponseWriter, r *http.Request, max int64, tooBig string) (data []byte, ok bool) {
+	data, err := io.ReadAll(http.MaxBytesReader(w, r.Body, max))
+	if err != nil {
+		writeError(w, http.StatusRequestEntityTooLarge, fmt.Sprintf(tooBig, max))
+		return nil, false
+	}
+	return data, true
+}
+
+// removeIfExists removes path; one already gone is no error.
+func removeIfExists(path string) error {
+	if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	return nil
+}
+
+// writeResult answers v with status, or 500 when err is set.
+func writeResult(w http.ResponseWriter, err error, status int, v any) {
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, status, v)
+}
+
+// writeReadError answers a failed read of a stored file: 404 with missing
+// when there is none, 500 otherwise.
+func writeReadError(w http.ResponseWriter, err error, missing string) {
+	if errors.Is(err, os.ErrNotExist) {
+		writeError(w, http.StatusNotFound, missing)
+		return
+	}
+	writeError(w, http.StatusInternalServerError, err.Error())
+}
+
+// decodeBody decodes the request's JSON body, read up to max bytes, into v.
+func decodeBody(r *http.Request, max int64, v any) error {
+	return json.NewDecoder(io.LimitReader(r.Body, max)).Decode(v)
+}
+
+// findPtr returns the first element of s that f accepts, or nil.
+func findPtr[T any](s []T, f func(*T) bool) *T {
+	for i := range s {
+		if f(&s[i]) {
+			return &s[i]
+		}
+	}
+	return nil
+}
+
+// readSmall reads up to 1 MB of resp's body and closes it.
+func readSmall(resp *http.Response) []byte {
+	data, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	resp.Body.Close()
+	return data
 }

@@ -10,12 +10,12 @@ import (
 
 // Two kinds of token reach the command center.
 //
-// The delta token (data/token.sha256) is the phone's and the Claude Code
-// sessions': it can do everything, and it is accepted only on the public
+// The delta token (data/token.sha256) is the website's, the phone's apps' and
+// the Claude Code sessions': it can do everything, and it is accepted only on the public
 // listener (-addr).
 //
 // A backup session's token (see agents.go) is made for that one session and
-// travels in its first message. It is accepted only on the agent socket,
+// handed to its container as DELTA_TOKEN. It is accepted only on the agent socket,
 // which is reachable from inside the session containers and nowhere else, so
 // a copy that leaks out of a transcript is useless. Even there it is limited
 // to what a backup agent needs (agentAllowed): the user's Canvas and Gmail
@@ -149,9 +149,7 @@ func agentAllowed(r *http.Request) string {
 	p, m := r.URL.Path, r.Method
 	first, _, _ := strings.Cut(strings.TrimPrefix(p, "/"), "/")
 	switch first {
-	case "auth", "version", "files", "music", "music-jobs", "github", "update", "remarkable":
-		return ""
-	case "music-login":
+	case "auth", "version", "files", "music", "music-jobs", "github", "update", "remarkable", "music-login", "cloud-accounts":
 		return ""
 	case "music-config", "books-login", "maps-key":
 		if m == http.MethodGet {
@@ -171,8 +169,6 @@ func agentAllowed(r *http.Request) string {
 		return "this session can't pair or unpair flashcards devices"
 	case "personal-access-token":
 		return "this session can't change the GitHub token; ask the user to save a new one from a regular (●) session"
-	case "cloud-accounts":
-		return ""
 	case "conversations":
 		// A conversation carried over from a session that ran out of usage
 		// can be resumed here too; storing one is the client's job.

@@ -130,14 +130,14 @@ func smtpSelfTest(dir string) error {
 	if info, err := os.Stat(filepath.Join(dataDir, smtpLoginFile)); err != nil || info.Mode().Perm() != 0o600 {
 		return fmt.Errorf("smtp login file: %v %v", info, err)
 	}
-	if err := wantErr("wrong password", "535", send("delta", password+"x", []string{"amy@example.com"}, msg)); err != nil {
-		return err
-	}
-	if err := wantErr("wrong username", "535", send("other", password, []string{"amy@example.com"}, msg)); err != nil {
-		return err
-	}
-	if err := wantErr("no Gmail login", "554", send("delta", password, []string{"amy@example.com"}, msg)); err != nil {
-		return err
+	for _, c := range []struct{ desc, want, user, password string }{
+		{"wrong password", "535", "delta", password + "x"},
+		{"wrong username", "535", "other", password},
+		{"no Gmail login", "554", "delta", password},
+	} {
+		if err := wantErr(c.desc, c.want, send(c.user, c.password, []string{"amy@example.com"}, msg)); err != nil {
+			return err
+		}
 	}
 	if err := writePrivateFile(filepath.Join(dataDir, gmailLoginFile), []byte(`{"client_id":"id","client_secret":"secret","refresh_token":"1//refresh","email":"me@gmail.com"}`)); err != nil {
 		return err
@@ -185,23 +185,27 @@ func smtpSelfTest(dir string) error {
 	}
 
 	// Gmail's refusals: of the message, and of the login.
-	mu.Lock()
-	sendCode = http.StatusBadRequest
-	mu.Unlock()
-	if err := wantErr("Gmail refuses the message", "554", send("delta", password, []string{"amy@example.com"}, msg)); err != nil {
-		return err
+	for _, c := range []struct {
+		desc, want string
+		status     int
+		grant      string
+	}{
+		{"Gmail refuses the message", "554", http.StatusBadRequest, ""},
+		{"Gmail is down", "451", http.StatusServiceUnavailable, ""},
+		{"Gmail login revoked", "554", http.StatusOK, "invalid_grant"},
+	} {
+		mu.Lock()
+		sendCode, grant = c.status, c.grant
+		mu.Unlock()
+		if c.grant != "" {
+			// Have the relay renew its access token, so Gmail refuses the login.
+			relay.mu.Lock()
+			relay.expires = time.Time{}
+			relay.mu.Unlock()
+		}
+		if err := wantErr(c.desc, c.want, send("delta", password, []string{"amy@example.com"}, msg)); err != nil {
+			return err
+		}
 	}
-	mu.Lock()
-	sendCode = http.StatusServiceUnavailable
-	mu.Unlock()
-	if err := wantErr("Gmail is down", "451", send("delta", password, []string{"amy@example.com"}, msg)); err != nil {
-		return err
-	}
-	mu.Lock()
-	sendCode, grant = http.StatusOK, "invalid_grant"
-	mu.Unlock()
-	relay.mu.Lock()
-	relay.expires = time.Time{}
-	relay.mu.Unlock()
-	return wantErr("Gmail login revoked", "554", send("delta", password, []string{"amy@example.com"}, msg))
+	return nil
 }

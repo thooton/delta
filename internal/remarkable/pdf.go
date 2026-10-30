@@ -252,9 +252,10 @@ func (f *pdfFile) scan() {
 	// Objects inside object streams.
 	for _, n := range nums {
 		if s, ok := f.object(n).(*pdfStream); ok && s.Dict["Type"] == pdfName("ObjStm") {
-			for _, member := range f.objStmMembers(n) {
-				if _, known := f.xref[member]; !known {
-					f.xref[member] = pdfXref{inStream: true, off: int64(n)}
+			_, header, _ := f.objStm(n)
+			for _, h := range header {
+				if _, known := f.xref[int(h[0])]; !known {
+					f.xref[int(h[0])] = pdfXref{inStream: true, off: int64(n)}
 				}
 			}
 		}
@@ -336,15 +337,6 @@ func (f *pdfFile) objStm(stm int) ([]byte, [][2]int64, int64) {
 		header = append(header, [2]int64{num, off})
 	}
 	return data, header, first
-}
-
-func (f *pdfFile) objStmMembers(stm int) []int {
-	_, header, _ := f.objStm(stm)
-	var out []int
-	for _, h := range header {
-		out = append(out, int(h[0]))
-	}
-	return out
 }
 
 func (f *pdfFile) objStmObject(stm, num int) any {
@@ -835,10 +827,7 @@ func (f *pdfFile) pages() []pdfPage {
 		if b, ok := f.box(attrs["CropBox"]); ok {
 			p.cropBox = &b
 		}
-		switch r := f.resolve(attrs["Rotate"]).(type) {
-		case int64:
-			p.rotate = int((r%360 + 360) % 360)
-		case float64:
+		if r, ok := pdfNumber(f.resolve(attrs["Rotate"])); ok {
 			p.rotate = (int(r)%360 + 360) % 360
 		}
 		p.rotate -= p.rotate % 90
@@ -857,17 +846,25 @@ func (f *pdfFile) box(v any) ([4]float64, bool) {
 	}
 	var b [4]float64
 	for i, x := range a {
-		switch n := f.resolve(x).(type) {
-		case int64:
-			b[i] = float64(n)
-		case float64:
-			b[i] = n
-		default:
+		n, ok := pdfNumber(f.resolve(x))
+		if !ok {
 			return b, false
 		}
+		b[i] = n
 	}
 	b = [4]float64{min(b[0], b[2]), min(b[1], b[3]), max(b[0], b[2]), max(b[1], b[3])}
 	return b, b[2]-b[0] > 0 && b[3]-b[1] > 0
+}
+
+// pdfNumber reads an integer or real.
+func pdfNumber(v any) (float64, bool) {
+	switch n := v.(type) {
+	case int64:
+		return float64(n), true
+	case float64:
+		return n, true
+	}
+	return 0, false
 }
 
 // visibleBox is the part of the page that is shown.
@@ -937,6 +934,9 @@ type pdfWriter struct {
 	objs   [][]byte
 	copied map[int]pdfRef
 	pages  map[pdfRef]pdfRef
+	// Shared by every page that needs them: the streams wrapping the
+	// original's drawing in q and Q, and the ink's font.
+	q, bigQ, font pdfRef
 }
 
 func (w *pdfWriter) alloc() pdfRef {
@@ -1016,129 +1016,20 @@ func flateStream(data []byte) *pdfStream {
 func writePDF(src *pdfFile, pages []outPage) []byte {
 	w := &pdfWriter{src: src, copied: map[int]pdfRef{}, pages: map[pdfRef]pdfRef{}}
 	catalog, root := w.alloc(), w.alloc()
-	refs := make([]pdfRef, len(pages))
+	kids := make(pdfArray, len(pages))
 	for i, p := range pages {
-		refs[i] = w.alloc()
+		r := w.alloc()
+		kids[i] = r
 		if p.src != nil && p.src.ref != (pdfRef{}) {
 			if _, ok := w.pages[p.src.ref]; !ok {
-				w.pages[p.src.ref] = refs[i]
+				w.pages[p.src.ref] = r
 			}
 		}
 	}
-	var qRef, bigQRef, fontRef pdfRef
 	for i, p := range pages {
-		d := pdfDict{"Type": pdfName("Page"), "Parent": root}
-		res := pdfDict{}
-		var contents pdfArray
-		if p.src != nil {
-			for k, v := range p.src.dict {
-				switch k {
-				case "Type", "Parent", "Contents", "Resources", "MediaBox", "CropBox", "Rotate", "B", "Thumb", "StructParents":
-				default:
-					d[k] = w.copy(v)
-				}
-			}
-			d["MediaBox"] = boxArray(p.src.mediaBox)
-			if p.src.cropBox != nil {
-				d["CropBox"] = boxArray(*p.src.cropBox)
-			}
-			if p.src.rotate != 0 {
-				d["Rotate"] = int64(p.src.rotate)
-			}
-			res = w.direct(p.src.resources)
-			switch c := p.src.dict["Contents"].(type) {
-			case pdfRef:
-				if a, ok := w.src.resolve(c).(pdfArray); ok {
-					for _, x := range a {
-						contents = append(contents, w.copy(x))
-					}
-				} else {
-					contents = append(contents, w.copy(c))
-				}
-			case pdfArray:
-				for _, x := range c {
-					contents = append(contents, w.copy(x))
-				}
-			}
-		} else {
-			d["MediaBox"] = boxArray([4]float64{0, 0, p.width, p.height})
-		}
-		var extra bytes.Buffer
-		usesFont := false
-		if p.ink != nil {
-			extra.Write(p.ink.ops.Bytes())
-			usesFont = p.ink.useFont
-		}
-		if p.label != "" {
-			fmt.Fprintf(&extra, "BT /%s 9 Tf 0.5 g 12 %s Td (%s) Tj ET\n", pdfInkFont, pdfNum(p.height-18), pdfWinAnsi(p.label))
-			usesFont = true
-		}
-		if extra.Len() > 0 {
-			// The original's drawing is wrapped in q/Q so whatever state it
-			// leaves doesn't move the ink.
-			if len(contents) > 0 {
-				if qRef == (pdfRef{}) {
-					qRef, bigQRef = w.alloc(), w.alloc()
-					w.set(qRef, &pdfStream{Dict: pdfDict{}, Data: []byte("q\n")})
-					w.set(bigQRef, &pdfStream{Dict: pdfDict{}, Data: []byte("\nQ\n")})
-				}
-				contents = append(append(pdfArray{qRef}, contents...), bigQRef)
-			}
-			ink := w.alloc()
-			w.set(ink, flateStream(extra.Bytes()))
-			contents = append(contents, ink)
-			if p.ink != nil && len(p.ink.alphas) > 0 {
-				gs := w.direct(w.resourceEntry(p.src, "ExtGState"))
-				for name, a := range p.ink.alphas {
-					g := pdfDict{"Type": pdfName("ExtGState"), "CA": a, "ca": a}
-					if p.ink.blend[name] {
-						g["BM"] = pdfName("Multiply")
-					}
-					gs[pdfName(name)] = g
-				}
-				res["ExtGState"] = gs
-			}
-			if p.ink != nil && len(p.ink.images) > 0 {
-				xobjs := w.direct(w.resourceEntry(p.src, "XObject"))
-				for name, data := range p.ink.images {
-					img, mask, err := pdfImage(data)
-					if err != nil {
-						continue // cut short past its header; readers skip a missing image
-					}
-					if mask != nil {
-						m := w.alloc()
-						w.set(m, mask)
-						img.Dict["SMask"] = m
-					}
-					r := w.alloc()
-					w.set(r, img)
-					xobjs[pdfName(name)] = r
-				}
-				res["XObject"] = xobjs
-			}
-			if usesFont {
-				if fontRef == (pdfRef{}) {
-					fontRef = w.alloc()
-					w.set(fontRef, pdfDict{"Type": pdfName("Font"), "Subtype": pdfName("Type1"), "BaseFont": pdfName("Helvetica"), "Encoding": pdfName("WinAnsiEncoding")})
-				}
-				fonts := w.direct(w.resourceEntry(p.src, "Font"))
-				fonts[pdfInkFont] = fontRef
-				res["Font"] = fonts
-			}
-		}
-		d["Resources"] = res
-		if len(contents) == 1 {
-			d["Contents"] = contents[0]
-		} else if len(contents) > 1 {
-			d["Contents"] = contents
-		}
-		w.set(refs[i], d)
+		w.set(kids[i].(pdfRef), w.page(p, root))
 	}
-	kids := make(pdfArray, len(refs))
-	for i, r := range refs {
-		kids[i] = r
-	}
-	w.set(root, pdfDict{"Type": pdfName("Pages"), "Kids": kids, "Count": int64(len(refs))})
+	w.set(root, pdfDict{"Type": pdfName("Pages"), "Kids": kids, "Count": int64(len(kids))})
 	w.set(catalog, pdfDict{"Type": pdfName("Catalog"), "Pages": root})
 
 	var out bytes.Buffer
@@ -1162,18 +1053,134 @@ func writePDF(src *pdfFile, pages []outPage) []byte {
 	return out.Bytes()
 }
 
+// page makes a page's dictionary: a copy of the original's, or a new one,
+// with its ink and label drawn over it.
+func (w *pdfWriter) page(p outPage, root pdfRef) pdfDict {
+	d := pdfDict{"Type": pdfName("Page"), "Parent": root}
+	res := pdfDict{}
+	var contents pdfArray
+	if p.src != nil {
+		for k, v := range p.src.dict {
+			switch k {
+			case "Type", "Parent", "Contents", "Resources", "MediaBox", "CropBox", "Rotate", "B", "Thumb", "StructParents":
+			default:
+				d[k] = w.copy(v)
+			}
+		}
+		d["MediaBox"] = boxArray(p.src.mediaBox)
+		if p.src.cropBox != nil {
+			d["CropBox"] = boxArray(*p.src.cropBox)
+		}
+		if p.src.rotate != 0 {
+			d["Rotate"] = int64(p.src.rotate)
+		}
+		res = w.direct(p.src.resources)
+		switch c := p.src.dict["Contents"].(type) {
+		case pdfRef:
+			if a, ok := w.src.resolve(c).(pdfArray); ok {
+				for _, x := range a {
+					contents = append(contents, w.copy(x))
+				}
+			} else {
+				contents = append(contents, w.copy(c))
+			}
+		case pdfArray:
+			for _, x := range c {
+				contents = append(contents, w.copy(x))
+			}
+		}
+	} else {
+		d["MediaBox"] = boxArray([4]float64{0, 0, p.width, p.height})
+	}
+	var extra bytes.Buffer
+	usesFont := false
+	if p.ink != nil {
+		extra.Write(p.ink.ops.Bytes())
+		usesFont = p.ink.useFont
+	}
+	if p.label != "" {
+		fmt.Fprintf(&extra, "BT /%s 9 Tf 0.5 g 12 %s Td (%s) Tj ET\n", pdfInkFont, pdfNum(p.height-18), pdfWinAnsi(p.label))
+		usesFont = true
+	}
+	if extra.Len() > 0 {
+		// The original's drawing is wrapped in q/Q so whatever state it
+		// leaves doesn't move the ink.
+		if len(contents) > 0 {
+			if w.q == (pdfRef{}) {
+				w.q, w.bigQ = w.alloc(), w.alloc()
+				w.set(w.q, &pdfStream{Dict: pdfDict{}, Data: []byte("q\n")})
+				w.set(w.bigQ, &pdfStream{Dict: pdfDict{}, Data: []byte("\nQ\n")})
+			}
+			contents = append(append(pdfArray{w.q}, contents...), w.bigQ)
+		}
+		ink := w.alloc()
+		w.set(ink, flateStream(extra.Bytes()))
+		contents = append(contents, ink)
+		// addResources adds to the original's resources of one kind.
+		addResources := func(key pdfName, add func(pdfDict)) {
+			d := w.direct(w.resourceEntry(p.src, key))
+			add(d)
+			res[key] = d
+		}
+		if p.ink != nil && len(p.ink.alphas) > 0 {
+			addResources("ExtGState", func(gs pdfDict) {
+				for name, a := range p.ink.alphas {
+					g := pdfDict{"Type": pdfName("ExtGState"), "CA": a, "ca": a}
+					if p.ink.blend[name] {
+						g["BM"] = pdfName("Multiply")
+					}
+					gs[pdfName(name)] = g
+				}
+			})
+		}
+		if p.ink != nil && len(p.ink.images) > 0 {
+			addResources("XObject", func(xobjs pdfDict) {
+				for name, data := range p.ink.images {
+					img, mask, err := pdfImage(data)
+					if err != nil {
+						continue // cut short past its header; readers skip a missing image
+					}
+					if mask != nil {
+						m := w.alloc()
+						w.set(m, mask)
+						img.Dict["SMask"] = m
+					}
+					r := w.alloc()
+					w.set(r, img)
+					xobjs[pdfName(name)] = r
+				}
+			})
+		}
+		if usesFont {
+			if w.font == (pdfRef{}) {
+				w.font = w.alloc()
+				w.set(w.font, pdfDict{"Type": pdfName("Font"), "Subtype": pdfName("Type1"), "BaseFont": pdfName("Helvetica"), "Encoding": pdfName("WinAnsiEncoding")})
+			}
+			addResources("Font", func(fonts pdfDict) { fonts[pdfInkFont] = w.font })
+		}
+	}
+	d["Resources"] = res
+	if len(contents) == 1 {
+		d["Contents"] = contents[0]
+	} else if len(contents) > 1 {
+		d["Contents"] = contents
+	}
+	return d
+}
+
 // pdfImage makes an image XObject of a PNG or JPEG file, with a soft mask
 // for its transparency when it has any. A JPEG in gray or YCbCr goes in as
 // it is; anything else is decoded and stored losslessly, in gray when every
 // pixel is.
 func pdfImage(data []byte) (img, mask *pdfStream, err error) {
+	dict := func(filter pdfName, w, h int, cs pdfName) pdfDict {
+		return pdfDict{"Type": pdfName("XObject"), "Subtype": pdfName("Image"), "Filter": filter,
+			"Width": int64(w), "Height": int64(h), "ColorSpace": cs, "BitsPerComponent": int64(8)}
+	}
 	if cfg, format, err := image.DecodeConfig(bytes.NewReader(data)); err == nil && format == "jpeg" {
 		cs := map[color.Model]pdfName{color.GrayModel: "DeviceGray", color.YCbCrModel: "DeviceRGB"}[cfg.ColorModel]
 		if cs != "" {
-			return &pdfStream{Dict: pdfDict{
-				"Type": pdfName("XObject"), "Subtype": pdfName("Image"), "Filter": pdfName("DCTDecode"),
-				"Width": int64(cfg.Width), "Height": int64(cfg.Height), "ColorSpace": cs, "BitsPerComponent": int64(8),
-			}, Data: data}, nil, nil
+			return &pdfStream{Dict: dict("DCTDecode", cfg.Width, cfg.Height, cs), Data: data}, nil, nil
 		}
 	}
 	m, _, err := image.Decode(bytes.NewReader(data))
@@ -1209,15 +1216,11 @@ func pdfImage(data []byte) (img, mask *pdfStream, err error) {
 		}
 		rgb = rgb[:len(alpha)]
 	}
-	dict := func(cs pdfName) pdfDict {
-		return pdfDict{"Type": pdfName("XObject"), "Subtype": pdfName("Image"), "Filter": pdfName("FlateDecode"),
-			"Width": int64(r.Dx()), "Height": int64(r.Dy()), "ColorSpace": cs, "BitsPerComponent": int64(8)}
-	}
 	img = flateStream(rgb)
-	img.Dict = dict(cs)
+	img.Dict = dict("FlateDecode", r.Dx(), r.Dy(), cs)
 	if !opaque {
 		mask = flateStream(alpha)
-		mask.Dict = dict("DeviceGray")
+		mask.Dict = dict("FlateDecode", r.Dx(), r.Dy(), "DeviceGray")
 	}
 	return img, mask, nil
 }

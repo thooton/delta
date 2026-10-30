@@ -2,9 +2,7 @@ package main
 
 import (
 	"context"
-	"crypto/sha256"
 	"embed"
-	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
@@ -147,10 +145,7 @@ func (f *transformFontStore) get(ctx context.Context, name string) ([]byte, erro
 		return nil, errNoSuchFont
 	}
 	path := filepath.Join(f.dir, name)
-	matches := func(data []byte) bool {
-		sum := sha256.Sum256(data)
-		return hex.EncodeToString(sum[:]) == want
-	}
+	matches := func(data []byte) bool { return keyHash(string(data)) == want }
 	if data, err := os.ReadFile(path); err == nil && matches(data) {
 		return data, nil
 	}

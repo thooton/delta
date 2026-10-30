@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"slices"
 	"strings"
 	"time"
 )
@@ -14,15 +15,11 @@ func (q *qaService) briefLocked(run *qaRun, j *qaJob, app qaRunApp) string {
 	grow := j.App != "" && q.state.Settings.Apps[j.App]
 	name := appName(j.App)
 
-	switch j.Role {
-	case "spec":
-		w("NIGHTLY QA: WRITE THE SPEC FOR %s (%s, directory %s/)\n\n", strings.ToUpper(name), j.App, app.Dir)
-	case "explore":
-		w("NIGHTLY QA: EXPLORE %s (%s, directory %s/)\n\n", strings.ToUpper(name), j.App, app.Dir)
-	case "fix":
-		w("NIGHTLY QA: TRIAGE AND FIX %s (%s, directory %s/)\n\n", strings.ToUpper(name), j.App, app.Dir)
-	case "refactor":
+	if j.Role == "refactor" {
 		w("NIGHTLY QA: SWEEPING REFACTOR OF thooton/%s\n\n", j.Repo)
+	} else {
+		verb := map[string]string{"spec": "WRITE THE SPEC FOR", "explore": "EXPLORE", "fix": "TRIAGE AND FIX"}[j.Role]
+		w("NIGHTLY QA: %s %s (%s, directory %s/)\n\n", verb, strings.ToUpper(name), j.App, app.Dir)
 	}
 	w(`Every night, agents go through each of the user's phone apps (thooton/sonim,
 for their Sonim XP3 flip phone) and tablet apps (thooton/tablet, for their
@@ -391,12 +388,7 @@ func humanHours(d time.Duration) string {
 }
 
 func hasTurnedDown(items []qaFinding) bool {
-	for _, f := range items {
-		if f.Status == "grown" {
-			return true
-		}
-	}
-	return false
+	return slices.ContainsFunc(items, func(f qaFinding) bool { return f.Status == "grown" })
 }
 
 func (q *qaService) briefRefactor(w func(string, ...any), run *qaRun, j *qaJob) {

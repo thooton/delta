@@ -2,8 +2,6 @@ package main
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -31,8 +29,7 @@ type cloudEnv struct {
 }
 
 func (e cloudEnv) name() string {
-	sum := sha256.Sum256([]byte(e.setup + "\n" + e.server))
-	return e.prefix + hex.EncodeToString(sum[:4])
+	return e.prefix + keyHash(e.setup + "\n" + e.server)[:8]
 }
 
 // launch starts a session on account in env, titled title, whose first

@@ -330,32 +330,31 @@ func (r *smtpRelay) session(conn net.Conn) {
 // ok false after replying with why not.
 func (r *smtpRelay) auth(c *smtpConn, arg string) (user string, ok bool, err error) {
 	mech, initial, _ := strings.Cut(arg, " ")
-	// prompt asks the client for the next response, unless it sent one.
-	prompt := func(challenge string) (string, bool, error) {
-		if initial != "" {
-			resp := initial
+	// next asks the client for the next response, unless it sent one, and
+	// decodes it.
+	next := func(challenge string) ([]byte, bool, error) {
+		resp := initial
+		if resp != "" {
 			initial = ""
-			return resp, true, nil
+		} else {
+			if err := c.reply(334, challenge); err != nil {
+				return nil, false, err
+			}
+			line, err := c.readLine()
+			if errors.Is(err, errSMTPLineTooLong) {
+				return nil, false, c.reply(500, "5.5.2 Line too long")
+			} else if err != nil {
+				return nil, false, err
+			}
+			if line == "*" {
+				return nil, false, c.reply(501, "5.0.0 Login cancelled")
+			}
+			resp = line
 		}
-		if err := c.reply(334, challenge); err != nil {
-			return "", false, err
-		}
-		line, err := c.readLine()
-		if errors.Is(err, errSMTPLineTooLong) {
-			return "", false, c.reply(500, "5.5.2 Line too long")
-		} else if err != nil {
-			return "", false, err
-		}
-		if line == "*" {
-			return "", false, c.reply(501, "5.0.0 Login cancelled")
-		}
-		return line, true, nil
-	}
-	decode := func(s string) ([]byte, bool, error) {
-		if s == "=" {
+		if resp == "=" {
 			return nil, true, nil
 		}
-		b, derr := base64.StdEncoding.DecodeString(s)
+		b, derr := base64.StdEncoding.DecodeString(resp)
 		if derr != nil {
 			return nil, false, c.reply(501, "5.5.2 Malformed base64")
 		}
@@ -365,11 +364,7 @@ func (r *smtpRelay) auth(c *smtpConn, arg string) (user string, ok bool, err err
 	var password string
 	switch strings.ToUpper(mech) {
 	case "PLAIN":
-		resp, more, err := prompt("")
-		if !more {
-			return "", false, err
-		}
-		b, more, err := decode(resp)
+		b, more, err := next("")
 		if !more {
 			return "", false, err
 		}
@@ -379,19 +374,12 @@ func (r *smtpRelay) auth(c *smtpConn, arg string) (user string, ok bool, err err
 		}
 		user, password = parts[1], parts[2]
 	case "LOGIN":
-		resp, more, err := prompt("VXNlcm5hbWU6") // "Username:"
-		if !more {
-			return "", false, err
-		}
-		b, more, err := decode(resp)
+		b, more, err := next("VXNlcm5hbWU6") // "Username:"
 		if !more {
 			return "", false, err
 		}
 		user = string(b)
-		if resp, more, err = prompt("UGFzc3dvcmQ6"); !more { // "Password:"
-			return "", false, err
-		}
-		if b, more, err = decode(resp); !more {
+		if b, more, err = next("UGFzc3dvcmQ6"); !more { // "Password:"
 			return "", false, err
 		}
 		password = string(b)
@@ -538,8 +526,7 @@ func (r *smtpRelay) send(msg []byte) (string, error) {
 		if err != nil {
 			return "", fmt.Errorf("Gmail can't be reached: %w", err)
 		}
-		body, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
-		resp.Body.Close()
+		body := readSmall(resp)
 		if resp.StatusCode == http.StatusUnauthorized && attempt == 0 {
 			continue // the access token was revoked early; get another
 		}
@@ -567,15 +554,11 @@ func (r *smtpRelay) send(msg []byte) (string, error) {
 // it when it is about to expire, when the login changed, or when renew is
 // set.
 func (r *smtpRelay) accessToken(renew bool) (string, error) {
-	data, err := os.ReadFile(filepath.Join(r.dataDir, gmailLoginFile))
+	l, err := gmailLoginStore(r.dataDir).read()
 	if errors.Is(err, os.ErrNotExist) {
 		return "", &smtpPermanent{"Gmail isn't set up on the command center; run `delta gmail login`"}
 	} else if err != nil {
 		return "", err
-	}
-	var l gmailLogin
-	if err := json.Unmarshal(data, &l); err != nil {
-		return "", fmt.Errorf("malformed %s: %v", gmailLoginFile, err)
 	}
 
 	r.mu.Lock()

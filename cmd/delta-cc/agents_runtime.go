@@ -95,8 +95,7 @@ func (a *agentService) ensureContainer(s *agentSession) error {
 		args = append(args, "--pids-limit", fmt.Sprint(a.cfg.PIDs))
 	}
 	args = append(args, a.cfg.Image, "sleep", "infinity")
-	_, err = a.runtime(15*time.Minute, args...)
-	if err != nil {
+	if _, err := a.runtime(15*time.Minute, args...); err != nil {
 		return fmt.Errorf("this session's computer couldn't be made: %w", err)
 	}
 	s.mu.Lock()
@@ -109,7 +108,7 @@ func (a *agentService) ensureContainer(s *agentSession) error {
 }
 
 // runSetup runs the setup script in a container just made, as root, before
-// the agent first works in it. A script that fails is said on the phone and
+// the agent first works in it. A script that fails is said on the website and
 // in the log, and the session goes on: the agent finds out what is missing
 // when it runs `delta help`.
 func (a *agentService) runSetup(s *agentSession) {
@@ -156,4 +155,14 @@ func runtimeDir() string {
 		return dir
 	}
 	return ""
+}
+
+// lastLine is the last line of s, cut down to 300 bytes.
+func lastLine(s string) string {
+	lines := strings.Split(strings.TrimSpace(s), "\n")
+	line := strings.TrimSpace(lines[len(lines)-1])
+	if len(line) > 300 {
+		line = line[:300] + "…"
+	}
+	return line
 }

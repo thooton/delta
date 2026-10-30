@@ -244,27 +244,33 @@ func newQAService(dataDir string, cloud *cloudAccountStore) *qaService {
 }
 
 func (q *qaService) register(mux *http.ServeMux) {
-	mux.HandleFunc("GET /qa", q.overview)
-	mux.HandleFunc("PUT /qa/settings", q.putSettings)
-	mux.HandleFunc("PUT /qa/apps/{repo}/{name}", q.putApp)
-	mux.HandleFunc("POST /qa/runs", q.startRun)
-	mux.HandleFunc("GET /qa/runs/{id}", q.getRun)
-	mux.HandleFunc("DELETE /qa/runs/{id}", q.cancelRun)
-	mux.HandleFunc("GET /qa/findings", q.listFindings)
-	mux.HandleFunc("PUT /qa/findings/{id}/verdict", q.putVerdict)
-	mux.HandleFunc("GET /qa/shots/{name}", q.shot)
-	mux.HandleFunc("POST /qa/device-token", q.deviceToken)
+	for pattern, h := range map[string]http.HandlerFunc{
+		"GET /qa":                       q.overview,
+		"PUT /qa/settings":              q.putSettings,
+		"PUT /qa/apps/{repo}/{name}":    q.putApp,
+		"POST /qa/runs":                 q.startRun,
+		"GET /qa/runs/{id}":             q.getRun,
+		"DELETE /qa/runs/{id}":          q.cancelRun,
+		"GET /qa/findings":              q.listFindings,
+		"PUT /qa/findings/{id}/verdict": q.putVerdict,
+		"GET /qa/shots/{name}":          q.serveShot,
+		"POST /qa/device-token":         q.deviceToken,
+	} {
+		mux.HandleFunc(pattern, full(h))
+	}
 	q.registerJob(mux)
 	q.devices.register(mux)
 }
 
-// full refuses requests not made with the delta token.
-func full(w http.ResponseWriter, r *http.Request) bool {
-	if scopeOf(r) != scopeFull {
-		writeError(w, http.StatusForbidden, "this needs the delta token")
-		return false
+// full refuses requests to h not made with the delta token.
+func full(h http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if scopeOf(r) != scopeFull {
+			writeError(w, http.StatusForbidden, "this needs the delta token")
+			return
+		}
+		h(w, r)
 	}
-	return true
 }
 
 // ---------------------------------------------------------------------------
@@ -308,31 +314,16 @@ func (q *qaService) poke() {
 
 // runLocked returns the run with id; q.mu is held.
 func (q *qaService) runLocked(id string) *qaRun {
-	for i := range q.state.Runs {
-		if q.state.Runs[i].ID == id {
-			return &q.state.Runs[i]
-		}
-	}
-	return nil
+	return findPtr(q.state.Runs, func(r *qaRun) bool { return r.ID == id })
 }
 
 // runningLocked returns the running run, if any; q.mu is held.
 func (q *qaService) runningLocked() *qaRun {
-	for i := range q.state.Runs {
-		if q.state.Runs[i].Status == "running" {
-			return &q.state.Runs[i]
-		}
-	}
-	return nil
+	return findPtr(q.state.Runs, func(r *qaRun) bool { return r.Status == "running" })
 }
 
 func (q *qaService) findingLocked(id string) *qaFinding {
-	for i := range q.state.Findings {
-		if q.state.Findings[i].ID == id {
-			return &q.state.Findings[i]
-		}
-	}
-	return nil
+	return findPtr(q.state.Findings, func(f *qaFinding) bool { return f.ID == id })
 }
 
 // listedRun is a run as the routes show it, without its jobs' keys.
@@ -471,6 +462,14 @@ func (q *qaService) github(ctx context.Context, method, path string, body any, o
 // The user's routes
 // ---------------------------------------------------------------------------
 
+// checkServer checks the command center's address as sessions reach it.
+func checkServer(server string) error {
+	if u, err := url.Parse(server); err != nil || u.Scheme != "https" || u.Host == "" || u.User != nil || u.RawQuery != "" || u.Fragment != "" {
+		return errors.New("server must be the command center's https:// address")
+	}
+	return nil
+}
+
 // setServer remembers the command center's address as sessions reach it
 // (it can't tell itself: it sits behind a proxy, under a path), from what
 // the website or the CLI sends.
@@ -479,8 +478,8 @@ func (q *qaService) setServer(server string) error {
 	if server == "" {
 		return nil
 	}
-	if u, err := url.Parse(server); err != nil || u.Scheme != "https" || u.Host == "" || u.User != nil || u.RawQuery != "" || u.Fragment != "" {
-		return errors.New("server must be the command center's https:// address")
+	if err := checkServer(server); err != nil {
+		return err
 	}
 	q.mu.Lock()
 	defer q.mu.Unlock()
@@ -492,9 +491,6 @@ func (q *qaService) setServer(server string) error {
 }
 
 func (q *qaService) overview(w http.ResponseWriter, r *http.Request) {
-	if !full(w, r) {
-		return
-	}
 	apps, appsErr := q.apps(r.Context(), r.URL.Query().Get("fresh") != "")
 	type appOut struct {
 		qaApp
@@ -525,14 +521,10 @@ func (q *qaService) overview(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		for _, run := range q.state.Runs {
-			if o.Last != nil {
+			if ra := runAppLocked(&run, a.ID); ra != nil {
+				last := *ra
+				o.Last = &last
 				break
-			}
-			for _, ra := range run.Apps {
-				if ra.App == a.ID {
-					ra := ra
-					o.Last = &ra
-				}
 			}
 		}
 		out = append(out, o)
@@ -566,16 +558,13 @@ func (q *qaService) overview(w http.ResponseWriter, r *http.Request) {
 }
 
 func (q *qaService) putSettings(w http.ResponseWriter, r *http.Request) {
-	if !full(w, r) {
-		return
-	}
 	var req struct {
 		Enabled  *bool   `json:"enabled"`
 		Hour     *int    `json:"hour"`
 		TimeZone *string `json:"time_zone"`
 		Server   string  `json:"server"`
 	}
-	if err := json.NewDecoder(io.LimitReader(r.Body, 64<<10)).Decode(&req); err != nil {
+	if err := decodeBody(r, 64<<10, &req); err != nil {
 		writeError(w, http.StatusBadRequest, `expected {"enabled"?: bool, "hour"?: 0-23, "time_zone"?: "America/Phoenix", "server"?: "https://..."}`)
 		return
 	}
@@ -611,14 +600,11 @@ func (q *qaService) putSettings(w http.ResponseWriter, r *http.Request) {
 }
 
 func (q *qaService) putApp(w http.ResponseWriter, r *http.Request) {
-	if !full(w, r) {
-		return
-	}
 	id := r.PathValue("repo") + "/" + r.PathValue("name")
 	var req struct {
 		Grow *bool `json:"grow"`
 	}
-	if err := json.NewDecoder(io.LimitReader(r.Body, 64<<10)).Decode(&req); err != nil || req.Grow == nil {
+	if err := decodeBody(r, 64<<10, &req); err != nil || req.Grow == nil {
 		writeError(w, http.StatusBadRequest, `expected {"grow": true|false}`)
 		return
 	}
@@ -643,15 +629,12 @@ func (q *qaService) putApp(w http.ResponseWriter, r *http.Request) {
 }
 
 func (q *qaService) startRun(w http.ResponseWriter, r *http.Request) {
-	if !full(w, r) {
-		return
-	}
 	var req struct {
 		Apps   []string `json:"apps"`
 		Server string   `json:"server"`
 	}
 	if r.ContentLength != 0 {
-		if err := json.NewDecoder(io.LimitReader(r.Body, 64<<10)).Decode(&req); err != nil {
+		if err := decodeBody(r, 64<<10, &req); err != nil {
 			writeError(w, http.StatusBadRequest, `expected {"apps"?: ["sonim/list", ...], "server"?: "https://..."}`)
 			return
 		}
@@ -676,9 +659,6 @@ func (q *qaService) startRun(w http.ResponseWriter, r *http.Request) {
 }
 
 func (q *qaService) getRun(w http.ResponseWriter, r *http.Request) {
-	if !full(w, r) {
-		return
-	}
 	q.mu.Lock()
 	defer q.mu.Unlock()
 	run := q.runLocked(r.PathValue("id"))
@@ -690,9 +670,6 @@ func (q *qaService) getRun(w http.ResponseWriter, r *http.Request) {
 }
 
 func (q *qaService) cancelRun(w http.ResponseWriter, r *http.Request) {
-	if !full(w, r) {
-		return
-	}
 	q.mu.Lock()
 	run := q.runLocked(r.PathValue("id"))
 	if run == nil {
@@ -710,9 +687,6 @@ func (q *qaService) cancelRun(w http.ResponseWriter, r *http.Request) {
 }
 
 func (q *qaService) listFindings(w http.ResponseWriter, r *http.Request) {
-	if !full(w, r) {
-		return
-	}
 	v := r.URL.Query()
 	limit := 200
 	fmt.Sscan(v.Get("limit"), &limit)
@@ -729,13 +703,10 @@ func (q *qaService) listFindings(w http.ResponseWriter, r *http.Request) {
 }
 
 func (q *qaService) putVerdict(w http.ResponseWriter, r *http.Request) {
-	if !full(w, r) {
-		return
-	}
 	var req struct {
 		Verdict *string `json:"verdict"`
 	}
-	if err := json.NewDecoder(io.LimitReader(r.Body, 64<<10)).Decode(&req); err != nil || req.Verdict == nil || !slices.Contains([]string{"up", "down", ""}, *req.Verdict) {
+	if err := decodeBody(r, 64<<10, &req); err != nil || req.Verdict == nil || !slices.Contains([]string{"up", "down", ""}, *req.Verdict) {
 		writeError(w, http.StatusBadRequest, `expected {"verdict": "up"|"down"|""}`)
 		return
 	}
@@ -757,13 +728,6 @@ func (q *qaService) putVerdict(w http.ResponseWriter, r *http.Request) {
 
 var qaShotName = regexp.MustCompile(`^[a-z0-9_]+-[0-9]\.png$`)
 
-func (q *qaService) shot(w http.ResponseWriter, r *http.Request) {
-	if !full(w, r) {
-		return
-	}
-	q.serveShot(w, r)
-}
-
 func (q *qaService) serveShot(w http.ResponseWriter, r *http.Request) {
 	name := r.PathValue("name")
 	if !qaShotName.MatchString(name) {
@@ -780,9 +744,6 @@ func (q *qaService) serveShot(w http.ResponseWriter, r *http.Request) {
 }
 
 func (q *qaService) deviceToken(w http.ResponseWriter, r *http.Request) {
-	if !full(w, r) {
-		return
-	}
 	token := qaDeviceStart + randomHex(32)
 	q.mu.Lock()
 	q.state.DeviceHash = keyHash(token)

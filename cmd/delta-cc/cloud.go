@@ -131,9 +131,7 @@ func (s *cloudAccountStore) register(mux *http.ServeMux) {
 // ---------------------------------------------------------------------------
 
 func (s *cloudAccountStore) list(w http.ResponseWriter, r *http.Request) {
-	s.mu.Lock()
-	accounts, err := s.load()
-	s.mu.Unlock()
+	accounts, err := s.all()
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
@@ -336,10 +334,7 @@ func (s *cloudAccountStore) relay(w http.ResponseWriter, r *http.Request) {
 				out.Header.Set(k, v)
 			}
 		}
-		out.Header.Set("Authorization", "Bearer "+a.AccessToken)
-		out.Header.Set("anthropic-version", "2023-06-01")
-		out.Header.Set("anthropic-client-platform", "claude_code_cli")
-		out.Header.Set("User-Agent", cloudRelayUserAgent)
+		providerHeaders(out.Header, a.AccessToken)
 		resp, err = s.streams.Do(out)
 		if err != nil {
 			writeError(w, http.StatusBadGateway, "couldn't reach the provider: "+err.Error())
@@ -360,6 +355,15 @@ func (s *cloudAccountStore) relay(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("X-Accel-Buffering", "no")
 	w.WriteHeader(resp.StatusCode)
 	flushCopy(w, resp.Body)
+}
+
+// providerHeaders sets what every request to the provider's API carries, as
+// Claude Code sends it.
+func providerHeaders(h http.Header, token string) {
+	h.Set("Authorization", "Bearer "+token)
+	h.Set("anthropic-version", "2023-06-01")
+	h.Set("anthropic-client-platform", "claude_code_cli")
+	h.Set("User-Agent", cloudRelayUserAgent)
 }
 
 var errCloudUnknown = errors.New("no such account")
@@ -386,11 +390,7 @@ func writeCloudError(w http.ResponseWriter, err error) {
 // refresh token; the second gets what the first renewed.
 func (s *cloudAccountStore) fresh(ctx context.Context, id, refused string) (*cloudAccount, error) {
 	s.mu.Lock()
-	lock := s.renewing[id]
-	if lock == nil {
-		lock = &sync.Mutex{}
-		s.renewing[id] = lock
-	}
+	lock := lockFor(s.renewing, id)
 	s.mu.Unlock()
 	lock.Lock()
 	defer lock.Unlock()
@@ -404,13 +404,8 @@ func (s *cloudAccountStore) fresh(ctx context.Context, id, refused string) (*clo
 	if good {
 		return a, nil
 	}
-	t, err := s.renew(ctx, a.RefreshToken)
-	if err != nil {
+	if err := s.renewInto(ctx, a); err != nil {
 		return nil, err
-	}
-	a.AccessToken, a.ExpiresAt = t.access, t.expiresAt
-	if t.refresh != "" {
-		a.RefreshToken = t.refresh
 	}
 	err = s.update(id, func(stored *cloudAccount) {
 		stored.AccessToken, stored.RefreshToken, stored.ExpiresAt = a.AccessToken, a.RefreshToken, a.ExpiresAt
@@ -433,6 +428,14 @@ func (s *cloudAccountStore) identify(ctx context.Context, a *cloudAccount) error
 			return err
 		}
 	}
+	if err := s.renewInto(ctx, a); err != nil {
+		return err
+	}
+	return s.profile(ctx, a)
+}
+
+// renewInto renews a's login and takes the new tokens.
+func (s *cloudAccountStore) renewInto(ctx context.Context, a *cloudAccount) error {
 	t, err := s.renew(ctx, a.RefreshToken)
 	if err != nil {
 		return err
@@ -441,7 +444,16 @@ func (s *cloudAccountStore) identify(ctx context.Context, a *cloudAccount) error
 	if t.refresh != "" {
 		a.RefreshToken = t.refresh
 	}
-	return s.profile(ctx, a)
+	return nil
+}
+
+// lockFor returns the mutex for id in m, made on first use. Callers hold
+// s.mu.
+func lockFor(m map[string]*sync.Mutex, id string) *sync.Mutex {
+	if m[id] == nil {
+		m[id] = &sync.Mutex{}
+	}
+	return m[id]
 }
 
 // profile looks up whose login a.AccessToken is.
@@ -561,11 +573,8 @@ func (s *cloudAccountStore) find(id string) (*cloudAccount, error) {
 	if err != nil {
 		return nil, err
 	}
-	for i := range accounts {
-		if accounts[i].ID == id {
-			a := accounts[i]
-			return &a, nil
-		}
+	if a := findPtr(accounts, func(a *cloudAccount) bool { return a.ID == id }); a != nil {
+		return a, nil
 	}
 	return nil, errCloudUnknown
 }
@@ -578,13 +587,18 @@ func (s *cloudAccountStore) update(id string, change func(*cloudAccount)) error 
 	if err != nil {
 		return err
 	}
-	for i := range accounts {
-		if accounts[i].ID == id {
-			change(&accounts[i])
-			return s.save(accounts)
-		}
+	if a := findPtr(accounts, func(a *cloudAccount) bool { return a.ID == id }); a != nil {
+		change(a)
+		return s.save(accounts)
 	}
 	return nil
+}
+
+// all reads every account.
+func (s *cloudAccountStore) all() ([]cloudAccount, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.load()
 }
 
 // load reads every account; none while the file doesn't exist. Callers hold mu.
@@ -594,14 +608,11 @@ func (s *cloudAccountStore) load() ([]cloudAccount, error) {
 
 // save replaces the file. Callers hold mu.
 func (s *cloudAccountStore) save(accounts []cloudAccount) error {
-	if accounts == nil {
-		accounts = []cloudAccount{}
-	}
 	return writeJSONFile(s.path, accounts)
 }
 
 // ---------------------------------------------------------------------------
-// Sessions started here
+// Usage, and picking an account
 // ---------------------------------------------------------------------------
 
 // cloudCreditsKey is where the usage report lists the account's cloud
@@ -636,16 +647,14 @@ const (
 func (s *cloudAccountStore) watchUsage() {
 	go func() {
 		for {
-			s.mu.Lock()
-			accounts, _ := s.load()
-			s.mu.Unlock()
+			accounts, _ := s.all()
 			gap := cloudUsageEvery
 			if len(accounts) > 0 {
 				gap = cloudUsageEvery / time.Duration(len(accounts))
 			}
 			for _, a := range accounts {
 				ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
-				s.readUsage(ctx, a.ID, false)
+				s.readUsage(ctx, a.ID)
 				cancel()
 				time.Sleep(gap)
 			}
@@ -657,18 +666,14 @@ func (s *cloudAccountStore) watchUsage() {
 }
 
 // readUsage asks the provider for account id's usage and keeps the report.
-// Unless forced, it doesn't ask again before a failed read's retry time.
-// One read per account at a time (s.reading).
-func (s *cloudAccountStore) readUsage(ctx context.Context, id string, force bool) error {
+// It doesn't ask again before a failed read's retry time. One read per
+// account at a time (s.reading).
+func (s *cloudAccountStore) readUsage(ctx context.Context, id string) error {
 	s.mu.Lock()
-	lock := s.reading[id]
-	if lock == nil {
-		lock = &sync.Mutex{}
-		s.reading[id] = lock
-	}
+	lock := lockFor(s.reading, id)
 	known := s.usages[id]
 	s.mu.Unlock()
-	if !force && time.Now().Before(known.retry) {
+	if time.Now().Before(known.retry) {
 		return errors.New("the usage report was turned down; trying again shortly")
 	}
 	lock.Lock()
@@ -714,7 +719,7 @@ func (s *cloudAccountStore) latestUsage(ctx context.Context, id string) ([]byte,
 	u, ok := s.usages[id]
 	s.mu.Unlock()
 	if !ok || u.body == nil {
-		if err := s.readUsage(ctx, id, false); err != nil {
+		if err := s.readUsage(ctx, id); err != nil {
 			return nil, time.Time{}, err
 		}
 		s.mu.Lock()
@@ -734,9 +739,7 @@ func (s *cloudAccountStore) latestUsage(ctx context.Context, id string) ([]byte,
 // no account is known to have room does one whose usage can't be read at
 // all count as having room, unless its login is dead.
 func (s *cloudAccountStore) pick(ctx context.Context) (string, error) {
-	s.mu.Lock()
-	accounts, err := s.load()
-	s.mu.Unlock()
+	accounts, err := s.all()
 	if err != nil {
 		return "", err
 	}
@@ -808,10 +811,7 @@ func (s *cloudAccountStore) request(ctx context.Context, id, method, path string
 		if body != nil {
 			req.Header.Set("Content-Type", "application/json")
 		}
-		req.Header.Set("Authorization", "Bearer "+a.AccessToken)
-		req.Header.Set("anthropic-version", "2023-06-01")
-		req.Header.Set("anthropic-client-platform", "claude_code_cli")
-		req.Header.Set("User-Agent", cloudRelayUserAgent)
+		providerHeaders(req.Header, a.AccessToken)
 		resp, err := s.client.Do(req)
 		if err != nil {
 			return 0, nil, fmt.Errorf("couldn't reach the provider: %w", err)

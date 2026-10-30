@@ -7,13 +7,12 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
-	"flag"
 	"fmt"
 	"io"
-	"log"
 	"net/http"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -94,7 +93,11 @@ const (
 	maxShorthandKept   = 32 // finished readings kept at most (the oldest go first)
 )
 
-const shorthandOffline = "shorthand service offline: the computer that reads shorthand isn't connected right now"
+const (
+	shorthandOffline = "shorthand service offline: the computer that reads shorthand isn't connected right now"
+	shorthandLate    = "the shorthand reader didn't answer in time; try a smaller region, or read it yourself"
+	shorthandLost    = "the shorthand reader lost this request; try again"
+)
 
 type shorthandJob struct {
 	ID     string `json:"id"`
@@ -163,17 +166,9 @@ func (s *shorthandService) registerWorker(mux *http.ServeMux) {
 // ---------------------------------------------------------------------------
 
 func genShorthandSecret(args []string) {
-	fs := flag.NewFlagSet("shorthand-secret", flag.ExitOnError)
-	dataDir := fs.String("data", "data", "data directory")
-	fs.Parse(args)
-	secret := shorthandSecretStart + randomToken(32)
-	path, err := writeKeyHash(*dataDir, shorthandSecretFile, secret)
-	if err != nil {
-		log.Fatal(err)
-	}
-	fmt.Fprintf(os.Stderr, "The shorthand worker's secret hash is in %s; it takes effect at once, and any earlier secret stops working.\n", path)
-	fmt.Fprintln(os.Stderr, "Put this secret in the worker's configuration (SHORTHAND_WORKER_SECRET) now; it cannot be shown again:")
-	fmt.Println(secret)
+	genSecret("shorthand-secret", args, shorthandSecretStart, shorthandSecretFile,
+		"The shorthand worker's secret hash is in %s; it takes effect at once, and any earlier secret stops working.\n",
+		"Put this secret in the worker's configuration (SHORTHAND_WORKER_SECRET) now; it cannot be shown again:")
 }
 
 // workerOnly runs h for requests with the worker's secret. The hash is read
@@ -228,24 +223,19 @@ func (s *shorthandService) stranded(id string) bool {
 // queued says whether the request id is waiting for a worker. s.mu must be
 // held.
 func (s *shorthandService) queued(id string) bool {
-	for _, j := range s.queue {
-		if j.ID == id {
-			return true
-		}
-	}
-	return false
+	return slices.ContainsFunc(s.queue, func(j *shorthandJob) bool { return j.ID == id })
+}
+
+// dequeue drops the request id, waiting or taken. s.mu must be held.
+func (s *shorthandService) dequeue(id string) {
+	delete(s.taken, id)
+	s.queue = slices.DeleteFunc(s.queue, func(j *shorthandJob) bool { return j.ID == id })
 }
 
 // finish ends job with answer a: a reading keeps it for its caller to
 // fetch, a reload's caller gets it. s.mu must be held.
 func (s *shorthandService) finish(job *shorthandJob, a shorthandAnswer) {
-	delete(s.taken, job.ID)
-	for i, j := range s.queue {
-		if j.ID == job.ID {
-			s.queue = append(s.queue[:i], s.queue[i+1:]...)
-			break
-		}
-	}
+	s.dequeue(job.ID)
 	if job.done != nil {
 		select {
 		case job.done <- a:
@@ -272,23 +262,19 @@ func (s *shorthandService) expire() {
 		case !online && s.queued(id):
 			s.finish(j, shorthandAnswer{http.StatusServiceUnavailable, errorJSON(shorthandOffline)})
 		case time.Since(j.created) > shorthandWait:
-			s.finish(j, shorthandAnswer{http.StatusGatewayTimeout, errorJSON("the shorthand reader didn't answer in time; try a smaller region, or read it yourself")})
+			s.finish(j, shorthandAnswer{http.StatusGatewayTimeout, errorJSON(shorthandLate)})
 		case !j.taken.IsZero() && time.Since(j.taken) > shorthandWork:
-			s.finish(j, shorthandAnswer{http.StatusBadGateway, errorJSON("the shorthand reader lost this request; try again")})
+			s.finish(j, shorthandAnswer{http.StatusBadGateway, errorJSON(shorthandLost)})
 		}
 		if j.answer != nil {
 			kept = append(kept, j)
 		}
 	}
-	for len(kept) > maxShorthandKept { // drop the oldest results
-		old := 0
-		for i, j := range kept {
-			if j.finished.Before(kept[old].finished) {
-				old = i
-			}
+	if len(kept) > maxShorthandKept { // drop the oldest results
+		slices.SortFunc(kept, func(a, b *shorthandJob) int { return a.finished.Compare(b.finished) })
+		for _, j := range kept[:len(kept)-maxShorthandKept] {
+			delete(s.reads, j.ID)
 		}
-		delete(s.reads, kept[old].ID)
-		kept = append(kept[:old], kept[old+1:]...)
 	}
 }
 
@@ -453,7 +439,7 @@ func (s *shorthandService) ask(w http.ResponseWriter, r *http.Request, job *shor
 			}
 		case <-timer.C:
 			s.forget(job.ID)
-			writeError(w, http.StatusGatewayTimeout, "the shorthand reader didn't answer in time; try a smaller region, or read it yourself")
+			writeError(w, http.StatusGatewayTimeout, shorthandLate)
 			return
 		case <-r.Context().Done():
 			s.forget(job.ID)
@@ -466,13 +452,7 @@ func (s *shorthandService) ask(w http.ResponseWriter, r *http.Request, job *shor
 func (s *shorthandService) forget(id string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	delete(s.taken, id)
-	for i, j := range s.queue {
-		if j.ID == id {
-			s.queue = append(s.queue[:i], s.queue[i+1:]...)
-			return
-		}
-	}
+	s.dequeue(id)
 }
 
 func (s *shorthandService) status(w http.ResponseWriter, r *http.Request) {
@@ -497,7 +477,7 @@ func (s *shorthandService) next(w http.ResponseWriter, r *http.Request) {
 		Info   json.RawMessage `json:"info"`
 		Worker string          `json:"worker"` // an id the worker picks when it starts
 	}
-	json.NewDecoder(io.LimitReader(r.Body, 64<<10)).Decode(&req)
+	decodeBody(r, 64<<10, &req)
 	deadline := time.NewTimer(shorthandPoll)
 	defer deadline.Stop()
 	s.mu.Lock()
@@ -510,7 +490,7 @@ func (s *shorthandService) next(w http.ResponseWriter, r *http.Request) {
 	// is one taken too long ago (its worker stopped).
 	for _, j := range s.taken {
 		if req.Worker != "" && j.worker == req.Worker || time.Since(j.taken) > shorthandWork {
-			s.finish(j, shorthandAnswer{http.StatusBadGateway, errorJSON("the shorthand reader lost this request; try again")})
+			s.finish(j, shorthandAnswer{http.StatusBadGateway, errorJSON(shorthandLost)})
 		}
 	}
 	s.polling++

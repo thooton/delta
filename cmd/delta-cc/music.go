@@ -81,12 +81,7 @@ func (m *musicConfig) register(mux *http.ServeMux) {
 	mux.HandleFunc("DELETE /music-config", m.reset)
 }
 
-// text returns the configuration in use.
-func (m *musicConfig) text() (string, error) {
-	text, _, err := m.read()
-	return text, err
-}
-
+// read returns the configuration in use.
 func (m *musicConfig) read() (text string, isDefault bool, err error) {
 	data, err := os.ReadFile(m.path)
 	if errors.Is(err, os.ErrNotExist) {
@@ -107,9 +102,8 @@ func (m *musicConfig) get(w http.ResponseWriter, r *http.Request) {
 }
 
 func (m *musicConfig) put(w http.ResponseWriter, r *http.Request) {
-	data, err := io.ReadAll(http.MaxBytesReader(w, r.Body, maxMusicConfig))
-	if err != nil {
-		writeError(w, http.StatusRequestEntityTooLarge, fmt.Sprintf("config exceeds %d bytes", maxMusicConfig))
+	data, ok := readBody(w, r, maxMusicConfig, "config exceeds %d bytes")
+	if !ok {
 		return
 	}
 	text := strings.ReplaceAll(string(data), "\r\n", "\n")
@@ -120,17 +114,9 @@ func (m *musicConfig) put(w http.ResponseWriter, r *http.Request) {
 	if !strings.HasSuffix(text, "\n") {
 		text += "\n"
 	}
-	if err := writePrivateFile(m.path, []byte(text)); err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
-		return
-	}
-	writeJSON(w, http.StatusOK, map[string]any{"size": len(text)})
+	writeResult(w, writePrivateFile(m.path, []byte(text)), http.StatusOK, map[string]any{"size": len(text)})
 }
 
 func (m *musicConfig) reset(w http.ResponseWriter, r *http.Request) {
-	if err := os.Remove(m.path); err != nil && !errors.Is(err, os.ErrNotExist) {
-		writeError(w, http.StatusInternalServerError, err.Error())
-		return
-	}
-	writeJSON(w, http.StatusOK, map[string]bool{"default": true})
+	writeResult(w, removeIfExists(m.path), http.StatusOK, map[string]bool{"default": true})
 }

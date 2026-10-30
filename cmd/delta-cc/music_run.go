@@ -19,26 +19,25 @@ import (
 	"path/filepath"
 	"regexp"
 	"runtime"
-	"sort"
+	"slices"
 	"strings"
 	"sync"
 	"time"
 )
 
 // POST /music downloads music from the Soulseek network, and the command
-// center does the downloading: agents usually run in sandboxes that can't
+// center does the downloading: neither the phone nor an agent's sandbox can
 // reach the network. The work is done by an engine bundled into this binary
 // (an unmodified sockseek release, see scripts/fetch-music-engine.sh), which
-// the agent never runs or sees directly: we run it and pass on its log with
-// its own name taken out.
+// the client never runs or sees directly: we run it and, for a download by
+// name, pass on its log with its own name taken out.
 //
-// A run searches by name, downloads the best match into a job directory
+// A run by name searches, downloads the best match into a job directory
 // under data/music-jobs/, and if nothing was downloaded tries once more with
 // a broader search. Its response is a stream of JSON lines (musicEvent): log
-// lines for the CLI's stdout and stderr, an empty object now and then to
-// keep proxies from timing out, and finally the result, naming the job and
-// its files. The CLI then fetches the files as a tar into its current
-// directory and deletes the job.
+// lines for stdout and stderr, an empty object now and then to keep proxies
+// from timing out, and finally the result, naming the job and its files.
+// The client then fetches the files as a tar and deletes the job.
 //
 // The command center has one Soulseek account, kept in data/music-login.json.
 // It is made up on first use and kept, because registering a new account on
@@ -68,7 +67,7 @@ var musicEngineFS embed.FS
 const (
 	musicLoginFile = "music-login.json"
 	musicJobsDir   = "music-jobs"
-	// Jobs whose files the CLI never fetched are removed after this.
+	// Jobs whose files the client never fetched are removed after this.
 	musicJobTTL = 24 * time.Hour
 )
 
@@ -76,14 +75,15 @@ const (
 // title separately, and leave "feat. ..." and [bracketed] text out.
 var musicBroader = []string{"--desperate", "--remove-ft", "--remove-brackets"}
 
-var errMusicFailed = errors.New(`No match found on Amazon Music (see above). Try the name written differently: ` +
-	`a shorter title, without "feat. ..." or remix and edition names, or without the artist if it is "Various Artists"`)
+const musicTryAgain = ` Try the name written differently: ` +
+	`a shorter title, without "feat. ..." or remix and edition names, or without the artist if it is "Various Artists"`
+
+var errMusicFailed = errors.New(`No match found on Amazon Music (see above).` + musicTryAgain)
 
 // The plain log's errors, for Source.
 var (
 	errEngineFailed = errors.New("the engine stopped with an error (see above)")
-	errMusicNoHits  = errors.New(`Nothing on Soulseek met the config's conditions (see above). Try the name written differently: ` +
-		`a shorter title, without "feat. ..." or remix and edition names, or without the artist if it is "Various Artists"`)
+	errMusicNoHits  = errors.New(`Nothing on Soulseek met the config's conditions (see above).` + musicTryAgain)
 )
 
 // musicMaxHits is how many search results reach the phone.
@@ -153,7 +153,7 @@ var musicLink = regexp.MustCompile(`^slsk://[^/\x00-\x1f]+/[^\x00-\x1f]+$`)
 // link is only taken when links are.
 func readMusicRequest(w http.ResponseWriter, r *http.Request, links bool) (musicRequest, bool) {
 	var req musicRequest
-	if err := json.NewDecoder(io.LimitReader(r.Body, 64<<10)).Decode(&req); err != nil {
+	if err := decodeBody(r, 64<<10, &req); err != nil {
 		writeError(w, http.StatusBadRequest, `expected JSON body {"mode": "song"|"album", "query": "..."}`)
 		return req, false
 	}
@@ -235,13 +235,18 @@ type musicSession struct {
 	user, dir, config string
 }
 
+// args are the engine's arguments for a run on input.
+func (s musicSession) args(input, inputType string, more ...string) []string {
+	return append([]string{"--config", s.config, "--input", input, "--input-type", inputType}, more...)
+}
+
 // session makes one; done removes its directory.
 func (m *musicService) session() (s musicSession, done func(), err error) {
 	acct, err := m.account(false)
 	if err != nil {
 		return s, nil, err
 	}
-	conf, err := m.config.text()
+	conf, _, err := m.config.read()
 	if err != nil {
 		return s, nil, err
 	}
@@ -275,13 +280,11 @@ func (m *musicService) download(ctx context.Context, engine string, req musicReq
 	}
 
 	if req.Link != "" {
-		args := []string{"--config", s.config, "--input", req.Link, "--input-type", "soulseek",
-			"--output-dir", jobDir, "--no-progress"}
+		args := s.args(req.Link, "soulseek", "--output-dir", jobDir, "--no-progress")
 		err = runEngine(ctx, engine, s.dir, args, musicView{user: s.user, jobDir: jobDir, plain: true}, out)
 	} else {
 		view := musicView{user: s.user, jobDir: jobDir}
-		args := []string{"--config", s.config, "--input", req.Query, "--input-type", "string", "--" + req.Mode,
-			"--output-dir", jobDir, "--no-progress"}
+		args := s.args(req.Query, "string", "--"+req.Mode, "--output-dir", jobDir, "--no-progress")
 		err = runEngine(ctx, engine, s.dir, args, view, out)
 		if err == errMusicFailed {
 			out.stdout("")
@@ -340,7 +343,7 @@ func (m *musicService) find(ctx context.Context, engine, mode, query string, out
 		return musicSearchResult{Error: err.Error(), Results: []musicHit{}}
 	}
 	defer done()
-	var hits []musicHit
+	hits := []musicHit{}
 	view := musicView{user: s.user, jobDir: s.dir, plain: true, take: func(line string) bool {
 		found, ok := parseMusicHits(line)
 		if ok {
@@ -348,8 +351,8 @@ func (m *musicService) find(ctx context.Context, engine, mode, query string, out
 		}
 		return ok
 	}}
-	args := []string{"--config", s.config, "--input", query, "--input-type", "string", "--" + mode,
-		"--output-dir", filepath.Join(s.dir, "out"), "--no-write-index", "--no-progress", "--print", "json-all"}
+	args := s.args(query, "string", "--"+mode,
+		"--output-dir", filepath.Join(s.dir, "out"), "--no-write-index", "--no-progress", "--print", "json-all")
 	err = runEngine(ctx, engine, s.dir, args, view, out)
 	if len(hits) == 0 && err == errEngineFailed {
 		out.stdout("")
@@ -357,9 +360,6 @@ func (m *musicService) find(ctx context.Context, engine, mode, query string, out
 		err = runEngine(ctx, engine, s.dir, append(args, musicBroader...), view, out)
 	}
 	res := musicSearchResult{Results: hits}
-	if res.Results == nil {
-		res.Results = []musicHit{}
-	}
 	switch {
 	case len(hits) > 0:
 	case err != nil && err != errEngineFailed:
@@ -515,7 +515,7 @@ func musicJobFiles(dir string) []musicFile {
 		}
 		return nil
 	})
-	sort.Slice(files, func(i, j int) bool { return files[i].Path < files[j].Path })
+	slices.SortFunc(files, func(a, b musicFile) int { return strings.Compare(a.Path, b.Path) })
 	return files
 }
 
@@ -573,7 +573,7 @@ func (m *musicService) getJob(w http.ResponseWriter, r *http.Request) {
 		}
 		file.Close()
 		if err != nil {
-			// The CLI sees a truncated tar.
+			// The client sees a truncated tar.
 			return
 		}
 	}
@@ -585,19 +585,12 @@ func (m *musicService) deleteJob(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	if err := os.RemoveAll(dir); err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
-		return
-	}
-	writeJSON(w, http.StatusOK, map[string]string{"deleted": r.PathValue("id")})
+	writeResult(w, os.RemoveAll(dir), http.StatusOK, map[string]string{"deleted": r.PathValue("id")})
 }
 
 func (m *musicService) relogin(w http.ResponseWriter, r *http.Request) {
-	if _, err := m.account(true); err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
-		return
-	}
-	writeJSON(w, http.StatusOK, map[string]bool{"renewed": true})
+	_, err := m.account(true)
+	writeResult(w, err, http.StatusOK, map[string]bool{"renewed": true})
 }
 
 // ---- the account ----
@@ -685,11 +678,10 @@ func (m *musicService) engine() (string, error) {
 		return "", err
 	}
 	// Remove engines left by older versions of delta-cc.
-	if old, _ := filepath.Glob(filepath.Join(m.dataDir, "music-engine-*")); len(old) > 0 {
-		for _, d := range old {
-			if d != dir {
-				os.RemoveAll(d)
-			}
+	old, _ := filepath.Glob(filepath.Join(m.dataDir, "music-engine-*"))
+	for _, d := range old {
+		if d != dir {
+			os.RemoveAll(d)
 		}
 	}
 	return engine, nil
@@ -806,6 +798,53 @@ var (
 	}
 )
 
+// musicJobWords is how a job line of one status reads: bare with no name to
+// give, named (a format given the quoted name) otherwise, each with an
+// album's wording where it differs.
+type musicJobWords struct {
+	bare, bareAlbum, named, namedAlbum string
+}
+
+func (w musicJobWords) say(album bool, display, name string) string {
+	switch {
+	case display == "" && album && w.bareAlbum != "":
+		return w.bareAlbum
+	case display == "":
+		return w.bare
+	case album && w.namedAlbum != "":
+		return fmt.Sprintf(w.namedAlbum, name)
+	}
+	return fmt.Sprintf(w.named, name)
+}
+
+var (
+	// A download is a purchase, which this words, then the file's download.
+	musicJobDownload = musicJobWords{"Purchasing on Amazon Music...", "Purchasing an album on Amazon Music...", "Purchasing %q...", "Purchasing album %q..."}
+	musicJobWorking  = musicJobWords{bare: "Working...", named: "Working on %q..."}
+	musicJobStatuses = map[string]musicJobWords{}
+)
+
+func init() {
+	for _, w := range []struct {
+		statuses string
+		musicJobWords
+	}{
+		{"searching search", musicJobWords{"Searching Amazon Music...", "Searching Amazon Music for an album...", "Searching Amazon Music for %q...", "Searching Amazon Music for album %q..."}},
+		{"downloading download", musicJobDownload},
+		{"succeeded success succeed downloaded", musicJobWords{bare: "Downloaded from Amazon Music.", named: "Downloaded %q."}},
+		{"failed fail failure not-found notfound missing", musicJobWords{"No match found on Amazon Music.", "", "No match found for %q on Amazon Music.", "No match found for album %q on Amazon Music."}},
+		{"queued queue waiting wait", musicJobWords{bare: "Waiting for Amazon Music...", named: "Waiting for %q..."}},
+		{"retrying retry", musicJobWords{bare: "Retrying on Amazon Music...", named: "Retrying %q..."}},
+		{"cancelled canceled cancel", musicJobWords{bare: "Cancelled on Amazon Music.", named: "Cancelled %q."}},
+		{"skipped skip", musicJobWords{bare: "Skipped on Amazon Music.", named: "Skipped %q."}},
+		{"already existing exists", musicJobWords{bare: "Already downloaded from Amazon Music.", named: "Already downloaded %q."}},
+	} {
+		for _, status := range strings.Fields(w.statuses) {
+			musicJobStatuses[status] = w.musicJobWords
+		}
+	}
+}
+
 // rewriteMusicJobLine recasts a song/album job line the way an Amazon Music
 // CLI would log it ("[002] SongJob: searching: ..." -> `Searching Amazon
 // Music for "..."...`). Every other job kind (ExtractJob, SearchJob, ...)
@@ -826,83 +865,20 @@ func rewriteMusicJobLine(line string) ([]string, bool) {
 	if sourceWords.MatchString(status + " " + query + " " + display) {
 		return nil, false
 	}
-	quote := func() string { return fmt.Sprintf("%q", display) }
-	switch status {
-	case "searching", "search":
-		if display == "" {
-			if album {
-				return []string{"Searching Amazon Music for an album..."}, true
-			}
-			return []string{"Searching Amazon Music..."}, true
-		}
-		if album {
-			return []string{fmt.Sprintf("Searching Amazon Music for album %q...", display)}, true
-		}
-		return []string{fmt.Sprintf("Searching Amazon Music for %q...", display)}, true
-	case "downloading", "download":
-		// The resolved track is purchased, then its file downloads: the
-		// purchase names the file without its extension.
-		buy := display
-		if ext := filepath.Ext(buy); ext != "" {
-			buy = strings.TrimSuffix(buy, ext)
-		}
-		if display == "" {
-			if album {
-				return []string{"Purchasing an album on Amazon Music...", "Downloading from Amazon Music..."}, true
-			}
-			return []string{"Purchasing on Amazon Music...", "Downloading from Amazon Music..."}, true
-		}
-		var purchase string
-		if album {
-			purchase = fmt.Sprintf("Purchasing album %q...", buy)
-		} else {
-			purchase = fmt.Sprintf("Purchasing %q...", buy)
-		}
-		return []string{purchase, fmt.Sprintf("Downloading %s...", quote())}, true
-	case "succeeded", "success", "succeed", "downloaded":
-		if display == "" {
-			return []string{"Downloaded from Amazon Music."}, true
-		}
-		return []string{fmt.Sprintf("Downloaded %s.", quote())}, true
-	case "failed", "fail", "failure", "not-found", "notfound", "missing":
-		if display == "" {
-			return []string{"No match found on Amazon Music."}, true
-		}
-		if album {
-			return []string{fmt.Sprintf("No match found for album %s on Amazon Music.", quote())}, true
-		}
-		return []string{fmt.Sprintf("No match found for %s on Amazon Music.", quote())}, true
-	case "queued", "queue", "waiting", "wait":
-		if display == "" {
-			return []string{"Waiting for Amazon Music..."}, true
-		}
-		return []string{fmt.Sprintf("Waiting for %s...", quote())}, true
-	case "retrying", "retry":
-		if display == "" {
-			return []string{"Retrying on Amazon Music..."}, true
-		}
-		return []string{fmt.Sprintf("Retrying %s...", quote())}, true
-	case "cancelled", "canceled", "cancel":
-		if display == "" {
-			return []string{"Cancelled on Amazon Music."}, true
-		}
-		return []string{fmt.Sprintf("Cancelled %s.", quote())}, true
-	case "skipped", "skip":
-		if display == "" {
-			return []string{"Skipped on Amazon Music."}, true
-		}
-		return []string{fmt.Sprintf("Skipped %s.", quote())}, true
-	case "already", "existing", "exists":
-		if display == "" {
-			return []string{"Already downloaded from Amazon Music."}, true
-		}
-		return []string{fmt.Sprintf("Already downloaded %s.", quote())}, true
-	default:
-		if display == "" {
-			return []string{"Working..."}, true
-		}
-		return []string{fmt.Sprintf("Working on %s...", quote())}, true
+	words, ok := musicJobStatuses[status]
+	if !ok {
+		words = musicJobWorking
 	}
+	if words != musicJobDownload {
+		return []string{words.say(album, display, display)}, true
+	}
+	// The resolved track is purchased, then its file downloads: the purchase
+	// names the file without its extension.
+	download := musicJobWords{bare: "Downloading from Amazon Music...", named: "Downloading %q..."}
+	return []string{
+		words.say(album, display, strings.TrimSuffix(display, filepath.Ext(display))),
+		download.say(album, display, display),
+	}, true
 }
 
 // splitJobRest splits "<status> [detail]: <query> [: <file>]" into the
@@ -924,7 +900,7 @@ func splitJobRest(rest string) (status, query, display string) {
 	return status, query, display
 }
 
-// musicLogLine rewrites one line of engine output for the agent. A job line
+// musicLogLine rewrites one line of engine output for the white-labeled log. A job line
 // can become two lines (a purchase, then its download). The engine's name,
 // the network's, the login, and the people files come from never get through.
 func musicLogLine(line, user string) ([]string, bool) {
@@ -987,7 +963,7 @@ type musicView struct {
 	user   string // the account, which the white-labeled log leaves out
 	jobDir string // paths in it are made relative to it
 	// plain passes the log on as the engine wrote it (plainLogLine), for
-	// Source; otherwise it is white-labeled (musicLogLine), for the agent.
+	// Source; otherwise it is white-labeled (musicLogLine).
 	plain bool
 	// take, if set, is offered each line of output first, and keeps the
 	// ones it takes out of the log.
@@ -996,7 +972,7 @@ type musicView struct {
 
 // runEngine runs the engine once in dir, with its stdin closed, and sends its
 // output to out as v says, with paths in v.jobDir made relative to it (they
-// mean nothing to the agent, whose copies are in its own directory). If
+// mean nothing to the client, whose copies are elsewhere). If
 // logins keep failing it stops the engine and returns errMusicLogin
 // (errSoulseekLogin, plainly); if the engine reports that it couldn't do what
 // it was asked, errMusicFailed (errEngineFailed).

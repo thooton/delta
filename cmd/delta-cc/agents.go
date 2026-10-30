@@ -3,10 +3,8 @@ package main
 import (
 	"context"
 	"crypto/rand"
-	"crypto/sha256"
 	"encoding/base32"
 	"encoding/base64"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -55,6 +53,7 @@ import (
 //	                                        ?from_sequence_num= (or Last-Event-ID).
 const (
 	agentIDPrefix    = "session_delta_"
+	agentTokenPrefix = "delta_agent_"
 	agentMaxBody     = 48 << 20
 	agentMaxImages   = 10
 	agentMaxTitle    = 200
@@ -82,7 +81,7 @@ type agentService struct {
 
 	mu       sync.Mutex
 	sessions map[string]*agentSession
-	tokens   map[[sha256.Size]byte]*agentSession
+	tokens   map[string]*agentSession // by keyHash of the token, as meta.TokenHash
 }
 
 // agentMeta is a session's session.json.
@@ -138,13 +137,7 @@ func newAgentService(dataDir string, cfg agentConfig) (*agentService, error) {
 	if strings.TrimSpace(cfg.Setup) == "" {
 		cfg.Setup = defaultAgentSetup
 	}
-	a := &agentService{
-		cfg:      cfg,
-		dir:      filepath.Join(dataDir, "agents"),
-		dataDir:  dataDir,
-		sessions: map[string]*agentSession{},
-		tokens:   map[[sha256.Size]byte]*agentSession{},
-	}
+	a := emptyAgentService(dataDir, cfg)
 	if err := os.MkdirAll(a.dir, 0o700); err != nil {
 		return nil, err
 	}
@@ -152,10 +145,9 @@ func newAgentService(dataDir string, cfg agentConfig) (*agentService, error) {
 	for _, name := range []string{"extension.ts", "pi-agent"} {
 		os.RemoveAll(filepath.Join(a.dir, name))
 	}
-	if old, _ := filepath.Glob(filepath.Join(a.dir, "pi-*")); old != nil {
-		for _, dir := range old {
-			os.RemoveAll(dir)
-		}
+	old, _ := filepath.Glob(filepath.Join(a.dir, "pi-*"))
+	for _, dir := range old {
+		os.RemoveAll(dir)
 	}
 	entries, err := os.ReadDir(a.dir)
 	if err != nil {
@@ -175,27 +167,38 @@ func newAgentService(dataDir string, cfg agentConfig) (*agentService, error) {
 	return a, nil
 }
 
-// disabledAgentService lists no sessions and refuses new ones, saying why.
-func disabledAgentService(dataDir, why string) *agentService {
+func emptyAgentService(dataDir string, cfg agentConfig) *agentService {
 	return &agentService{
-		disabled: why,
+		cfg:      cfg,
 		dir:      filepath.Join(dataDir, "agents"),
 		dataDir:  dataDir,
 		sessions: map[string]*agentSession{},
-		tokens:   map[[sha256.Size]byte]*agentSession{},
+		tokens:   map[string]*agentSession{},
 	}
+}
+
+// disabledAgentService lists no sessions and refuses new ones, saying why.
+func disabledAgentService(dataDir, why string) *agentService {
+	a := emptyAgentService(dataDir, agentConfig{})
+	a.disabled = why
+	return a
+}
+
+// all returns the sessions there are now.
+func (a *agentService) all() []*agentSession {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	sessions := make([]*agentSession, 0, len(a.sessions))
+	for _, s := range a.sessions {
+		sessions = append(sessions, s)
+	}
+	return sessions
 }
 
 // start picks up where the last run left off: turns that were under way
 // carry on from their last step. Then it starts the idle sweep.
 func (a *agentService) start() {
-	a.mu.Lock()
-	sessions := make([]*agentSession, 0, len(a.sessions))
-	for _, s := range a.sessions {
-		sessions = append(sessions, s)
-	}
-	a.mu.Unlock()
-	for _, s := range sessions {
+	for _, s := range a.all() {
 		s.stopLegacyPi()
 		s.mu.Lock()
 		if s.meta.Working || len(s.inbox) > 0 {
@@ -219,43 +222,47 @@ func (a *agentService) register(mux *http.ServeMux) {
 
 // validToken reports whether token belongs to a live backup session.
 func (a *agentService) validToken(token string) bool {
-	if !strings.HasPrefix(token, "delta_agent_") {
+	if !strings.HasPrefix(token, agentTokenPrefix) {
 		return false
 	}
-	sum := sha256.Sum256([]byte(token))
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	_, ok := a.tokens[sum]
+	_, ok := a.tokens[keyHash(token)]
 	return ok
 }
 
 // setToken makes token the session's only one, in place of any it had. A
 // session being deleted gets none.
 func (a *agentService) setToken(s *agentSession, token string) {
-	sum := sha256.Sum256([]byte(token))
+	hash := keyHash(token)
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	if a.sessions[s.meta.ID] != s {
 		return
 	}
+	a.dropTokens(s)
+	a.tokens[hash] = s
+	s.mu.Lock()
+	s.meta.TokenHash = hash
+	s.saveMeta()
+	s.mu.Unlock()
+}
+
+// dropTokens forgets the session's token. Callers hold a.mu.
+func (a *agentService) dropTokens(s *agentSession) {
 	for k, v := range a.tokens {
 		if v == s {
 			delete(a.tokens, k)
 		}
 	}
-	a.tokens[sum] = s
-	s.mu.Lock()
-	s.meta.TokenHash = hex.EncodeToString(sum[:])
-	s.saveMeta()
-	s.mu.Unlock()
 }
 
 func (a *agentService) add(s *agentSession) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	a.sessions[s.meta.ID] = s
-	if sum, err := hex.DecodeString(s.meta.TokenHash); err == nil && len(sum) == sha256.Size {
-		a.tokens[[sha256.Size]byte(sum)] = s
+	if s.meta.TokenHash != "" {
+		a.tokens[s.meta.TokenHash] = s
 	}
 }
 
@@ -275,7 +282,7 @@ func (a *agentService) lookup(w http.ResponseWriter, r *http.Request) *agentSess
 type agentListing struct {
 	ID      string    `json:"id"`
 	Title   string    `json:"title"`
-	Status  string    `json:"status"` // "running" or "idle", as the phone reads them
+	Status  string    `json:"status"` // "running" or "idle", as the website reads them
 	Created time.Time `json:"created"`
 	Updated time.Time `json:"updated"`
 }
@@ -297,7 +304,7 @@ func (a *agentService) list(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"data": out})
 }
 
-// agentMessage is a message from the phone: what was typed, and JPEGs as base64.
+// agentMessage is a message from the website: what was typed, and JPEGs as base64.
 type agentMessage struct {
 	Title  string   `json:"title"`
 	UUID   string   `json:"uuid"`
@@ -399,11 +406,7 @@ func (a *agentService) remove(w http.ResponseWriter, r *http.Request) {
 	}
 	a.mu.Lock()
 	delete(a.sessions, s.meta.ID)
-	for k, v := range a.tokens {
-		if v == s {
-			delete(a.tokens, k)
-		}
-	}
+	a.dropTokens(s)
 	a.mu.Unlock()
 	s.mu.Lock()
 	s.deleted = true
@@ -548,9 +551,9 @@ func (s *agentSession) since(seq int64) ([]agentEvent, <-chan struct{}, bool) {
 	return append([]agentEvent(nil), s.events[i:]...), s.changed, s.deleted
 }
 
-// said records a message from the phone, and hands text (what was typed,
+// said records a message from the website, and hands text (what was typed,
 // or more) to the model along with its pictures. The stream keeps the
-// pictures as markers only: the phone counts them.
+// pictures as markers only: the website counts them.
 func (s *agentSession) said(m agentMessage, text string) {
 	var content any = strings.TrimSpace(m.Text)
 	if len(m.Images) > 0 {
@@ -579,7 +582,7 @@ func (s *agentSession) said(m agentMessage, text string) {
 	s.startTurn()
 }
 
-// status shows a line on the phone while a turn is getting going.
+// status shows a line on the website while a turn is getting going.
 func (s *agentSession) status(line string) {
 	s.record("worker", map[string]any{"type": "env_manager_log", "data": map[string]string{"content": line}})
 }
@@ -594,7 +597,7 @@ func newAgentID() string {
 }
 
 func newAgentToken() string {
-	return "delta_agent_" + randomToken(32)
+	return agentTokenPrefix + randomToken(32)
 }
 
 // defaultAgentSetup is the setup script a new container runs when

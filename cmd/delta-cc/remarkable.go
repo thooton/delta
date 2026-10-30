@@ -17,6 +17,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -202,6 +203,20 @@ func (s *remarkableStore) docFiles(doc remarkableEntry) ([]remarkableEntry, erro
 	return parseRemarkableIndex(data)
 }
 
+// docByID returns document id's entry in the root index.
+func (s *remarkableStore) docByID(id string) (remarkableEntry, error) {
+	_, docs, err := s.rootIndex()
+	if err != nil {
+		return remarkableEntry{}, err
+	}
+	for _, d := range docs {
+		if d.Name == id {
+			return d, nil
+		}
+	}
+	return remarkableEntry{}, errRemarkableMissing
+}
+
 func fileWithSuffix(files []remarkableEntry, suffix string) (remarkableEntry, bool) {
 	for _, f := range files {
 		if strings.HasSuffix(f.Name, suffix) && !strings.Contains(f.Name, "/") {
@@ -296,44 +311,40 @@ func (s *remarkableStore) download(w http.ResponseWriter, r *http.Request) {
 
 // writeZip sends document id's files as a zip.
 func (s *remarkableStore) writeZip(w http.ResponseWriter, id string) {
-	_, docs, err := s.rootIndex()
+	d, err := s.docByID(id)
+	if errors.Is(err, errRemarkableMissing) {
+		writeError(w, http.StatusNotFound, err.Error())
+		return
+	}
+	var files []remarkableEntry
+	if err == nil {
+		files, err = s.docFiles(d)
+	}
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	for _, d := range docs {
-		if d.Name != id {
+	w.Header().Set("Content-Type", "application/zip")
+	zw := zip.NewWriter(w)
+	for _, f := range files {
+		p, err := s.blobPath(f.Hash)
+		if err != nil {
 			continue
 		}
-		files, err := s.docFiles(d)
+		src, err := os.Open(p)
 		if err != nil {
-			writeError(w, http.StatusInternalServerError, err.Error())
+			continue // a missing page leaves the rest readable
+		}
+		dst, err := zw.CreateHeader(&zip.FileHeader{Name: f.Name, Method: zip.Store})
+		if err == nil {
+			_, err = io.Copy(dst, src)
+		}
+		src.Close()
+		if err != nil {
 			return
 		}
-		w.Header().Set("Content-Type", "application/zip")
-		zw := zip.NewWriter(w)
-		for _, f := range files {
-			p, err := s.blobPath(f.Hash)
-			if err != nil {
-				continue
-			}
-			src, err := os.Open(p)
-			if err != nil {
-				continue // a missing page leaves the rest readable
-			}
-			dst, err := zw.CreateHeader(&zip.FileHeader{Name: f.Name, Method: zip.Store})
-			if err == nil {
-				_, err = io.Copy(dst, src)
-			}
-			src.Close()
-			if err != nil {
-				return
-			}
-		}
-		zw.Close()
-		return
 	}
-	writeError(w, http.StatusNotFound, "no such document on the reMarkable")
+	zw.Close()
 }
 
 // page sends page n of a document as the tablet shows it (handwriting and
@@ -364,10 +375,14 @@ func (s *remarkableStore) page(w http.ResponseWriter, r *http.Request) {
 	case out.PDF == nil:
 		writeError(w, http.StatusNotFound, fmt.Sprintf("it has %d pages", out.Pages))
 	default:
-		w.Header().Set("Content-Type", "application/pdf")
-		w.Header().Set("Content-Length", strconv.Itoa(len(out.PDF)))
-		w.Write(out.PDF)
+		writePDF(w, out.PDF)
 	}
+}
+
+func writePDF(w http.ResponseWriter, pdf []byte) {
+	w.Header().Set("Content-Type", "application/pdf")
+	w.Header().Set("Content-Length", strconv.Itoa(len(pdf)))
+	w.Write(pdf)
 }
 
 // pdf sends a whole document as the tablet shows it, as one PDF, drawn as
@@ -386,9 +401,7 @@ func (s *remarkableStore) pdf(w http.ResponseWriter, r *http.Request) {
 	if out.Separate {
 		w.Header().Set("X-Handwriting-Only", "true")
 	}
-	w.Header().Set("Content-Type", "application/pdf")
-	w.Header().Set("Content-Length", strconv.Itoa(len(out.PDF)))
-	w.Write(out.PDF)
+	writePDF(w, out.PDF)
 }
 
 // documentFiles reads the files of the document the request names, for page
@@ -417,27 +430,21 @@ func (s *remarkableStore) documentFiles(w http.ResponseWriter, r *http.Request) 
 // readFiles reads document id's files into memory, by name, as
 // remarkable.Render takes them.
 func (s *remarkableStore) readFiles(id string) (map[string][]byte, error) {
-	_, docs, err := s.rootIndex()
+	d, err := s.docByID(id)
 	if err != nil {
 		return nil, err
 	}
-	for _, d := range docs {
-		if d.Name != id {
-			continue
-		}
-		entries, err := s.docFiles(d)
-		if err != nil {
-			return nil, err
-		}
-		files := map[string][]byte{}
-		for _, f := range entries {
-			if data, err := s.readBlob(f.Hash); err == nil {
-				files[f.Name] = data // a missing page leaves the rest readable
-			}
-		}
-		return files, nil
+	entries, err := s.docFiles(d)
+	if err != nil {
+		return nil, err
 	}
-	return nil, errRemarkableMissing
+	files := map[string][]byte{}
+	for _, f := range entries {
+		if data, err := s.readBlob(f.Hash); err == nil {
+			files[f.Name] = data // a missing page leaves the rest readable
+		}
+	}
+	return files, nil
 }
 
 // find describes document id.
@@ -458,17 +465,20 @@ func (s *remarkableStore) find(id string) (remarkableItem, error) {
 
 var errRemarkableMissing = errors.New("no such document on the reMarkable")
 
+// putBlob stores data as blob hash, unless it is there already.
+func (s *remarkableStore) putBlob(hash string, data []byte) error {
+	path := filepath.Join(s.dir, hash)
+	if _, err := os.Stat(path); err == nil {
+		return nil
+	}
+	return writeFileAtomic(path, data, 0o644)
+}
+
 // writeBlob stores data under its hash and returns its entry.
 func (s *remarkableStore) writeBlob(name string, data []byte) (remarkableEntry, error) {
 	sum := sha256.Sum256(data)
 	hash := hex.EncodeToString(sum[:])
-	path := filepath.Join(s.dir, hash)
-	if _, err := os.Stat(path); err != nil {
-		if err := writeFileAtomic(path, data, 0o644); err != nil {
-			return remarkableEntry{}, err
-		}
-	}
-	return remarkableEntry{Hash: hash, Type: "0", Name: name, Size: int64(len(data))}, nil
+	return remarkableEntry{Hash: hash, Type: "0", Name: name, Size: int64(len(data))}, s.putBlob(hash, data)
 }
 
 func remarkableHash(entries []remarkableEntry) string {
@@ -493,11 +503,7 @@ func remarkableIndexText(entries []remarkableEntry) []byte {
 // writeIndex stores an index blob for entries and returns its hash.
 func (s *remarkableStore) writeIndex(entries []remarkableEntry) (string, error) {
 	hash := remarkableHash(entries)
-	path := filepath.Join(s.dir, hash)
-	if _, err := os.Stat(path); err == nil {
-		return hash, nil
-	}
-	return hash, writeFileAtomic(path, remarkableIndexText(entries), 0o644)
+	return hash, s.putBlob(hash, remarkableIndexText(entries))
 }
 
 // docEntry writes a document's index and returns its root entry.
@@ -716,9 +722,8 @@ func (s *remarkableStore) upload(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "the document needs a name")
 		return
 	}
-	data, err := io.ReadAll(http.MaxBytesReader(w, r.Body, s.maxUpload))
-	if err != nil {
-		writeError(w, http.StatusRequestEntityTooLarge, fmt.Sprintf("file exceeds %d bytes", s.maxUpload))
+	data, ok := readBody(w, r, s.maxUpload, "file exceeds %d bytes")
+	if !ok {
 		return
 	}
 	id, err := s.add(name, parent, data)
@@ -764,7 +769,7 @@ func (s *remarkableStore) add(name, parent string, data []byte) (string, error) 
 
 func (s *remarkableStore) mkdir(w http.ResponseWriter, r *http.Request) {
 	var req struct{ Name, Parent string }
-	if err := json.NewDecoder(io.LimitReader(r.Body, 64<<10)).Decode(&req); err != nil || !validRemarkableName(req.Name) {
+	if err := decodeBody(r, 64<<10, &req); err != nil || !validRemarkableName(req.Name) {
 		writeError(w, http.StatusBadRequest, `expected {"name": ..., "parent": ...}`)
 		return
 	}
@@ -803,7 +808,7 @@ func (s *remarkableStore) patch(w http.ResponseWriter, r *http.Request) {
 		Name   *string `json:"name"`
 		Parent *string `json:"parent"`
 	}
-	if err := json.NewDecoder(io.LimitReader(r.Body, 64<<10)).Decode(&req); err != nil {
+	if err := decodeBody(r, 64<<10, &req); err != nil {
 		writeError(w, http.StatusBadRequest, `expected {"name"?: ..., "parent"?: ...}`)
 		return
 	}
@@ -813,16 +818,10 @@ func (s *remarkableStore) patch(w http.ResponseWriter, r *http.Request) {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	notFound := errors.New("no such document on the reMarkable")
 	err := s.update(func(docs []remarkableEntry) ([]remarkableEntry, error) {
-		i := -1
-		for j, d := range docs {
-			if d.Name == id {
-				i = j
-			}
-		}
+		i := slices.IndexFunc(docs, func(d remarkableEntry) bool { return d.Name == id })
 		if i < 0 {
-			return nil, notFound
+			return nil, errRemarkableMissing
 		}
 		if req.Parent != nil && *req.Parent != remarkableTrash {
 			if err := s.checkParent(docs, *req.Parent); err != nil {
@@ -878,7 +877,7 @@ func (s *remarkableStore) patch(w http.ResponseWriter, r *http.Request) {
 		}
 		return nil, errors.New("the document has no metadata")
 	})
-	if errors.Is(err, notFound) {
+	if errors.Is(err, errRemarkableMissing) {
 		writeError(w, http.StatusNotFound, err.Error())
 		return
 	} else if err != nil {

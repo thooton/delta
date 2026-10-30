@@ -279,7 +279,7 @@ func (s *agentSession) appendItems(items []json.RawMessage, add ...json.RawMessa
 	return items
 }
 
-// show records a reply for the phone: its text, and its tool calls cut
+// show records a reply for the website: its text, and its tool calls cut
 // down to what they act on. It returns the tool calls.
 func (s *agentSession) show(reply []json.RawMessage) []itemHead {
 	content := []any{}
@@ -307,7 +307,7 @@ func (s *agentSession) show(reply []json.RawMessage) []itemHead {
 }
 
 // toolSummary keeps the one argument of a tool call that says what it does,
-// under the name the phone looks for, rather than whole file contents.
+// under the name the website looks for, rather than whole file contents.
 func toolSummary(args map[string]any) map[string]string {
 	out := map[string]string{}
 	clip := func(v string) string {
@@ -438,13 +438,7 @@ func procStart(pid int) string {
 // sweep stops the container of every session that has been idle for cfg.Idle.
 func (a *agentService) sweep() {
 	for range time.Tick(time.Minute) {
-		a.mu.Lock()
-		sessions := make([]*agentSession, 0, len(a.sessions))
-		for _, s := range a.sessions {
-			sessions = append(sessions, s)
-		}
-		a.mu.Unlock()
-		for _, s := range sessions {
+		for _, s := range a.all() {
 			s.mu.Lock()
 			idle := !s.meta.Working && !s.running && !s.deleted && !s.parked && time.Since(s.lastActive) > a.cfg.Idle
 			s.mu.Unlock()
@@ -467,13 +461,4 @@ func (a *agentService) park(s *agentSession) {
 	s.mu.Lock()
 	s.parked = true
 	s.mu.Unlock()
-}
-
-func lastLine(s string) string {
-	lines := strings.Split(strings.TrimSpace(s), "\n")
-	line := strings.TrimSpace(lines[len(lines)-1])
-	if len(line) > 300 {
-		line = line[:300] + "…"
-	}
-	return line
 }

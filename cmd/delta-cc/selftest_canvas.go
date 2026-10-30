@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"crypto/sha256"
 	"encoding/json"
 	"fmt"
@@ -133,28 +134,20 @@ func canvasSelfTest(dir string) error {
 	if err != nil {
 		return err
 	}
-	const token = "delta_selftest"
-	hash := sha256.Sum256([]byte(token))
-	agents, err := newTestAgents(dir)
-	if err != nil {
-		return err
-	}
-	public, _, _ := newHandler(hash[:], filepath.Join(dir, "files"), 1<<20, &updater{restart: make(chan struct{}, 1)}, proxy, nil, agents)
+	hash := sha256.Sum256([]byte(selfTestToken))
+	public, _, _ := newHandler(hash[:], filepath.Join(dir, "files"), 1<<20, &updater{restart: make(chan struct{}, 1)}, proxy, nil, disabledAgentService(dir, "off"))
 	ts := httptest.NewServer(public)
 	defer ts.Close()
 
 	call := func(desc string, want int, method, path string, body []byte) (*http.Response, []byte, error) {
-		req, _ := http.NewRequest(method, ts.URL+path, bytes.NewReader(body))
-		req.Header.Set("Authorization", "Bearer "+token)
+		var header []string
 		if method == http.MethodPost && !strings.HasPrefix(path, "/canvas-upload") {
-			req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+			header = []string{"Content-Type", "application/x-www-form-urlencoded"}
 		}
-		resp, err := ts.Client().Do(req)
+		resp, data, err := testRequest(context.Background(), method, ts.URL+path, selfTestToken, body, header...)
 		if err != nil {
 			return nil, nil, fmt.Errorf("%s: %w", desc, err)
 		}
-		defer resp.Body.Close()
-		data, _ := io.ReadAll(resp.Body)
 		if resp.StatusCode != want {
 			return nil, nil, fmt.Errorf("%s: got HTTP %d, want %d (%s)", desc, resp.StatusCode, want, strings.TrimSpace(string(data)))
 		}

@@ -4,14 +4,14 @@ import (
 	"bufio"
 	"bytes"
 	"context"
-	"crypto/rand"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"log"
+	"maps"
 	"net/http"
-	"sort"
+	"slices"
 	"strings"
 	"time"
 )
@@ -276,10 +276,14 @@ func userContent(content json.RawMessage) any {
 		case "input_text", "output_text":
 			out = append(out, map[string]any{"type": "text", "text": p.Text})
 		case "input_image":
-			out = append(out, map[string]any{"type": "image_url", "image_url": map[string]string{"url": p.ImageURL}})
+			out = append(out, imagePart(p.ImageURL))
 		}
 	}
 	return out
+}
+
+func imagePart(url string) map[string]any {
+	return map[string]any{"type": "image_url", "image_url": map[string]string{"url": url}}
 }
 
 // toolResult splits a tool's result, a string or a list of parts, into its
@@ -298,7 +302,7 @@ func toolResult(output json.RawMessage) (string, []map[string]any) {
 		case "input_text":
 			texts = append(texts, p.Text)
 		case "input_image":
-			pics = append(pics, map[string]any{"type": "image_url", "image_url": map[string]string{"url": p.ImageURL}})
+			pics = append(pics, imagePart(p.ImageURL))
 		}
 	}
 	return strings.Join(texts, "\n"), pics
@@ -390,12 +394,7 @@ func readModelStream(r io.Reader) (*modelReply, error) {
 		add(map[string]any{"type": "message", "role": "assistant", "status": "completed",
 			"content": []map[string]any{{"type": "output_text", "text": text.String(), "annotations": []any{}}}})
 	}
-	idx := make([]int, 0, len(calls))
-	for i := range calls {
-		idx = append(idx, i)
-	}
-	sort.Ints(idx)
-	for n, i := range idx {
+	for n, i := range slices.Sorted(maps.Keys(calls)) {
 		cl := calls[i]
 		if cl.id == "" {
 			cl.id = fmt.Sprintf("call_%d", n)
@@ -426,7 +425,7 @@ func streamErrorCode(msg string) int {
 }
 
 // describeModelError says what went wrong with a model request without
-// naming the provider: the phone never shows it.
+// naming the provider: the website never shows it.
 func describeModelError(err error) string {
 	code := 0
 	var me *modelError
@@ -456,11 +455,5 @@ func describeModelError(err error) string {
 func zenSessionID() string {
 	const base62 = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz"
 	now := ^(uint64(time.Now().UnixMilli())*0x1000 + 1)
-	id := fmt.Sprintf("ses_%012x", now&(1<<48-1))
-	buf := make([]byte, 14)
-	rand.Read(buf)
-	for _, b := range buf {
-		id += string(base62[int(b)%62])
-	}
-	return id
+	return fmt.Sprintf("ses_%012x", now&(1<<48-1)) + randomString(base62, 14)
 }

@@ -1,9 +1,7 @@
 package main
 
 import (
-	"errors"
 	"fmt"
-	"io"
 	"net/http"
 	"os"
 	"strings"
@@ -36,22 +34,25 @@ func (s *secretStore) register(mux *http.ServeMux) {
 	mux.HandleFunc("PUT "+s.route, s.put)
 }
 
-func (s *secretStore) get(w http.ResponseWriter, r *http.Request) {
+// read returns the secret, or an error satisfying os.ErrNotExist while none
+// is set.
+func (s *secretStore) read() (string, error) {
 	data, err := os.ReadFile(s.path)
-	if errors.Is(err, os.ErrNotExist) {
-		writeError(w, http.StatusNotFound, s.missing)
-		return
-	} else if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+	return strings.TrimSpace(string(data)), err
+}
+
+func (s *secretStore) get(w http.ResponseWriter, r *http.Request) {
+	secret, err := s.read()
+	if err != nil {
+		writeReadError(w, err, s.missing)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]string{s.field: strings.TrimSpace(string(data))})
+	writeJSON(w, http.StatusOK, map[string]string{s.field: secret})
 }
 
 func (s *secretStore) put(w http.ResponseWriter, r *http.Request) {
-	data, err := io.ReadAll(http.MaxBytesReader(w, r.Body, maxSecret))
-	if err != nil {
-		writeError(w, http.StatusRequestEntityTooLarge, fmt.Sprintf("%s exceeds %d bytes", s.what, maxSecret))
+	data, ok := readBody(w, r, maxSecret, s.what+" exceeds %d bytes")
+	if !ok {
 		return
 	}
 	secret := strings.TrimSpace(string(data))
@@ -59,9 +60,5 @@ func (s *secretStore) put(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, fmt.Sprintf("the %s must be non-empty and contain no spaces or control characters", s.what))
 		return
 	}
-	if err := writePrivateFile(s.path, []byte(secret+"\n")); err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
-		return
-	}
-	writeJSON(w, http.StatusOK, map[string]bool{"saved": true})
+	writeResult(w, writePrivateFile(s.path, []byte(secret+"\n")), http.StatusOK, map[string]bool{"saved": true})
 }
