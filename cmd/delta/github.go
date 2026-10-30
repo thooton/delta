@@ -16,19 +16,8 @@ import (
 // `delta git` and `delta gh` reach GitHub through the command center's relay
 // (relay.go), which adds it to each request on the way out.
 
-// runWithAccessToken runs git or gh through the relay, with the caller's
-// stdio, and exits with its status.
-func runWithAccessToken(prog string, args []string) error {
-	cfg, err := loadConfig()
-	if err != nil {
-		return err
-	}
-	return runThroughRelay(cfg, prog, args)
-}
-
 func setAccessToken(token string) error {
-	cfg, err := loadConfig()
-	if err != nil {
+	if _, err := loadConfig(); err != nil {
 		return err
 	}
 	if token == "-" {
@@ -49,7 +38,7 @@ func setAccessToken(token string) error {
 	if errors.Is(cerr, errBadAccessToken) {
 		return fmt.Errorf("not saved: %w", cerr)
 	}
-	if _, err := do(cfg, http.MethodPut, "/personal-access-token", strings.NewReader(token)); err != nil {
+	if _, err := do(http.MethodPut, "/personal-access-token", strings.NewReader(token)); err != nil {
 		return err
 	}
 	if cerr != nil {

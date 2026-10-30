@@ -151,19 +151,14 @@ func readShorthand(k, path string, image []byte) ([]byte, error) {
 			failed = fmt.Sprintf("HTTP %d", status)
 			continue
 		case status != http.StatusOK:
-			var e struct{ Error string }
-			if json.Unmarshal(data, &e) == nil && e.Error != "" {
-				return nil, errors.New(e.Error)
-			}
-			return nil, fmt.Errorf("the command center answered HTTP %d", status)
+			return nil, serverError(status, data)
 		}
 		var st struct {
-			Status  string          `json:"status"`
-			State   string          `json:"state"`
-			Result  json.RawMessage `json:"result"`
-			Error   string          `json:"error"`
-			Code    int             `json:"code"`
-			Seconds int             `json:"seconds"`
+			Status string          `json:"status"`
+			State  string          `json:"state"`
+			Result json.RawMessage `json:"result"`
+			Error  string          `json:"error"`
+			Code   int             `json:"code"`
 		}
 		if err := json.Unmarshal(data, &st); err != nil {
 			failed = "an unreadable answer"

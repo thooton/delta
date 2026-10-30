@@ -3,9 +3,6 @@ package main
 import (
 	"bufio"
 	"context"
-	"crypto/rand"
-	"crypto/sha256"
-	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -58,18 +55,11 @@ func oauthClient(path string) (id, secret string, err error) {
 	return id, secret, nil
 }
 
-func randomString(n int) string {
-	b := make([]byte, n)
-	rand.Read(b)
-	return base64.RawURLEncoding.EncodeToString(b)
-}
-
 func gmailLoginCmd(args []string) error {
 	if len(args) != 1 || strings.HasPrefix(args[0], "-") {
 		return errors.New("usage: delta gmail login <client-secret.json>   (the OAuth client file from Google Cloud; see `delta gmail help`)")
 	}
-	cfg, err := loadConfig()
-	if err != nil {
+	if _, err := loadConfig(); err != nil {
 		return err
 	}
 	clientID, clientSecret, err := oauthClient(args[0])
@@ -84,8 +74,7 @@ func gmailLoginCmd(args []string) error {
 	defer ln.Close()
 	redirect := fmt.Sprintf("http://127.0.0.1:%d/", ln.Addr().(*net.TCPAddr).Port)
 	state := randomString(16)
-	verifier := randomString(48)
-	sum := sha256.Sum256([]byte(verifier))
+	verifier, challenge := pkce(48)
 	authURL := googleAuthURL + "?" + url.Values{
 		"client_id":             {clientID},
 		"redirect_uri":          {redirect},
@@ -94,7 +83,7 @@ func gmailLoginCmd(args []string) error {
 		"access_type":           {"offline"},
 		"prompt":                {"consent"},
 		"state":                 {state},
-		"code_challenge":        {base64.RawURLEncoding.EncodeToString(sum[:])},
+		"code_challenge":        {challenge},
 		"code_challenge_method": {"S256"},
 	}.Encode()
 
@@ -159,7 +148,7 @@ func gmailLoginCmd(args []string) error {
 		return errors.New("the Gmail permission wasn't granted (leave its box checked on Google's consent page); nothing was saved")
 	}
 
-	t, err := requestToken(url.Values{
+	t, err := exchangeCode(url.Values{
 		"grant_type":    {"authorization_code"},
 		"code":          {q.Get("code")},
 		"client_id":     {clientID},
@@ -167,9 +156,7 @@ func gmailLoginCmd(args []string) error {
 		"redirect_uri":  {redirect},
 		"code_verifier": {verifier},
 	})
-	if errors.Is(err, errGmailLoginExpired) {
-		return errors.New("Google refused the sign-in code (expired or already used); run the login again")
-	} else if err != nil {
+	if err != nil {
 		return err
 	}
 	if t.RefreshToken == "" {
@@ -183,7 +170,7 @@ func gmailLoginCmd(args []string) error {
 		return err
 	}
 	login := gmailLogin{ClientID: clientID, ClientSecret: clientSecret, RefreshToken: t.RefreshToken, Email: email}
-	if err := callJSON(cfg, http.MethodPut, "/gmail-login", login, nil); err != nil {
+	if err := callJSON(http.MethodPut, "/gmail-login", login, nil); err != nil {
 		return err
 	}
 	fmt.Printf("\nGmail account %s saved on the command center.\n", email)
@@ -213,12 +200,8 @@ func gmailLogoutCmd(args []string) error {
 	if len(args) != 0 {
 		return errors.New("usage: delta gmail logout")
 	}
-	cfg, err := loadConfig()
-	if err != nil {
-		return err
-	}
 	var login gmailLogin
-	if err := callJSON(cfg, http.MethodGet, "/gmail-login", nil, &login); err != nil {
+	if err := callJSON(http.MethodGet, "/gmail-login", nil, &login); err != nil {
 		return err
 	}
 	// Revoke the grant too, so the token is useless wherever it was seen.
@@ -227,7 +210,7 @@ func gmailLogoutCmd(args []string) error {
 		resp.Body.Close()
 		revoked = resp.StatusCode == http.StatusOK
 	}
-	if _, err := do(cfg, http.MethodDelete, "/gmail-login", nil); err != nil {
+	if _, err := do(http.MethodDelete, "/gmail-login", nil); err != nil {
 		return err
 	}
 	if !revoked {

@@ -1,7 +1,9 @@
 package main
 
 import (
+	"fmt"
 	"slices"
+	"strings"
 	"testing"
 )
 
@@ -18,11 +20,11 @@ func TestCloneConfig(t *testing.T) {
 	}
 }
 
-func TestHooksEnv(t *testing.T) {
-	got := hooksEnv([]string{"A=1", "GIT_CONFIG_KEY_0=k", "GIT_CONFIG_VALUE_0=v", "GIT_CONFIG_COUNT=1"}, "/h")
-	want := []string{"A=1", "GIT_CONFIG_KEY_0=k", "GIT_CONFIG_VALUE_0=v",
-		"GIT_CONFIG_KEY_1=core.hooksPath", "GIT_CONFIG_VALUE_1=/h", "GIT_CONFIG_COUNT=2"}
-	if !slices.Equal(got, want) {
+func TestGitEnvExtra(t *testing.T) {
+	got := gitEnv([]string{"A=1", "GIT_CONFIG_KEY_0=k", "GIT_CONFIG_VALUE_0=v", "GIT_CONFIG_COUNT=1"}, "P", [2]string{"core.hooksPath", "/h"})
+	n := len(githubURLPrefixes)
+	want := fmt.Sprintf("GIT_CONFIG_KEY_%d=core.hooksPath GIT_CONFIG_VALUE_%d=/h GIT_CONFIG_COUNT=%d", n+1, n+1, n+2)
+	if got[0] != "A=1" || got[1] != "GIT_CONFIG_KEY_0=k" || strings.Join(got[len(got)-3:], " ") != want {
 		t.Errorf("got %q", got)
 	}
 }

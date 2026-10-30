@@ -17,8 +17,11 @@ import (
 // relay. The agent's mail commands are gone: Mail on the phone took over.
 
 var (
-	gmailAPI        = "https://gmail.googleapis.com"
-	googleTokenURL  = "https://oauth2.googleapis.com/token"
+	gmailAPI       = "https://gmail.googleapis.com"
+	googleTokenURL = "https://oauth2.googleapis.com/token"
+)
+
+const (
 	googleAuthURL   = "https://accounts.google.com/o/oauth2/v2/auth"
 	googleRevokeURL = "https://oauth2.googleapis.com/revoke"
 )
@@ -44,7 +47,7 @@ the user, on a computer with a browser (see AGENTS.md).
 `
 
 func runGmail(args []string) error {
-	if len(args) == 0 || args[0] == "help" || args[0] == "-h" || args[0] == "--help" {
+	if len(args) == 0 || isHelp(args[0]) {
 		fmt.Print(gmailUsage)
 		return nil
 	}
@@ -67,8 +70,6 @@ type gmailLogin struct {
 	Email        string `json:"email"`
 }
 
-var errGmailLoginExpired = errors.New("the Gmail login has expired or was revoked (a password change does this); ask the user to run `delta gmail login` again on a computer")
-
 // googleToken is a response from Google's OAuth token endpoint.
 type googleToken struct {
 	AccessToken  string `json:"access_token"`
@@ -78,8 +79,8 @@ type googleToken struct {
 	Description  string `json:"error_description"`
 }
 
-// requestToken posts form to the token endpoint.
-func requestToken(form url.Values) (*googleToken, error) {
+// exchangeCode trades a sign-in code for a login at the token endpoint.
+func exchangeCode(form url.Values) (*googleToken, error) {
 	resp, err := (&http.Client{Timeout: 30 * time.Second}).PostForm(googleTokenURL, form)
 	if err != nil {
 		return nil, fmt.Errorf("Google can't be reached: %w", stripURL(err))
@@ -91,7 +92,7 @@ func requestToken(form url.Values) (*googleToken, error) {
 	}
 	switch {
 	case t.Error == "invalid_grant":
-		return nil, errGmailLoginExpired
+		return nil, errors.New("Google refused the sign-in code (expired or already used); run the login again")
 	case t.Error == "invalid_client" || t.Error == "unauthorized_client":
 		return nil, errors.New("Google no longer accepts the Gmail login's OAuth client (deleted, or its secret was reset); ask the user to run `delta gmail login` again on a computer")
 	case t.Error != "":
@@ -108,30 +109,6 @@ func stripURL(err error) error {
 		return uerr.Err
 	}
 	return err
-}
-
-// gmailAPIError is an error response from Gmail.
-type gmailAPIError struct {
-	Code    int
-	Message string
-}
-
-func (e *gmailAPIError) Error() string {
-	msg := e.Message
-	if msg == "" {
-		msg = http.StatusText(e.Code)
-	}
-	switch e.Code {
-	case http.StatusUnauthorized:
-		return "Gmail rejected the login: " + msg + "; ask the user to run `delta gmail login` again on a computer"
-	case http.StatusForbidden:
-		if strings.Contains(strings.ToLower(msg), "scope") || strings.Contains(strings.ToLower(msg), "permission") {
-			return "the Gmail login lacks a permission (" + msg + "); ask the user to run `delta gmail login` again and allow everything it asks for"
-		}
-	case http.StatusTooManyRequests:
-		return "Gmail: too many requests; wait a minute and try again"
-	}
-	return fmt.Sprintf("Gmail: %s (HTTP %d)", msg, e.Code)
 }
 
 // gmailAddress asks Gmail, with an access token, for the account's address.
@@ -157,7 +134,7 @@ func gmailAddress(token string) (string, error) {
 			} `json:"error"`
 		}
 		json.Unmarshal(data, &e)
-		return "", &gmailAPIError{Code: resp.StatusCode, Message: strings.TrimSpace(e.Error.Message)}
+		return "", gmailError(resp.StatusCode, strings.TrimSpace(e.Error.Message))
 	}
 	var prof struct {
 		Email string `json:"emailAddress"`
@@ -166,4 +143,20 @@ func gmailAddress(token string) (string, error) {
 		return "", fmt.Errorf("unexpected response from Gmail: %w", err)
 	}
 	return prof.Email, nil
+}
+
+// gmailError is the error for a response from Gmail that isn't a success.
+func gmailError(code int, msg string) error {
+	if msg == "" {
+		msg = http.StatusText(code)
+	}
+	switch {
+	case code == http.StatusUnauthorized:
+		return errors.New("Gmail rejected the login: " + msg + "; ask the user to run `delta gmail login` again on a computer")
+	case code == http.StatusForbidden && (strings.Contains(strings.ToLower(msg), "scope") || strings.Contains(strings.ToLower(msg), "permission")):
+		return errors.New("the Gmail login lacks a permission (" + msg + "); ask the user to run `delta gmail login` again and allow everything it asks for")
+	case code == http.StatusTooManyRequests:
+		return errors.New("Gmail: too many requests; wait a minute and try again")
+	}
+	return fmt.Errorf("Gmail: %s (HTTP %d)", msg, code)
 }

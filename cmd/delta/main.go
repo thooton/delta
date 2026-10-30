@@ -254,7 +254,7 @@ func run(args []string) error {
 		}
 		return setAccessToken(args[0])
 	case "git", "gh":
-		return runWithAccessToken(cmd, args)
+		return runThroughRelay(cmd, args)
 	case "update-cc":
 		if len(args) != 0 {
 			return errors.New("usage: delta update-cc (it takes no link: the command center always installs the latest official build)")
@@ -328,19 +328,18 @@ func setAuth(server, token string) error {
 		return fmt.Errorf("invalid command-center URL %q (expected http(s)://host[:port] or unix:///path)", server)
 	}
 	c := config{Server: strings.TrimRight(server, "/"), Token: token}
-	if _, err := do(c.resolve(), http.MethodGet, "/auth", nil); err != nil {
+	resp, err := c.resolve().send(http.MethodGet, "/auth", nil, -1)
+	if err != nil {
 		return fmt.Errorf("could not verify token: %w", err)
 	}
+	resp.Body.Close()
 
 	path, err := configPath()
 	if err != nil {
 		return err
 	}
-	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
-		return err
-	}
 	data, _ := json.MarshalIndent(c, "", "  ")
-	if err := os.WriteFile(path, data, 0o600); err != nil {
+	if err := writePrivate(path, data); err != nil {
 		return err
 	}
 	fmt.Printf("Authenticated with %s. Saved to %s.\n", c.Server, path)
@@ -365,15 +364,16 @@ func push(path, name string) error {
 		return fmt.Errorf("%s is not a regular file", path)
 	}
 
-	body, err := do(c, http.MethodPut, "/files/"+url.PathEscape(name), f, info.Size())
+	resp, err := c.send(http.MethodPut, "/files/"+url.PathEscape(name), f, info.Size())
 	if err != nil {
 		return err
 	}
+	defer resp.Body.Close()
 	var res struct {
 		Name string `json:"name"`
 		Size int64  `json:"size"`
 	}
-	if err := json.Unmarshal(body, &res); err != nil {
+	if err := json.NewDecoder(resp.Body).Decode(&res); err != nil {
 		return err
 	}
 	fmt.Printf("Pushed %s (%s).\n", res.Name, humanSize(res.Size))
@@ -381,26 +381,13 @@ func push(path, name string) error {
 }
 
 func pull(name, dest string) error {
-	c, err := loadConfig()
-	if err != nil {
+	if _, err := loadConfig(); err != nil {
 		return err
 	}
 	if info, err := os.Stat(dest); err == nil && info.IsDir() {
 		dest = filepath.Join(dest, filepath.Base(name))
 	}
-	resp, err := stream(c, http.MethodGet, "/files/"+url.PathEscape(name), nil)
-	if err != nil {
-		return err
-	}
-	defer resp.Body.Close()
-	f, err := os.Create(dest)
-	if err != nil {
-		return err
-	}
-	n, err := io.Copy(f, resp.Body)
-	if cerr := f.Close(); err == nil {
-		err = cerr
-	}
+	n, err := download("/files/"+url.PathEscape(name), dest, nil)
 	if err != nil {
 		return err
 	}
@@ -409,24 +396,19 @@ func pull(name, dest string) error {
 }
 
 func list() error {
-	c, err := loadConfig()
-	if err != nil {
-		return err
-	}
 	var files []struct {
 		Name     string    `json:"name"`
 		Size     int64     `json:"size"`
 		Modified time.Time `json:"modified"`
 	}
-	if err := callJSON(c, http.MethodGet, "/files", nil, &files); err != nil {
+	if err := callJSON(http.MethodGet, "/files", nil, &files); err != nil {
 		return err
 	}
 	if len(files) == 0 {
 		fmt.Println("No files.")
 		return nil
 	}
-	tw := tabwriter.NewWriter(os.Stdout, 0, 4, 2, ' ', 0)
-	fmt.Fprintln(tw, "NAME\tSIZE\tMODIFIED")
+	tw := newTable("NAME\tSIZE\tMODIFIED")
 	for _, f := range files {
 		fmt.Fprintf(tw, "%s\t%s\t%s\n", f.Name, humanSize(f.Size), f.Modified.Local().Format("2006-01-02 15:04"))
 	}
@@ -434,11 +416,7 @@ func list() error {
 }
 
 func del(name string) error {
-	c, err := loadConfig()
-	if err != nil {
-		return err
-	}
-	if _, err := do(c, http.MethodDelete, "/files/"+url.PathEscape(name), nil); err != nil {
+	if _, err := do(http.MethodDelete, "/files/"+url.PathEscape(name), nil); err != nil {
 		return err
 	}
 	fmt.Printf("Deleted %s.\n", name)
@@ -448,15 +426,11 @@ func del(name string) error {
 // updateCC has the command center install the latest official build of
 // itself.
 func updateCC() error {
-	c, err := loadConfig()
-	if err != nil {
-		return err
-	}
 	var res struct {
 		Old string `json:"old"`
 		New string `json:"new"`
 	}
-	if err := callJSON(c, http.MethodPost, "/update", nil, &res); err != nil {
+	if err := callJSON(http.MethodPost, "/update", nil, &res); err != nil {
 		return err
 	}
 	fmt.Printf("Installed delta-cc %s (was %s). Waiting for restart...\n", res.New, res.Old)
@@ -471,7 +445,7 @@ func updateCC() error {
 		var v struct {
 			Version string `json:"version"`
 		}
-		if callJSON(c, http.MethodGet, "/version", nil, &v) == nil && v.Version == res.New {
+		if callJSON(http.MethodGet, "/version", nil, &v) == nil && v.Version == res.New {
 			fmt.Printf("Command center is running %s.\n", v.Version)
 			return nil
 		}
@@ -479,25 +453,25 @@ func updateCC() error {
 	return errors.New("command center did not come back with the new version within 30s")
 }
 
-// callJSON sends in (unless nil) as JSON and decodes the answer into out
-// (unless nil).
-func callJSON(c config, method, path string, in, out any) error {
+// callJSON sends in (unless nil) as JSON with the saved credentials and
+// decodes the answer into out (unless nil).
+func callJSON(method, path string, in, out any) error {
 	var body io.Reader
 	if in != nil {
 		data, _ := json.Marshal(in)
 		body = bytes.NewReader(data)
 	}
-	data, err := do(c, method, path, body)
+	data, err := do(method, path, body)
 	if err != nil || out == nil {
 		return err
 	}
 	return json.Unmarshal(data, out)
 }
 
-// do sends an authenticated request and returns the response body, turning
-// non-2xx responses into errors. An optional content length may follow body.
-func do(c config, method, path string, body io.Reader, contentLength ...int64) ([]byte, error) {
-	resp, err := stream(c, method, path, body, contentLength...)
+// do sends a request with the saved credentials and returns the response
+// body, turning non-2xx responses into errors.
+func do(method, path string, body io.Reader) ([]byte, error) {
+	resp, err := stream(method, path, body)
 	if err != nil {
 		return nil, err
 	}
@@ -507,13 +481,23 @@ func do(c config, method, path string, body io.Reader, contentLength ...int64) (
 
 // stream is do for responses read as they arrive: it returns the response
 // for the caller to read and close.
-func stream(c config, method, path string, body io.Reader, contentLength ...int64) (*http.Response, error) {
+func stream(method, path string, body io.Reader) (*http.Response, error) {
+	c, err := loadConfig()
+	if err != nil {
+		return nil, err
+	}
+	return c.send(method, path, body, -1)
+}
+
+// send is stream with the credentials given, and the body's length when
+// it is known (size >= 0) and http.NewRequest can't tell it.
+func (c config) send(method, path string, body io.Reader, size int64) (*http.Response, error) {
 	req, err := http.NewRequest(method, c.Server+path, body)
 	if err != nil {
 		return nil, err
 	}
-	if len(contentLength) > 0 {
-		req.ContentLength = contentLength[0]
+	if size >= 0 {
+		req.ContentLength = size
 	}
 	req.Header.Set("Authorization", "Bearer "+c.Token)
 	resp, err := http.DefaultClient.Do(req)
@@ -532,6 +516,36 @@ func stream(c config, method, path string, body io.Reader, contentLength ...int6
 		return nil, fmt.Errorf("server returned HTTP %d", resp.StatusCode)
 	}
 	return resp, nil
+}
+
+// download saves what GET path answers to dest, also writing it to also
+// (unless nil), and returns its size.
+func download(path, dest string, also io.Writer) (int64, error) {
+	resp, err := stream(http.MethodGet, path, nil)
+	if err != nil {
+		return 0, err
+	}
+	defer resp.Body.Close()
+	f, err := os.Create(dest)
+	if err != nil {
+		return 0, err
+	}
+	var w io.Writer = f
+	if also != nil {
+		w = io.MultiWriter(f, also)
+	}
+	n, err := io.Copy(w, resp.Body)
+	if cerr := f.Close(); err == nil {
+		err = cerr
+	}
+	return n, err
+}
+
+// newTable starts a table on stdout with the given header row.
+func newTable(header string) *tabwriter.Writer {
+	tw := tabwriter.NewWriter(os.Stdout, 0, 4, 2, ' ', 0)
+	fmt.Fprintln(tw, header)
+	return tw
 }
 
 func humanSize(n int64) string {

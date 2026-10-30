@@ -49,7 +49,7 @@ WITH THE DELTA TOKEN (any other session)
 `
 
 func runQA(args []string) error {
-	if len(args) == 0 || args[0] == "help" || args[0] == "-h" || args[0] == "--help" {
+	if len(args) == 0 || isHelp(args[0]) {
 		fmt.Print(qaHelpText)
 		return nil
 	}
@@ -63,7 +63,11 @@ func runQA(args []string) error {
 	case "brief":
 		return qaBrief()
 	case "findings":
-		return qaGet("/qa/job/findings")
+		body, err := do(http.MethodGet, "/qa/job/findings", nil)
+		if err == nil {
+			os.Stdout.Write(body)
+		}
+		return err
 	case "shot":
 		if len(args) < 1 || len(args) > 2 {
 			return errors.New("usage: delta qa shot <name> [file]")
@@ -112,49 +116,19 @@ func qaStart(key string) error {
 }
 
 func qaBrief() error {
-	c, err := loadConfig()
-	if err != nil {
-		return err
-	}
 	var res struct{ Instructions string }
-	if err := callJSON(c, http.MethodGet, "/qa/job", nil, &res); err != nil {
+	if err := callJSON(http.MethodGet, "/qa/job", nil, &res); err != nil {
 		return err
 	}
 	fmt.Print(res.Instructions)
 	return nil
 }
 
-func qaGet(path string) error {
-	c, err := loadConfig()
-	if err != nil {
-		return err
-	}
-	body, err := do(c, http.MethodGet, path, nil)
-	if err != nil {
-		return err
-	}
-	os.Stdout.Write(body)
-	return nil
-}
-
-// qaPost is callJSON with the saved credentials.
-func qaPost(method, path string, v, out any) error {
-	c, err := loadConfig()
-	if err != nil {
-		return err
-	}
-	return callJSON(c, method, path, v, out)
-}
-
 func qaShot(name, dest string) error {
-	c, err := loadConfig()
-	if err != nil {
-		return err
-	}
-	data, err := do(c, http.MethodGet, "/qa/job/shots/"+url.PathEscape(name), nil)
+	data, err := do(http.MethodGet, "/qa/job/shots/"+url.PathEscape(name), nil)
 	if err != nil {
 		// With the delta token, the user's route.
-		if data, err = do(c, http.MethodGet, "/qa/shots/"+url.PathEscape(name), nil); err != nil {
+		if data, err = do(http.MethodGet, "/qa/shots/"+url.PathEscape(name), nil); err != nil {
 			return err
 		}
 	}
@@ -182,7 +156,7 @@ func qaFind(args []string) error {
 		shots = append(shots, base64.StdEncoding.EncodeToString(data))
 	}
 	var f struct{ ID string }
-	if err := qaPost(http.MethodPost, "/qa/job/find", map[string]any{
+	if err := callJSON(http.MethodPost, "/qa/job/find", map[string]any{
 		"kind": o.str("kind"), "title": o.str("title"), "detail": o.str("detail"), "shots": shots,
 	}, &f); err != nil {
 		return err
@@ -199,7 +173,7 @@ func qaTriage(args []string) error {
 	if len(o.pos) != 2 || o.str("reason") == "" {
 		return errors.New("usage: delta qa triage <id> <fixed|passed|declined|grown|reverted> --reason <one line> [--commit <sha>]")
 	}
-	if err := qaPost(http.MethodPost, "/qa/job/triage", map[string]string{
+	if err := callJSON(http.MethodPost, "/qa/job/triage", map[string]string{
 		"id": o.pos[0], "status": o.pos[1], "reason": o.str("reason"), "commit": o.str("commit"),
 	}, nil); err != nil {
 		return err
@@ -216,7 +190,7 @@ func qaDone(args []string) error {
 	if len(o.pos) != 1 {
 		return errors.New(`usage: delta qa done "<summary>" [--force]`)
 	}
-	if err := qaPost(http.MethodPost, "/qa/job/done", map[string]any{"summary": o.pos[0], "force": o.bools["force"]}, nil); err != nil {
+	if err := callJSON(http.MethodPost, "/qa/job/done", map[string]any{"summary": o.pos[0], "force": o.bools["force"]}, nil); err != nil {
 		return err
 	}
 	fmt.Println("Done. This job's key no longer works; there is nothing more to do here.")
@@ -273,7 +247,7 @@ func qaDevice(args []string) error {
 		Error  string
 		File   string
 	}
-	if err := qaPost(http.MethodPost, "/qa/job/device", map[string]any{"op": op, "args": rest}, &res); err != nil {
+	if err := callJSON(http.MethodPost, "/qa/job/device", map[string]any{"op": op, "args": rest}, &res); err != nil {
 		return err
 	}
 	if !res.OK {
@@ -305,10 +279,6 @@ func qaDevice(args []string) error {
 }
 
 func qaStatus() error {
-	c, err := loadConfig()
-	if err != nil {
-		return err
-	}
 	var o struct {
 		Settings struct {
 			Enabled  bool
@@ -331,7 +301,7 @@ func qaStatus() error {
 			Created                    time.Time
 		}
 	}
-	if err := callJSON(c, http.MethodGet, "/qa", nil, &o); err != nil {
+	if err := callJSON(http.MethodGet, "/qa", nil, &o); err != nil {
 		return err
 	}
 	if o.Settings.Enabled {
@@ -390,7 +360,7 @@ func qaRun(apps []string) error {
 		req["server"] = c.Server
 	}
 	var run struct{ ID string }
-	if err := callJSON(c, http.MethodPost, "/qa/runs", req, &run); err != nil {
+	if err := callJSON(http.MethodPost, "/qa/runs", req, &run); err != nil {
 		return err
 	}
 	fmt.Printf("Started %s. `delta qa status` follows it.\n", run.ID)
@@ -398,18 +368,14 @@ func qaRun(apps []string) error {
 }
 
 func qaCancel() error {
-	c, err := loadConfig()
-	if err != nil {
-		return err
-	}
 	var o struct{ Running *struct{ ID string } }
-	if err := callJSON(c, http.MethodGet, "/qa", nil, &o); err != nil {
+	if err := callJSON(http.MethodGet, "/qa", nil, &o); err != nil {
 		return err
 	}
 	if o.Running == nil {
 		return errors.New("no run is going")
 	}
-	if _, err := do(c, http.MethodDelete, "/qa/runs/"+url.PathEscape(o.Running.ID), nil); err != nil {
+	if _, err := do(http.MethodDelete, "/qa/runs/"+url.PathEscape(o.Running.ID), nil); err != nil {
 		return err
 	}
 	fmt.Printf("Cancelled %s.\n", o.Running.ID)
@@ -427,15 +393,15 @@ func qaSetup() error {
 	if strings.HasPrefix(c.Server, "http://"+unixHost) {
 		return errors.New("run this from a regular (●) session: the emulators reach the command center over the internet")
 	}
-	if err := callJSON(c, http.MethodPut, "/qa/settings", map[string]string{"server": c.Server}, nil); err != nil {
+	if err := callJSON(http.MethodPut, "/qa/settings", map[string]string{"server": c.Server}, nil); err != nil {
 		return err
 	}
 	var res struct{ Token string }
-	if err := callJSON(c, http.MethodPost, "/qa/device-token", nil, &res); err != nil {
+	if err := callJSON(http.MethodPost, "/qa/device-token", nil, &res); err != nil {
 		return err
 	}
 	for name, value := range map[string]string{"QA_DELTA_SERVER": c.Server, "QA_DEVICE_TOKEN": res.Token} {
-		if err := runWithAccessToken("gh", []string{"secret", "set", name, "-R", "thooton/sonim", "--body", value}); err != nil {
+		if err := runThroughRelay("gh", []string{"secret", "set", name, "-R", "thooton/sonim", "--body", value}); err != nil {
 			return fmt.Errorf("setting %s: %w", name, err)
 		}
 	}

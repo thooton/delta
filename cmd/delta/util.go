@@ -1,6 +1,9 @@
 package main
 
 import (
+	"crypto/rand"
+	"crypto/sha256"
+	"encoding/base64"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -66,6 +69,34 @@ func (o *opts) str(name string) string {
 		return v[len(v)-1]
 	}
 	return ""
+}
+
+// writePrivate writes data to path, readable only by the user, making its
+// directory if need be.
+func writePrivate(path string, data []byte) error {
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return err
+	}
+	return os.WriteFile(path, data, 0o600)
+}
+
+// randomString returns n random bytes in unpadded URL-safe Base64.
+func randomString(n int) string {
+	b := make([]byte, n)
+	rand.Read(b)
+	return base64.RawURLEncoding.EncodeToString(b)
+}
+
+// pkce returns a PKCE verifier of n random bytes and its S256 challenge.
+func pkce(n int) (verifier, challenge string) {
+	verifier = randomString(n)
+	sum := sha256.Sum256([]byte(verifier))
+	return verifier, base64.RawURLEncoding.EncodeToString(sum[:])
+}
+
+// isHelp says whether a command's argument asks for its help.
+func isHelp(arg string) bool {
+	return arg == "help" || arg == "-h" || arg == "--help"
 }
 
 func firstNonEmpty(ss ...string) string {

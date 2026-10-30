@@ -108,8 +108,13 @@ func (p *githubProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// runThroughRelay runs git or gh with the proxy in place, and exits with its status.
-func runThroughRelay(cfg config, prog string, args []string) error {
+// runThroughRelay runs git or gh with the proxy in place, with the caller's
+// stdio, and exits with its status.
+func runThroughRelay(prog string, args []string) error {
+	cfg, err := loadConfig()
+	if err != nil {
+		return err
+	}
 	proxy := &githubProxy{cfg: cfg, client: &http.Client{
 		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
 	}}
@@ -122,7 +127,7 @@ func runThroughRelay(cfg config, prog string, args []string) error {
 	go http.Serve(tcp, proxy)
 	port := tcp.Addr().(*net.TCPAddr).Port
 
-	env := gitEnv(os.Environ(), fmt.Sprintf("http://127.0.0.1:%d/github.com/", port))
+	var extra [][2]string
 	if prog == "git" {
 		// Keep assistant attribution out of commits (attribution.go).
 		hooks, err := installAttributionHooks()
@@ -130,8 +135,9 @@ func runThroughRelay(cfg config, prog string, args []string) error {
 			return err
 		}
 		args = cloneConfig(args, hooks)
-		env = hooksEnv(env, hooks)
+		extra = append(extra, [2]string{"core.hooksPath", hooks})
 	}
+	env := gitEnv(os.Environ(), fmt.Sprintf("http://127.0.0.1:%d/github.com/", port), extra...)
 
 	cmd := exec.Command(prog, args...)
 	cmd.Stdin, cmd.Stdout, cmd.Stderr = os.Stdin, os.Stdout, os.Stderr
@@ -182,8 +188,8 @@ var githubURLPrefixes = []string{"https://github.com/", "http://github.com/", "g
 // https://github.com/, defined before ours), so on their own ours would lose
 // for SSH-style remotes and git would reach GitHub directly. So the
 // environment's own rewrites of GitHub prefixes are dropped, and everything
-// else it sets is kept, in order.
-func gitEnv(env []string, proxy string) []string {
+// else it sets is kept, in order. The extra settings follow ours.
+func gitEnv(env []string, proxy string, extra ...[2]string) []string {
 	get := map[string]string{}
 	var out []string
 	for _, kv := range env {
@@ -214,6 +220,9 @@ func gitEnv(env []string, proxy string) []string {
 	}
 	for _, prefix := range githubURLPrefixes {
 		add("url."+proxy+".insteadOf", prefix)
+	}
+	for _, kv := range extra {
+		add(kv[0], kv[1])
 	}
 	return append(out, fmt.Sprintf("GIT_CONFIG_COUNT=%d", n))
 }

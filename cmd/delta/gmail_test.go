@@ -21,44 +21,31 @@ type fakeGmail struct {
 	saved     gmailLogin // the login it saved
 }
 
-// gmailFixture starts a command center serving a Gmail login, Google's
+// gmailFixture starts a command center taking a Gmail login, Google's
 // token endpoint and a Gmail API that knows only the account's profile.
 func gmailFixture(t *testing.T) *fakeGmail {
 	f := &fakeGmail{}
 	cc := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/gmail-login" || r.Header.Get("Authorization") != "Bearer delta_test" {
+		if r.Method != http.MethodPut || r.URL.Path != "/gmail-login" || r.Header.Get("Authorization") != "Bearer delta_test" {
 			http.NotFound(w, r)
 			return
 		}
-		if r.Method == http.MethodPut {
-			f.mu.Lock()
-			json.NewDecoder(r.Body).Decode(&f.saved)
-			f.mu.Unlock()
-			w.Write([]byte(`{"email":"me@gmail.com"}`))
-			return
-		}
-		json.NewEncoder(w).Encode(gmailLogin{ClientID: "cid", ClientSecret: "csecret", RefreshToken: "rtok", Email: "me@gmail.com"})
+		f.mu.Lock()
+		json.NewDecoder(r.Body).Decode(&f.saved)
+		f.mu.Unlock()
+		w.Write([]byte(`{"email":"me@gmail.com"}`))
 	}))
 	token := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		r.ParseForm()
-		if r.Form.Get("grant_type") == "authorization_code" {
-			f.mu.Lock()
-			f.exchanged = r.Form
-			f.mu.Unlock()
-			if r.Form.Get("code") != "the-code" || r.Form.Get("code_verifier") == "" {
-				w.WriteHeader(400)
-				w.Write([]byte(`{"error":"invalid_grant"}`))
-				return
-			}
-			w.Write([]byte(`{"access_token":"atok","refresh_token":"new-rtok","scope":"` + gmailScope + `"}`))
-			return
-		}
-		if r.Form.Get("refresh_token") != "rtok" || r.Form.Get("client_secret") != "csecret" {
+		f.mu.Lock()
+		f.exchanged = r.Form
+		f.mu.Unlock()
+		if r.Form.Get("grant_type") != "authorization_code" || r.Form.Get("code") != "the-code" || r.Form.Get("code_verifier") == "" {
 			w.WriteHeader(400)
 			w.Write([]byte(`{"error":"invalid_grant"}`))
 			return
 		}
-		w.Write([]byte(`{"access_token":"atok","expires_in":3599}`))
+		w.Write([]byte(`{"access_token":"atok","refresh_token":"new-rtok","scope":"` + gmailScope + `"}`))
 	}))
 	api := httptest.NewServer(http.HandlerFunc(f.serve))
 	t.Cleanup(func() { cc.Close(); token.Close(); api.Close() })

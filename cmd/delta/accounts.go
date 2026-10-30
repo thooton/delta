@@ -3,8 +3,6 @@ package main
 import (
 	"bufio"
 	"bytes"
-	"crypto/sha256"
-	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -107,7 +105,7 @@ func runAccounts(args []string) error {
 		if len(args) != 1 {
 			return errors.New("usage: delta accounts finish <code>")
 		}
-		return accountsFinish(args[0])
+		return finishLogin(args[0])
 	case "add":
 		if len(args) != 1 {
 			return errors.New("usage: delta accounts add <credentials-file|->")
@@ -123,9 +121,9 @@ func runAccounts(args []string) error {
 	}
 }
 
-func fetchAccounts(c config) ([]cloudAccount, error) {
+func fetchAccounts() ([]cloudAccount, error) {
 	var accounts []cloudAccount
-	return accounts, callJSON(c, http.MethodGet, "/cloud-accounts", nil, &accounts)
+	return accounts, callJSON(http.MethodGet, "/cloud-accounts", nil, &accounts)
 }
 
 type usageWindow struct {
@@ -172,11 +170,7 @@ func (c *cloudCredits) String() string {
 }
 
 func listAccounts() error {
-	c, err := loadConfig()
-	if err != nil {
-		return err
-	}
-	accounts, err := fetchAccounts(c)
+	accounts, err := fetchAccounts()
 	if err != nil {
 		return err
 	}
@@ -196,7 +190,7 @@ func listAccounts() error {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			usages[i].err = callJSON(c, http.MethodGet, "/cloud-accounts/"+url.PathEscape(a.ID)+"/usage", nil, &usages[i])
+			usages[i].err = callJSON(http.MethodGet, "/cloud-accounts/"+url.PathEscape(a.ID)+"/usage", nil, &usages[i])
 		}()
 	}
 	wg.Wait()
@@ -227,9 +221,9 @@ type cloudLogin struct {
 	ExpiresAt    int64  `json:"expires_at,omitempty"`
 }
 
-func saveLogin(c config, l cloudLogin) error {
+func saveLogin(l cloudLogin) error {
 	var a cloudAccount
-	if err := callJSON(c, http.MethodPost, "/cloud-accounts", l, &a); err != nil {
+	if err := callJSON(http.MethodPost, "/cloud-accounts", l, &a); err != nil {
 		return err
 	}
 	plan := ""
@@ -249,19 +243,18 @@ func pendingPath() (string, error) {
 }
 
 func accountsLogin() error {
-	c, err := loadConfig()
-	if err != nil {
+	if _, err := loadConfig(); err != nil {
 		return err
 	}
-	verifier, state := randomString(32), randomString(32)
-	sum := sha256.Sum256([]byte(verifier))
+	verifier, challenge := pkce(32)
+	state := randomString(32)
 	q := url.Values{}
 	q.Set("code", "true")
 	q.Set("client_id", accountsClientID)
 	q.Set("response_type", "code")
 	q.Set("redirect_uri", accountsRedirectURL)
 	q.Set("scope", accountsScopes)
-	q.Set("code_challenge", base64.RawURLEncoding.EncodeToString(sum[:]))
+	q.Set("code_challenge", challenge)
 	q.Set("code_challenge_method", "S256")
 	q.Set("state", state)
 
@@ -269,11 +262,8 @@ func accountsLogin() error {
 	if err != nil {
 		return err
 	}
-	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
-		return err
-	}
 	pending, _ := json.Marshal(map[string]string{"verifier": verifier, "state": state})
-	if err := os.WriteFile(path, pending, 0o600); err != nil {
+	if err := writePrivate(path, pending); err != nil {
 		return err
 	}
 	fmt.Printf("Open this address in a browser and sign in with the account to add:\n\n  %s?%s\n\n", accountsAuthorizeURL, q.Encode())
@@ -290,20 +280,15 @@ func accountsLogin() error {
 		fmt.Println(later)
 		return nil
 	}
-	return finishLogin(c, line)
-}
-
-func accountsFinish(code string) error {
-	c, err := loadConfig()
-	if err != nil {
-		return err
-	}
-	return finishLogin(c, code)
+	return finishLogin(line)
 }
 
 // finishLogin trades the code the sign-in page showed for a login and hands
 // it to the command center. The page shows "<code>#<state>".
-func finishLogin(c config, pasted string) error {
+func finishLogin(pasted string) error {
+	if _, err := loadConfig(); err != nil {
+		return err
+	}
 	path, err := pendingPath()
 	if err != nil {
 		return err
@@ -354,7 +339,7 @@ func finishLogin(c config, pasted string) error {
 		return errors.New("the login server sent no refresh token")
 	}
 	os.Remove(path)
-	return saveLogin(c, cloudLogin{
+	return saveLogin(cloudLogin{
 		AccessToken:  t.AccessToken,
 		RefreshToken: t.RefreshToken,
 		ExpiresAt:    time.Now().Add(time.Duration(t.ExpiresIn * float64(time.Second))).UnixMilli(),
@@ -362,11 +347,11 @@ func finishLogin(c config, pasted string) error {
 }
 
 func accountsAdd(source string) error {
-	c, err := loadConfig()
-	if err != nil {
+	if _, err := loadConfig(); err != nil {
 		return err
 	}
 	var data []byte
+	var err error
 	if source == "-" {
 		data, err = io.ReadAll(io.LimitReader(os.Stdin, 1<<20))
 	} else {
@@ -379,7 +364,7 @@ func accountsAdd(source string) error {
 	if err != nil {
 		return err
 	}
-	return saveLogin(c, l)
+	return saveLogin(l)
 }
 
 // parseLogin reads a login from any of the shapes it is found in: Claude
@@ -434,11 +419,7 @@ func parseLogin(data []byte) (cloudLogin, error) {
 }
 
 func accountsRemove(which string) error {
-	c, err := loadConfig()
-	if err != nil {
-		return err
-	}
-	accounts, err := fetchAccounts(c)
+	accounts, err := fetchAccounts()
 	if err != nil {
 		return err
 	}
@@ -454,7 +435,7 @@ func accountsRemove(which string) error {
 	if match == nil {
 		return fmt.Errorf("no account %q (see `delta accounts`)", which)
 	}
-	if _, err := do(c, http.MethodDelete, "/cloud-accounts/"+url.PathEscape(match.ID), nil); err != nil {
+	if _, err := do(http.MethodDelete, "/cloud-accounts/"+url.PathEscape(match.ID), nil); err != nil {
 		return err
 	}
 	fmt.Printf("Removed %s.\n", match.Email)

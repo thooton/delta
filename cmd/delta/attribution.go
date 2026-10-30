@@ -1,7 +1,6 @@
 package main
 
 import (
-	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -126,22 +125,4 @@ func cloneConfig(args []string, hooks string) []string {
 		return append(out, args[i+1:]...)
 	}
 	return args
-}
-
-// hooksEnv appends core.hooksPath to the GIT_CONFIG_* pairs in env, which
-// gitEnv has already numbered.
-func hooksEnv(env []string, hooks string) []string {
-	n := 0
-	out := env[:0:0]
-	for _, kv := range env {
-		if v, ok := strings.CutPrefix(kv, "GIT_CONFIG_COUNT="); ok {
-			fmt.Sscan(v, &n)
-			continue
-		}
-		out = append(out, kv)
-	}
-	return append(out,
-		fmt.Sprintf("GIT_CONFIG_KEY_%d=core.hooksPath", n),
-		fmt.Sprintf("GIT_CONFIG_VALUE_%d=%s", n, hooks),
-		fmt.Sprintf("GIT_CONFIG_COUNT=%d", n+1))
 }

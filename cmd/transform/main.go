@@ -119,16 +119,11 @@ var client = &http.Client{Timeout: 5 * time.Minute}
 // call makes a request with the job's key and returns the body of a 2xx
 // response, or the command center's error.
 func call(k, method, path string, body []byte) ([]byte, error) {
-	return callAs(k, method, path, "", body)
+	return callWith(client, k, method, path, "", body)
 }
 
-// callAs is call with the body's Content-Type.
-func callAs(k, method, path, contentType string, body []byte) ([]byte, error) {
-	return callWith(client, k, method, path, contentType, body)
-}
-
-// callWith is callAs through c, for a request that may take longer than
-// client allows.
+// callWith is call through c, for a request that may take longer than
+// client allows, with the body's Content-Type.
 func callWith(c *http.Client, k, method, path, contentType string, body []byte) ([]byte, error) {
 	base, err := server()
 	if err != nil {
@@ -152,13 +147,19 @@ func callWith(c *http.Client, k, method, path, contentType string, body []byte) 
 		return nil, err
 	}
 	if resp.StatusCode/100 != 2 {
-		var e struct{ Error string }
-		if json.Unmarshal(data, &e) == nil && e.Error != "" {
-			return nil, errors.New(e.Error)
-		}
-		return nil, fmt.Errorf("the command center answered HTTP %d", resp.StatusCode)
+		return nil, serverError(resp.StatusCode, data)
 	}
 	return data, nil
+}
+
+// serverError is the error for a response that isn't a success: the command
+// center's own, or its status.
+func serverError(status int, data []byte) error {
+	var e struct{ Error string }
+	if json.Unmarshal(data, &e) == nil && e.Error != "" {
+		return errors.New(e.Error)
+	}
+	return fmt.Errorf("the command center answered HTTP %d", status)
 }
 
 func do(method, path string, body []byte) ([]byte, error) {
@@ -172,7 +173,6 @@ func do(method, path string, body []byte) ([]byte, error) {
 type job struct {
 	Name    string   `json:"name"`
 	Type    string   `json:"type"`
-	Pages   int      `json:"pages"`
 	Formats []string `json:"formats"`
 }
 
@@ -232,7 +232,7 @@ func start(k string) error {
 	if len(j.Formats) > 0 {
 		fmt.Printf("The user asked for: %s. Make exactly these (FORMATS in `transform help`).\n", formatsInWords(j.Formats))
 	}
-	if err := save(".", false); err != nil {
+	if err := save(k, j, ".", false); err != nil {
 		return err
 	}
 	fmt.Println("Next: run `transform help` and read all of it, then read the document.")
@@ -269,21 +269,21 @@ func get(args []string) error {
 	if len(pos) == 1 {
 		dir = pos[0]
 	}
-	return save(dir, original)
-}
-
-// save writes the document into dir as it looks on the tablet, or as it was
-// uploaded.
-func save(dir string, original bool) error {
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return err
-	}
 	k, err := key()
 	if err != nil {
 		return err
 	}
 	j, err := jobInfo(k)
 	if err != nil {
+		return err
+	}
+	return save(k, j, dir, original)
+}
+
+// save writes the document into dir as it looks on the tablet, or as it was
+// uploaded.
+func save(k string, j job, dir string, original bool) error {
+	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return err
 	}
 	data, err := call(k, http.MethodGet, "/transform/document", nil)
@@ -434,7 +434,7 @@ func submit(args []string) error {
 		}
 	}
 	form.Close()
-	resp, err := callAs(k, http.MethodPost, "/transform/submit?name="+url.QueryEscape(name), form.FormDataContentType(), body.Bytes())
+	resp, err := callWith(client, k, http.MethodPost, "/transform/submit?name="+url.QueryEscape(name), form.FormDataContentType(), body.Bytes())
 	if err != nil {
 		return err
 	}
