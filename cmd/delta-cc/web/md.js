@@ -144,7 +144,7 @@ const Markdown = (() => {
         html += '<blockquote>' + render(body.join('\n')) + '</blockquote>';
         continue;
       }
-      if (line.includes('|') && i + 1 < lines.length && TABLE_RULE.test(lines[i + 1]) && lines[i + 1].includes('-')) {
+      if (line.includes('|') && i + 1 < lines.length && TABLE_RULE.test(lines[i + 1])) {
         [m, i] = table(lines, i);
         html += m;
         continue;
@@ -164,5 +164,5 @@ const Markdown = (() => {
     return html;
   }
 
-  return { render, inline, esc };
+  return { render };
 })();

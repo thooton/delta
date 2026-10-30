@@ -1,5 +1,5 @@
-// Delta in a browser: the chats, Files, Tablet and Accounts, laid out like
-// the Codex app. It is served by the command center and
+// Delta in a browser: the chats, Files, Tablet, QA and Accounts, laid out
+// like the Codex app. It is served by the command center and
 // talks to it on the same origin, with the token it asks for at sign-in.
 //
 // Two kinds of session. Regular ones (●) are cloud sessions
@@ -52,7 +52,6 @@
   // ---------------------------------------------------------------------
 
   const $ = (s) => document.querySelector(s);
-  const esc = Markdown.esc;
   const sleep = (ms, signal) => new Promise((resolve) => {
     const t = setTimeout(resolve, ms);
     if (signal) signal.addEventListener('abort', () => { clearTimeout(t); resolve(); }, { once: true });
@@ -89,6 +88,26 @@
     return svg;
   }
 
+  /** A page's button, its words in a span; `cls` adds to its class. */
+  const button = (text, onclick, cls, title) =>
+    el('button', { type: 'button', class: 'button' + (cls ? ' ' + cls : ''), title, onclick }, el('span', {}, text));
+
+  /** A row on a page: an icon, a name over a line about it (`opts.title`, `opts.small` its classes, `opts.extra` under it), and buttons. */
+  function row(iconName, name, about, actions, opts = {}) {
+    return el('div', { class: 'row' },
+      el('span', { class: 'icon' }, icon(iconName)),
+      el('span', { class: 'label' }, name instanceof Node ? name : el('b', { title: opts.title }, name),
+        el('small', { class: opts.small }, about), opts.extra),
+      el('span', { class: 'actions' }, actions));
+  }
+
+  /** Shows only `text` in a page's box. */
+  function empty(box, text) {
+    box.replaceChildren(el('div', { class: 'empty' }, text));
+    return box;
+  }
+  const loading = (box) => { if (!box.childNodes.length) empty(box, 'Loading…'); };
+
   const uuid = () => (crypto.randomUUID ? crypto.randomUUID()
     : '10000000-1000-4000-8000-100000000000'.replace(/[018]/g, (c) => (c ^ (crypto.getRandomValues(new Uint8Array(1))[0] & (15 >> (c / 4)))).toString(16)));
 
@@ -117,6 +136,8 @@
     if (d.toDateString() === new Date().toDateString()) return time;
     return d.toLocaleDateString([], { weekday: 'short', month: 'short', day: 'numeric' }) + ', ' + time;
   }
+  /** `when` of an ISO time, or seconds or milliseconds. */
+  const dated = (v) => when(instant(v));
 
   function size(n) {
     if (n < 1024) return n + ' B';
@@ -138,6 +159,9 @@
   const sessionId = (id) => id && id.startsWith('cse_') ? 'session_' + id.slice('cse_'.length) : id;
   const validId = (id) => typeof id === 'string' && /^session_[A-Za-z0-9_-]{1,120}$/.test(id);
   const isBackup = (id) => id.startsWith('session_delta_');
+  const kindOf = (c) => c.backup ? 'backup' : 'cloud';
+  /** A tool's name as the transcript tells tools apart. */
+  const toolKey = (name) => name.replace(/^mcp__/, '').toLowerCase();
 
   let toastTimer = 0;
   function toast(text) {
@@ -167,11 +191,16 @@
     constructor(status, message) { super(message); this.status = status; }
   }
 
-  function problem(data, text, status) {
-    if (data && typeof data.error === 'string') return data.error;
-    if (data && data.error && data.error.message) return rebrand(data.error.message);
-    if (status === 429) return 'Too many requests; try again shortly.';
-    return text && text.length < 200 && !/^\s*</.test(text) ? text.trim() : 'HTTP ' + status;
+  const parse = (text) => { try { return text ? JSON.parse(text) : null; } catch (e) { return null; } };
+
+  /** The error a failed response stands for, from its status and body. */
+  function failure(status, text) {
+    const data = parse(text);
+    return new HttpError(status,
+      data && typeof data.error === 'string' ? data.error
+        : data && data.error && data.error.message ? rebrand(data.error.message)
+          : status === 429 ? 'Too many requests; try again shortly.'
+            : text && text.length < 200 && !/^\s*</.test(text) ? text.trim() : 'HTTP ' + status);
   }
 
   async function api(path, opts = {}) {
@@ -188,9 +217,8 @@
     }
     if (opts.raw) return resp;
     const text = await resp.text();
-    let data = null;
-    try { data = text ? JSON.parse(text) : null; } catch (e) { data = null; }
-    if (!resp.ok) throw new HttpError(resp.status, problem(data, text, resp.status));
+    if (!resp.ok) throw failure(resp.status, text);
+    const data = parse(text);
     return data !== null ? data : text;
   }
 
@@ -294,6 +322,9 @@
     attachments: [],
     busy: false, // a message or a new session is on its way
   };
+
+  /** The chat as the sidebar lists it, if it does. */
+  const findChat = (id) => state.chats.find((c) => c.id === id);
 
   function limits() {
     try { return JSON.parse(stored('delta.limits') || '{}'); } catch (e) { return {}; }
@@ -499,8 +530,8 @@
         chats.sort((a, b) => b.updated - a.updated);
         state.chats = chats;
         state.listed = true;
-        const open = state.view === 'chat' && state.open && chats.find((c) => c.id === state.open.id);
-        if (open) setTitle(chatTitle(open), open.backup ? 'backup' : 'cloud');
+        const open = state.view === 'chat' && state.open && findChat(state.open.id);
+        if (open) setTitle(chatTitle(open), kindOf(open));
         if (state.view === 'chat' && state.open) { if (!state.open.account && open) state.open.account = open.account; topActions(state.open); }
         state.warning = failed.length ? "Couldn't list " + failed.join(', ') + '.' : '';
       } finally {
@@ -528,7 +559,7 @@
     }
     for (const c of state.chats) {
       const active = state.view === 'chat' && state.open && state.open.id === c.id;
-      const kind = c.backup ? 'backup' : 'cloud';
+      const kind = kindOf(c);
       const status = c.status === 'running' ? el('span', { class: 'busy', title: 'Working' })
         : c.status === 'requires_action' ? el('span', { class: 'needs', title: 'Waiting for you' })
         : el('span', { class: 'when' }, ago(c.updated));
@@ -577,9 +608,14 @@
 
   function chatMenu(c, anchor) {
     anchor.closest('.chat') && anchor.closest('.chat').classList.add('menu-open');
-    floatingMenu(anchor, [c.backup
-      ? { label: 'Delete', danger: true, run: () => removeChat(c) }
-      : { label: 'Archive', run: () => removeChat(c) }]);
+    floatingMenu(anchor, [removeItem(c)]);
+  }
+
+  /** The menu item that deletes a backup chat or archives a regular one; `suffix` follows the word. */
+  function removeItem(c, suffix = '') {
+    return c.backup
+      ? { label: 'Delete' + suffix, danger: true, run: () => removeChat(c) }
+      : { label: 'Archive' + suffix, run: () => removeChat(c) };
   }
 
   async function removeChat(c) {
@@ -612,9 +648,11 @@
   // A session's conversation, from its stream
   // ---------------------------------------------------------------------
 
-  function textOf(content) {
+  /** A message's words; with `result`, a tool result's, a picture in it as [picture]. */
+  function textOf(content, result) {
     if (typeof content === 'string') return content;
     if (!Array.isArray(content)) return '';
+    if (result) return content.map((b) => b && b.type === 'text' ? b.text : b && b.type === 'image' ? '[picture]' : '').filter(Boolean).join('\n');
     return content.filter((b) => b && b.type === 'text' && typeof b.text === 'string').map((b) => b.text).join('\n\n');
   }
 
@@ -644,12 +682,6 @@
       (one ? 'The user sent you this file' : 'The user sent you these files') + '. ' +
       (one ? 'It is' : 'They are') + ' on the command center; fetch ' + (one ? 'it' : 'each one') +
       ' with `delta pull <name>`:\n' + names.map((n) => '- ' + n + '\n').join('') + FILES_CLOSE;
-  }
-
-  function resultText(content) {
-    if (typeof content === 'string') return content;
-    if (!Array.isArray(content)) return '';
-    return content.map((b) => b && b.type === 'text' ? b.text : b && b.type === 'image' ? '[picture]' : '').filter(Boolean).join('\n');
   }
 
   class Transcript {
@@ -724,7 +756,7 @@
           if (!b || b.type !== 'tool_result') continue;
           const call = this.tools.get(b.tool_use_id);
           if (!call) continue;
-          call.result = resultText(b.content);
+          call.result = textOf(b.content, true);
           call.error = !!b.is_error;
           call.dirty = true;
           changed = true;
@@ -991,12 +1023,7 @@
           const resp = chat.backup
             ? await api('/agent-sessions/' + chat.id + '/events' + query, { headers, raw: true, signal: abort.signal })
             : await cloud(chat.account, '/v1/code/sessions/' + cse(chat.id) + '/events/stream' + query, { headers, raw: true, signal: abort.signal });
-          if (!resp.ok) {
-            const text = await resp.text();
-            let data = null;
-            try { data = JSON.parse(text); } catch (e) { /* not JSON */ }
-            throw new HttpError(resp.status, problem(data, text, resp.status));
-          }
+          if (!resp.ok) throw failure(resp.status, await resp.text());
           chat.connected = true;
           chat.trouble = '';
           delay = 1000;
@@ -1025,7 +1052,7 @@
 
   let frame = 0;
   function changed(chat) {
-    const listed = state.chats.find((c) => c.id === chat.id);
+    const listed = findChat(chat.id);
     if (listed) {
       const status = chat.t.pending ? 'requires_action' : chat.t.working ? 'running' : 'idle';
       if (listed.status !== status) { listed.status = status; scheduleChats(); }
@@ -1063,7 +1090,7 @@
   function describe(name, input) {
     const n = name.replace(/^mcp__/, '');
     const path = input.file_path || input.notebook_path || input.path;
-    switch (n.toLowerCase()) {
+    switch (toolKey(name)) {
       case 'bash': return { verb: 'Ran', target: input.command, code: true };
       case 'read': return { verb: 'Read', target: shortPath(path) };
       case 'write': return { verb: 'Wrote', target: shortPath(path), add: lineCount(input.content) };
@@ -1101,7 +1128,7 @@
   }
 
   function toolBody(call) {
-    const n = call.name.replace(/^mcp__/, '').toLowerCase();
+    const n = toolKey(call.name);
     const input = call.input;
     const body = el('div', { class: 'body' });
     if (n === 'bash') {
@@ -1149,8 +1176,7 @@
         return d;
       }
       case 'tool': {
-        const lower = e.name.replace(/^mcp__/, '').toLowerCase();
-        if (lower === 'todowrite' && Array.isArray(e.input.todos)) {
+        if (toolKey(e.name) === 'todowrite' && Array.isArray(e.input.todos)) {
           return el('div', { class: 'tool' }, el('div', {}, 'Updated the plan'),
             el('ul', { class: 'todos' }, e.input.todos.map((t) => el('li', { class: t.status || '' }, t.content || t.activeForm || ''))));
         }
@@ -1449,22 +1475,17 @@
       const id = uuid();
       if (move) {
         await moveChat(chat, typed, message, id, jpegs, images, names, target);
-        input.value = '';
-        state.attachments = [];
-        renderAttachments();
-        autosize();
+        clearComposer();
       } else if (chat) {
         chat.t.sent(id, typed, images, names);
-        input.value = '';
-        state.attachments = [];
-        renderAttachments();
-        autosize();
+        // Cleared before it goes, so a failure can put the words back.
+        clearComposer();
         renderChat();
         toBottom();
         try {
           if (chat.backup) await api('/agent-sessions/' + chat.id + '/messages', { method: 'POST', json: { uuid: id, text: message, images: jpegs } });
           else await postEvents(chat, [modeRequest(), userEvent(id, message, jpegs, cse(chat.id))]);
-          const listed = state.chats.find((c) => c.id === chat.id);
+          const listed = findChat(chat.id);
           if (listed) { listed.updated = Date.now(); listed.status = 'running'; state.chats.sort((a, b) => b.updated - a.updated); renderChats(); }
         } catch (e) {
           chat.t.idle();
@@ -1475,10 +1496,7 @@
         }
       } else {
         await create(typed, message, id, jpegs, images, names);
-        input.value = '';
-        state.attachments = [];
-        renderAttachments();
-        autosize();
+        clearComposer();
       }
     } catch (e) {
       toast(e.message);
@@ -1544,8 +1562,7 @@
   /** Carries `chat` to a new session on `target`, or the best other account (see carryText). */
   async function moveChat(chat, typed, message, id, jpegs, images, names, target) {
     if (chat.t.limitedUntil > Date.now()) noteLimit(chat.account, chat.t.limitedUntil);
-    const listed = state.chats.find((c) => c.id === chat.id);
-    const title = chatTitle(listed || chat);
+    const title = chatTitle(findChat(chat.id) || chat);
     chat.moving = true;
     renderComposer();
     try {
@@ -1572,9 +1589,16 @@
     t.style.height = Math.min(t.scrollHeight, 240) + 'px';
   }
 
+  function clearComposer() {
+    $('#input').value = '';
+    state.attachments = [];
+    renderAttachments();
+    autosize();
+  }
+
   function renderComposer() {
     const chat = state.view === 'chat' ? state.open : null;
-    const kind = chat ? (chat.backup ? 'backup' : 'cloud') : state.kind;
+    const kind = chat ? kindOf(chat) : state.kind;
     const btn = $('#kind-btn');
     btn.replaceChildren(el('span', { class: 'mark' }, MARK[kind]), el('span', {}, KIND_NAME[kind]));
     btn.disabled = !!chat;
@@ -1652,7 +1676,7 @@
       { label: 'Auto', sub: (best ? 'Now ' + accountName(best.id) : 'No account has room now') + ': the first with cloud credits left, or else with room',
         checked: !chosen, run: () => pick(null) },
       ...state.accounts.map((a) => ({
-        label: accountName(a.id) + (a.plan ? ' · ' + planName(a.plan) : ''), sub: standing(a.id),
+        label: accountLabel(a), sub: standing(a.id),
         checked: chosen === a.id, disabled: !usable(a.id), run: () => pick(a.id),
       })),
     ], { up: true, left: true });
@@ -1669,7 +1693,7 @@
       ...state.accounts.map((a) => a.id === chat.account
         ? { label: accountName(a.id), sub: 'This chat runs here now', checked: true, disabled: true, run: () => {} }
         : {
-          label: accountName(a.id) + (a.plan ? ' · ' + planName(a.plan) : ''),
+          label: accountLabel(a),
           sub: standing(a.id) + (best && best.id === a.id ? ' · best' : ''),
           disabled: !usable(a.id), run: () => confirmMove(chat, a.id),
         }),
@@ -1688,13 +1712,13 @@
   // Views
   // ---------------------------------------------------------------------
 
+  // The pages, by their address (#/files), with what fills each.
+  const PAGES = new Map([['files', loadFiles], ['tablet', loadTablet], ['qa', loadQA], ['accounts', loadUsage]]);
+
   function show(view) {
     state.view = view;
     $('#view-chat').hidden = !(view === 'chat' || view === 'new');
-    $('#view-files').hidden = view !== 'files';
-    $('#view-tablet').hidden = view !== 'tablet';
-    $('#view-accounts').hidden = view !== 'accounts';
-    $('#view-qa').hidden = view !== 'qa';
+    for (const page of PAGES.keys()) $('#view-' + page).hidden = view !== page;
     document.querySelectorAll('.nav-item[data-view]').forEach((a) => a.classList.toggle('active', a.dataset.view === view));
     $('#app').classList.remove('drawer');
     closeMenus();
@@ -1724,10 +1748,7 @@
     const more = el('button', { type: 'button', class: 'icon-btn ghost', title: 'More' }, icon('more'));
     more.addEventListener('click', (e) => {
       e.stopPropagation();
-      const listed = state.chats.find((c) => c.id === chat.id) || chat;
-      floatingMenu(more, [chat.backup
-        ? { label: 'Delete chat', danger: true, run: () => removeChat(listed) }
-        : { label: 'Archive chat', run: () => removeChat(listed) }]);
+      floatingMenu(more, [removeItem(findChat(chat.id) || chat, ' chat')]);
     });
     box.append(more);
   }
@@ -1745,36 +1766,16 @@
       return;
     }
     leaveChat();
-    if (hash === 'files') {
-      show('files');
-      setTitle('');
-      topActions(null);
-      loadFiles();
-    } else if (hash === 'tablet') {
-      show('tablet');
-      setTitle('');
-      topActions(null);
-      loadTablet();
-    } else if (hash === 'qa') {
-      show('qa');
-      setTitle('');
-      topActions(null);
-      loadQA();
-    } else if (hash === 'accounts') {
-      show('accounts');
-      setTitle('');
-      topActions(null);
-      loadUsage();
-    } else {
-      show('new');
-      setTitle('');
-      topActions(null);
-      $('#hero').hidden = false;
-      renderChat();
-      renderComposer();
-      refreshAccounts();
-      $('#input').focus();
-    }
+    const page = PAGES.has(hash) ? hash : 'new';
+    show(page);
+    setTitle('');
+    topActions(null);
+    if (page !== 'new') { PAGES.get(page)(); return; }
+    $('#hero').hidden = false;
+    renderChat();
+    renderComposer();
+    refreshAccounts();
+    $('#input').focus();
   }
 
   async function openChat(id) {
@@ -1783,10 +1784,10 @@
     leaveChat();
     let chat = state.sessions.get(id);
     if (!chat) {
-      let listed = state.chats.find((c) => c.id === id);
+      let listed = findChat(id);
       if (!listed && !isBackup(id)) {
         if (!state.listed || state.listing) await listChats().catch(() => {});
-        listed = state.chats.find((c) => c.id === id);
+        listed = findChat(id);
       }
       if (!listed && !isBackup(id)) {
         toast("That chat isn't on any of your accounts.");
@@ -1801,8 +1802,7 @@
     state.last = id;
     show('chat');
     $('#hero').hidden = true;
-    const listed = state.chats.find((c) => c.id === id);
-    setTitle(chatTitle(listed || chat), chat.backup ? 'backup' : 'cloud');
+    setTitle(chatTitle(findChat(id) || chat), kindOf(chat));
     topActions(chat);
     $('#transcript').replaceChildren();
     renderChat();
@@ -1812,31 +1812,54 @@
   }
 
   // ---------------------------------------------------------------------
+  // Pages
+  // ---------------------------------------------------------------------
+
+  // Each page's timer, which loads it again while it is on screen.
+  const polls = {};
+  /** Stops the page's timer, and with `ms` loads it again in that long if it is still on screen. */
+  function poll(view, load, ms) {
+    clearTimeout(polls[view]);
+    if (ms) polls[view] = setTimeout(() => { if (state.view === view) load(); }, ms);
+  }
+
+  // act makes a request for a button, toasts what came of it (done when it
+  // worked, if anything; the error, after failed, when it didn't) and then
+  // shows the page again with after.
+  async function act(path, opts, after, done = '', failed = '') {
+    try {
+      await api(path, opts);
+      if (done) toast(done);
+    } catch (e) {
+      toast(failed + e.message);
+    }
+    after();
+  }
+
+  const chatButton = (session) => button('Open chat', () => { location.hash = '#/s/' + session; }, '', 'See what the agent is doing');
+  const jobBar = (percent) => el('span', { class: 'job-bar' }, el('span', { style: 'width:' + percent + '%' }));
+
+  // ---------------------------------------------------------------------
   // Files
   // ---------------------------------------------------------------------
 
   async function loadFiles() {
     const box = $('#files');
-    if (!box.childNodes.length) box.append(el('div', { class: 'empty' }, 'Loading…'));
+    loading(box);
     let files;
     try {
       files = await api('/files');
     } catch (e) {
-      box.replaceChildren(el('div', { class: 'empty' }, "Couldn't list the files: " + e.message));
+      empty(box, "Couldn't list the files: " + e.message);
       return;
     }
     if (state.view !== 'files') return;
-    if (!files.length) {
-      box.replaceChildren(el('div', { class: 'empty' }, 'No files yet. What agents push shows up here.'));
-      return;
-    }
-    box.replaceChildren(...files.map((f) => el('div', { class: 'row' },
-      el('span', { class: 'icon' }, icon('file')),
-      el('span', { class: 'label' }, el('b', { title: f.name }, f.name), el('small', {}, size(f.size) + ' · ' + when(instant(f.modified)))),
-      el('span', { class: 'actions' },
-        el('button', { type: 'button', class: 'button', title: 'Attach to your next message', onclick: () => sendToAgent(f.name) }, el('span', {}, 'Send to agent')),
-        el('button', { type: 'button', class: 'button', onclick: () => download(f.name) }, el('span', {}, 'Download')),
-        el('button', { type: 'button', class: 'button danger', onclick: () => deleteFile(f.name) }, el('span', {}, 'Delete'))))));
+    if (!files.length) { empty(box, 'No files yet. What agents push shows up here.'); return; }
+    box.replaceChildren(...files.map((f) => row('file', f.name, size(f.size) + ' · ' + dated(f.modified), [
+      button('Send to agent', () => sendToAgent(f.name), '', 'Attach to your next message'),
+      button('Download', () => download(f.name)),
+      button('Delete', () => deleteFile(f.name), 'danger'),
+    ], { title: f.name })));
   }
 
   function sendToAgent(name) {
@@ -1890,291 +1913,57 @@
   }
 
   // ---------------------------------------------------------------------
-  // Tablet: transform jobs on the reMarkable's documents
+  // Tablet: the reMarkable's documents, their transform jobs, and pairing
+  // Flashcards
   // ---------------------------------------------------------------------
 
   const DOC_KIND = { pdf: 'PDF', epub: 'EPUB', notebook: 'Notebook' };
   const JOB_STATUS = { running: 'Working on it…', done: 'Done', failed: 'Failed' };
-  let jobsTimer = 0;
+
+  /** The names of the folders an item is in, innermost first, and whether they are in the trash. */
+  function folders(it, byId) {
+    const path = [];
+    for (let p = it.parent, n = 0; p && n < 50; n++) {
+      if (p === 'trash') return { path, trash: true };
+      const f = byId.get(p);
+      if (!f) break;
+      path.push(f.name);
+      p = f.parent;
+    }
+    return { path, trash: false };
+  }
 
   async function loadTablet() {
-    clearTimeout(jobsTimer);
+    poll('tablet');
     loadDevices();
     const box = $('#tablet');
-    if (!box.childNodes.length) box.append(el('div', { class: 'empty' }, 'Loading…'));
+    loading(box);
     let items, jobs;
     try {
       [items, jobs] = await Promise.all([api('/remarkable'), api('/transforms')]);
     } catch (e) {
-      box.replaceChildren(el('div', { class: 'empty' }, "Couldn't read the tablet: " + e.message));
+      empty(box, "Couldn't read the tablet: " + e.message);
       return;
     }
     if (state.view !== 'tablet') return;
     renderJobs(jobs);
-    if (jobs.some((j) => j.status === 'running')) jobsTimer = setTimeout(() => { if (state.view === 'tablet') loadTablet(); }, 5000);
+    const busy = new Set(jobs.filter((j) => j.status === 'running').map((j) => j.document));
+    if (busy.size) poll('tablet', loadTablet, 5000);
 
     const byId = new Map(items.map((it) => [it.id, it]));
-    const where = (it) => {
-      const path = [];
-      for (let p = it.parent, n = 0; p && n < 50; n++) {
-        const f = byId.get(p);
-        if (!f) break;
-        path.unshift(f.name);
-        p = f.parent;
-      }
-      return path.join(' / ');
-    };
-    const docs = items.filter((it) => it.type !== 'folder' && it.parent !== 'trash' && !inTrash(it, byId))
+    const docs = items.filter((it) => it.type !== 'folder' && !folders(it, byId).trash)
       .sort((a, b) => instant(b.modified) - instant(a.modified));
-    if (!docs.length) {
-      box.replaceChildren(el('div', { class: 'empty' }, 'Nothing on the tablet yet.'));
-      return;
-    }
-    const busy = new Set(jobs.filter((j) => j.status === 'running').map((j) => j.document));
+    if (!docs.length) { empty(box, 'Nothing on the tablet yet.'); return; }
     box.replaceChildren(...docs.map((it) => {
-      const folder = where(it);
       const facts = [DOC_KIND[it.type] || it.type];
       if (it.pages) facts.push(it.pages + (it.pages === 1 ? ' page' : ' pages'));
+      const folder = folders(it, byId).path.reverse().join(' / ');
       if (folder) facts.push(folder);
-      if (it.modified) facts.push(when(instant(it.modified)));
-      const button = el('button', { type: 'button', class: 'button', onclick: () => transform(it, button) }, el('span', {}, busy.has(it.id) ? 'Transforming…' : 'Transform'));
-      button.disabled = busy.has(it.id);
-      return el('div', { class: 'row' },
-        el('span', { class: 'icon' }, icon('file')),
-        el('span', { class: 'label' }, el('b', { title: it.name }, it.name), el('small', {}, facts.join(' · '))),
-        el('span', { class: 'actions' }, button));
+      if (it.modified) facts.push(dated(it.modified));
+      const start = button(busy.has(it.id) ? 'Transforming…' : 'Transform', () => transform(it, start));
+      start.disabled = busy.has(it.id);
+      return row('file', it.name, facts.join(' · '), start, { title: it.name });
     }));
-  }
-
-  // ---------------------------------------------------------------------
-  // QA: the nightly runs, the nightly report, findings and controls (see qa.go)
-  // ---------------------------------------------------------------------
-
-  const QA_STATUS = { open: 'Open', fixed: 'Fixed', passed: 'For you', declined: 'Declined', grown: 'Grown', reverted: 'Taken out' };
-  const QA_APP_STATUS = { waiting: 'Waiting', running: 'Working', done: 'Done', skipped: 'Skipped' };
-  const QA_ROLE = { spec: 'writing its spec', explore: 'exploring', fix: 'fixing', refactor: 'refactoring' };
-  const qaOpen = new Set(); // apps whose findings are shown
-  let qaTimer = 0;
-  let qaRunning = null;
-
-  const appLabel = (id) => { const d = id.split('/')[1] || id; return d.charAt(0).toUpperCase() + d.slice(1); };
-
-  async function loadQA() {
-    clearTimeout(qaTimer);
-    let o;
-    try {
-      o = await api('/qa');
-    } catch (e) {
-      $('#qa-apps').replaceChildren(el('div', { class: 'empty' }, "Couldn't read QA: " + e.message));
-      return;
-    }
-    if (state.view !== 'qa') return;
-    qaRunning = o.running;
-    renderQASchedule(o);
-    renderQALatest(o);
-    renderQAApps(o);
-    if (o.running) qaTimer = setTimeout(() => { if (state.view === 'qa') loadQA(); }, 10000);
-  }
-
-  function renderQASchedule(o) {
-    const s = o.settings;
-    const on = el('input', { type: 'checkbox', checked: s.enabled, onchange: () => qaSettings({ enabled: on.checked }) });
-    const hour = el('select', { onchange: () => qaSettings({ hour: Number(hour.value) }) },
-      Array.from({ length: 24 }, (_, h) => el('option', { value: h, selected: h === s.hour },
-        new Date(2000, 0, 1, h).toLocaleTimeString([], { hour: 'numeric' }))));
-    const parts = [el('label', {}, on, 'Every day at'), hour, el('span', { class: 'note' }, s.time_zone)];
-    if (!o.devices) parts.push(el('span', { class: 'note' }, 'Phone apps have no emulators yet: have an agent run delta qa setup.'));
-    $('#qa-schedule').replaceChildren(...parts);
-    const run = $('#qa-run');
-    run.replaceChildren(el('span', {}, o.running ? 'Cancel run' : 'Run all now'));
-    run.classList.toggle('primary', !o.running);
-    run.classList.toggle('danger', !!o.running);
-  }
-
-  function renderQALatest(o) {
-    const box = $('#qa-latest');
-    const r = o.running || (o.runs || [])[0];
-    $('#qa-run-head').hidden = !r;
-    $('#qa-run-head').textContent = o.running ? 'Run in progress' : 'Nightly report';
-    if (!r) { box.replaceChildren(); return; }
-    if (!o.running) {
-      const meta = (r.trigger === 'schedule' ? 'Scheduled run' : 'Run') + ' · ' + when(instant(r.created)) + (r.status === 'cancelled' ? ' · cancelled' : '');
-      box.replaceChildren(el('div', { class: 'qa-summary' }, el('span', { class: 'meta' }, meta), r.summary || r.error || ''));
-      return;
-    }
-    const apps = r.apps || [];
-    const done = apps.filter((a) => a.status === 'done' || a.status === 'skipped').length;
-    const stage = r.stage === 'refactor' ? 'Refactoring the repositories' : done + ' of ' + apps.length + ' apps through';
-    const pct = r.stage === 'refactor' ? 100 : Math.round(100 * done / Math.max(1, apps.length));
-    const rows = [];
-    for (const j of r.jobs || []) {
-      if (j.status !== 'running') continue;
-      const what = (j.app ? appLabel(j.app) : j.repo) + ': ' + (QA_ROLE[j.role] || j.role);
-      const actions = el('span', { class: 'actions' });
-      if (j.session) actions.append(el('button', { type: 'button', class: 'button', title: 'See what the agent is doing', onclick: () => { location.hash = '#/s/' + j.session; } }, el('span', {}, 'Open chat')));
-      rows.push(el('div', { class: 'row' }, el('span', { class: 'icon' }, icon('refresh')),
-        el('span', { class: 'label' }, el('b', {}, what), el('small', {}, 'Since ' + when(instant(j.created)))), actions));
-    }
-    box.replaceChildren(
-      el('div', { class: 'qa-summary' },
-        el('span', { class: 'meta' }, (r.trigger === 'schedule' ? 'Scheduled run' : 'Run') + ' going since ' + when(instant(r.created))),
-        stage, el('span', { class: 'job-bar' }, el('span', { style: 'width:' + pct + '%' }))),
-      rows.length ? el('div', { class: 'rows qa-progress' }, rows) : '');
-  }
-
-  function renderQAApps(o) {
-    const running = new Map(((o.running && o.running.apps) || []).map((a) => [a.app, a]));
-    const rows = [];
-    for (const a of o.apps) {
-      const facts = [];
-      if (!a.spec) facts.push('No spec yet');
-      if (a.open) facts.push(a.open + ' open');
-      if (a.passed) facts.push(a.passed + ' for you');
-      if (a.grown) facts.push(a.grown + ' grown, awaiting your verdict');
-      const now = running.get(a.id);
-      if (now) facts.push(QA_APP_STATUS[now.status] + (now.why ? ': ' + now.why : ''));
-      else if (a.explored) facts.push('Checked ' + when(instant(a.explored)));
-      const grow = el('button', { type: 'button', class: 'button', title: a.grow ? 'QA may grow features in this app: stop it' : 'Let QA propose and build new features in this app',
-        onclick: () => qaGrow(a, !a.grow) }, el('span', {}, a.grow ? 'Growing' : 'Grow'));
-      const run = el('button', { type: 'button', class: 'button', title: 'Run QA on this app now', onclick: () => qaStart([a.id]) }, el('span', {}, 'Run'));
-      run.disabled = !!o.running;
-      const open = qaOpen.has(a.id);
-      const more = el('button', { type: 'button', class: 'button', onclick: () => { open ? qaOpen.delete(a.id) : qaOpen.add(a.id); loadQA(); } }, el('span', {}, open ? 'Hide' : 'Findings'));
-      const name = el('b', {}, appLabel(a.id), el('span', { class: 'tag' }, a.phone ? 'phone' : 'tablet'));
-      if (a.grow) name.append(el('span', { class: 'tag on' }, 'grows'));
-      rows.push(el('div', { class: 'row' },
-        el('span', { class: 'icon' }, icon(a.phone ? 'file' : 'tablet')),
-        el('span', { class: 'label' }, name, el('small', {}, facts.join(' · ') || 'Nothing found yet')),
-        el('span', { class: 'actions' }, grow, run, more)));
-      if (open) {
-        const box = el('div', { class: 'qa-findings' }, el('div', { class: 'empty' }, 'Loading…'));
-        rows.push(box);
-        qaFindings(a.id, box);
-      }
-    }
-    $('#qa-apps').replaceChildren(...rows);
-  }
-
-  async function qaFindings(app, box) {
-    let list;
-    try {
-      list = await api('/qa/findings?limit=100&app=' + encodeURIComponent(app));
-    } catch (e) {
-      box.replaceChildren(el('div', { class: 'empty' }, e.message));
-      return;
-    }
-    if (!list.length) { box.replaceChildren(el('div', { class: 'empty' }, 'No findings yet.')); return; }
-    box.replaceChildren(...list.map((f) => {
-      const d = el('details', { class: 'qa-finding' },
-        el('summary', {}, el('span', { class: 'st ' + f.status }, QA_STATUS[f.status] || f.status),
-          el('span', {}, f.title, el('span', { class: 'tag' }, f.kind))));
-      if (f.reason) d.append(el('div', { class: 'why' }, f.reason + (f.commit ? ' (' + f.commit.slice(0, 7) + ')' : '')));
-      if (f.status === 'grown') {
-        const pick = (v) => qaVerdict(f, f.verdict === v ? '' : v);
-        d.append(el('div', { class: 'verdict' },
-          el('button', { type: 'button', class: 'button' + (f.verdict === 'up' ? ' chosen' : ''), onclick: () => pick('up') }, el('span', {}, '👍 Keep')),
-          el('button', { type: 'button', class: 'button' + (f.verdict === 'down' ? ' chosen' : ''), onclick: () => pick('down') }, el('span', {}, '👎 Take out'))));
-      }
-      d.addEventListener('toggle', () => {
-        if (!d.open || d.dataset.filled) return;
-        d.dataset.filled = '1';
-        d.append(el('pre', {}, f.detail));
-        if (f.shots && f.shots.length) {
-          const shots = el('div', { class: 'shots' });
-          d.append(shots);
-          for (const name of f.shots) {
-            api('/qa/shots/' + encodeURIComponent(name), { raw: true }).then((r) => r.blob())
-              .then((b) => shots.append(el('img', { src: URL.createObjectURL(b), alt: 'Screenshot' }))).catch(() => {});
-          }
-        }
-      });
-      return d;
-    }));
-  }
-
-  // act makes a request for a button, toasts what came of it (done when it
-  // worked, if anything; the error, after failed, when it didn't) and then
-  // shows the page again with after.
-  async function act(path, opts, after, done = '', failed = '') {
-    try {
-      await api(path, opts);
-      if (done) toast(done);
-    } catch (e) {
-      toast(failed + e.message);
-    }
-    after();
-  }
-
-  function qaSettings(change) {
-    act('/qa/settings', { method: 'PUT', json: { ...change, server: SERVER } }, loadQA);
-  }
-
-  function qaGrow(a, grow) {
-    act('/qa/apps/' + a.id.split('/').map(encodeURIComponent).join('/'), { method: 'PUT', json: { grow } }, loadQA,
-      grow ? appLabel(a.id) + ' may grow now' : appLabel(a.id) + ' no longer grows');
-  }
-
-  function qaStart(apps) {
-    act('/qa/runs', { method: 'POST', json: { apps, server: SERVER } }, loadQA,
-      apps.length ? 'QA started on ' + apps.map(appLabel).join(', ') : 'QA started on every app', "Couldn't start: ");
-  }
-
-  function qaVerdict(f, verdict) {
-    act('/qa/findings/' + encodeURIComponent(f.id) + '/verdict', { method: 'PUT', json: { verdict } }, loadQA,
-      verdict === 'down' ? 'The next run takes it out' : '');
-  }
-
-  async function qaRunButton() {
-    if (!qaRunning) return qaStart([]);
-    if (!confirm('Cancel the QA run? Its agents stop where they are.')) return;
-    act('/qa/runs/' + encodeURIComponent(qaRunning.id), { method: 'DELETE' }, loadQA);
-  }
-
-  // Flashcards on the tablet and the phone pairs with a code it shows, entered here.
-  async function loadDevices() {
-    let devices;
-    try {
-      devices = await api('/flashcards/devices');
-    } catch (e) {
-      return;
-    }
-    const box = $('#devices');
-    box.hidden = !devices.length;
-    box.replaceChildren(...devices.map((d) => el('div', { class: 'row' },
-      el('span', { class: 'icon' }, icon('tablet')),
-      el('span', { class: 'label' }, el('b', {}, d.name),
-        el('small', {}, 'Paired ' + when(instant(d.added)) + (d.seen && instant(d.seen) > 0 ? ' · last synced ' + when(instant(d.seen)) : ''))),
-      el('span', { class: 'actions' }, el('button', { type: 'button', class: 'button danger', onclick: () => unpair(d) }, el('span', {}, 'Unpair'))))));
-  }
-
-  async function pair(e) {
-    e.preventDefault();
-    const input = $('#pair-code');
-    const code = input.value.trim();
-    if (!code) return;
-    try {
-      await api('/flashcards/pair/approve', { method: 'POST', json: { code } });
-      input.value = '';
-      toast('Paired. Its Flashcards is syncing.');
-    } catch (err) {
-      toast("Couldn't pair: " + err.message);
-    }
-    loadDevices();
-  }
-
-  function unpair(d) {
-    if (!confirm('Unpair “' + d.name + '”? Its Flashcards stops syncing until it is paired again.')) return;
-    act('/flashcards/devices/' + encodeURIComponent(d.id), { method: 'DELETE' }, loadDevices);
-  }
-
-  function inTrash(it, byId) {
-    for (let p = it.parent, n = 0; p && n < 50; n++) {
-      if (p === 'trash') return true;
-      const f = byId.get(p);
-      if (!f) return false;
-      p = f.parent;
-    }
-    return false;
   }
 
   function renderJobs(jobs) {
@@ -2187,24 +1976,14 @@
       if (running) detail = (j.progress || 'Starting…') + ' · ' + percent + '%';
       if (j.status === 'done') detail = '“' + j.result + '” is on the tablet';
       if (j.status === 'failed' && j.error) detail = j.error;
+      const actions = (j.files || []).map((name) =>
+        button(name.toLowerCase().endsWith('.docx') ? 'Word' : 'PDF', () => download(name), '', 'Download ' + name));
+      if (j.session && j.status !== 'done') actions.push(chatButton(j.session));
+      actions.push(button(running ? 'Cancel' : 'Remove', () => forgetJob(j), 'danger', running ? 'Stop waiting for it' : 'Remove from the list'));
       // The agent's title for the job, once it has given one, over the document it came from.
-      const label = el('span', { class: 'label' }, el('b', { title: j.title || j.name }, j.title || j.name),
-        el('small', { class: j.status === 'failed' ? 'failed' : '' }, (j.title ? 'From ' + j.name + ' · ' : '') + detail + ' · ' + when(instant(j.created))));
-      if (running) label.append(el('span', { class: 'job-bar' }, el('span', { style: 'width:' + percent + '%' })));
-      const actions = el('span', { class: 'actions' });
-      for (const name of j.files || []) {
-        actions.append(el('button', { type: 'button', class: 'button', title: 'Download ' + name, onclick: () => download(name) },
-          el('span', {}, name.toLowerCase().endsWith('.docx') ? 'Word' : 'PDF')));
-      }
-      if (j.session && j.status !== 'done') {
-        actions.append(el('button', { type: 'button', class: 'button', title: 'See what the agent is doing', onclick: () => { location.hash = '#/s/' + j.session; } }, el('span', {}, 'Open chat')));
-      }
-      actions.append(el('button', { type: 'button', class: 'button danger', title: j.status === 'running' ? 'Stop waiting for it' : 'Remove from the list', onclick: () => forgetJob(j) },
-        el('span', {}, j.status === 'running' ? 'Cancel' : 'Remove')));
-      return el('div', { class: 'row' },
-        el('span', { class: 'icon' }, icon(running ? 'refresh' : 'file')),
-        label,
-        actions);
+      return row(running ? 'refresh' : 'file', j.title || j.name,
+        (j.title ? 'From ' + j.name + ' · ' : '') + detail + ' · ' + dated(j.created), actions,
+        { title: j.title || j.name, small: j.status === 'failed' ? 'failed' : '', extra: running ? jobBar(percent) : null });
     }));
   }
 
@@ -2240,10 +2019,10 @@
     });
   }
 
-  async function transform(it, button) {
+  async function transform(it, btn) {
     const formats = await pickFormats(it.name);
     if (!formats) return;
-    button.disabled = true;
+    btn.disabled = true;
     try {
       await api('/transforms', { method: 'POST', json: { document: it.id, formats, server: SERVER } });
       toast('Started transforming ' + it.name);
@@ -2259,26 +2038,219 @@
     act('/transforms/' + encodeURIComponent(j.id), { method: 'DELETE' }, loadTablet);
   }
 
+  // Flashcards on the tablet and the phone pairs with a code it shows, entered here.
+  async function loadDevices() {
+    let devices;
+    try {
+      devices = await api('/flashcards/devices');
+    } catch (e) {
+      return;
+    }
+    const box = $('#devices');
+    box.hidden = !devices.length;
+    box.replaceChildren(...devices.map((d) => row('tablet', d.name,
+      'Paired ' + dated(d.added) + (d.seen && instant(d.seen) > 0 ? ' · last synced ' + dated(d.seen) : ''),
+      button('Unpair', () => unpair(d), 'danger'))));
+  }
+
+  async function pair(e) {
+    e.preventDefault();
+    const input = $('#pair-code');
+    const code = input.value.trim();
+    if (!code) return;
+    try {
+      await api('/flashcards/pair/approve', { method: 'POST', json: { code } });
+      input.value = '';
+      toast('Paired. Its Flashcards is syncing.');
+    } catch (err) {
+      toast("Couldn't pair: " + err.message);
+    }
+    loadDevices();
+  }
+
+  function unpair(d) {
+    if (!confirm('Unpair “' + d.name + '”? Its Flashcards stops syncing until it is paired again.')) return;
+    act('/flashcards/devices/' + encodeURIComponent(d.id), { method: 'DELETE' }, loadDevices);
+  }
+
+  // ---------------------------------------------------------------------
+  // QA: the nightly runs, the nightly report, findings and controls (see qa.go)
+  // ---------------------------------------------------------------------
+
+  const QA_STATUS = { open: 'Open', fixed: 'Fixed', passed: 'For you', declined: 'Declined', grown: 'Grown', reverted: 'Taken out' };
+  const QA_APP_STATUS = { waiting: 'Waiting', running: 'Working', done: 'Done', skipped: 'Skipped' };
+  const QA_ROLE = { spec: 'writing its spec', explore: 'exploring', fix: 'fixing', refactor: 'refactoring' };
+  const qaOpen = new Set(); // apps whose findings are shown
+  let qaRunning = null;
+
+  const appLabel = (id) => { const d = id.split('/')[1] || id; return d.charAt(0).toUpperCase() + d.slice(1); };
+
+  async function loadQA() {
+    poll('qa');
+    let o;
+    try {
+      o = await api('/qa');
+    } catch (e) {
+      empty($('#qa-apps'), "Couldn't read QA: " + e.message);
+      return;
+    }
+    if (state.view !== 'qa') return;
+    qaRunning = o.running;
+    renderQASchedule(o);
+    renderQALatest(o);
+    renderQAApps(o);
+    if (o.running) poll('qa', loadQA, 10000);
+  }
+
+  function renderQASchedule(o) {
+    const s = o.settings;
+    const on = el('input', { type: 'checkbox', checked: s.enabled, onchange: () => qaSettings({ enabled: on.checked }) });
+    const hour = el('select', { onchange: () => qaSettings({ hour: Number(hour.value) }) },
+      Array.from({ length: 24 }, (_, h) => el('option', { value: h, selected: h === s.hour },
+        new Date(2000, 0, 1, h).toLocaleTimeString([], { hour: 'numeric' }))));
+    const parts = [el('label', {}, on, 'Every day at'), hour, el('span', { class: 'note' }, s.time_zone)];
+    if (!o.devices) parts.push(el('span', { class: 'note' }, 'Phone apps have no emulators yet: have an agent run delta qa setup.'));
+    $('#qa-schedule').replaceChildren(...parts);
+    const run = $('#qa-run');
+    run.replaceChildren(el('span', {}, o.running ? 'Cancel run' : 'Run all now'));
+    run.classList.toggle('primary', !o.running);
+    run.classList.toggle('danger', !!o.running);
+  }
+
+  function renderQALatest(o) {
+    const box = $('#qa-latest');
+    const r = o.running || (o.runs || [])[0];
+    $('#qa-run-head').hidden = !r;
+    $('#qa-run-head').textContent = o.running ? 'Run in progress' : 'Nightly report';
+    if (!r) { box.replaceChildren(); return; }
+    const run = r.trigger === 'schedule' ? 'Scheduled run' : 'Run';
+    if (!o.running) {
+      const meta = run + ' · ' + dated(r.created) + (r.status === 'cancelled' ? ' · cancelled' : '');
+      box.replaceChildren(el('div', { class: 'qa-summary' }, el('span', { class: 'meta' }, meta), r.summary || r.error || ''));
+      return;
+    }
+    const apps = r.apps || [];
+    const done = apps.filter((a) => a.status === 'done' || a.status === 'skipped').length;
+    const stage = r.stage === 'refactor' ? 'Refactoring the repositories' : done + ' of ' + apps.length + ' apps through';
+    const pct = r.stage === 'refactor' ? 100 : Math.round(100 * done / Math.max(1, apps.length));
+    const rows = (r.jobs || []).filter((j) => j.status === 'running').map((j) =>
+      row('refresh', (j.app ? appLabel(j.app) : j.repo) + ': ' + (QA_ROLE[j.role] || j.role), 'Since ' + dated(j.created),
+        j.session ? chatButton(j.session) : null));
+    box.replaceChildren(
+      el('div', { class: 'qa-summary' }, el('span', { class: 'meta' }, run + ' going since ' + dated(r.created)), stage, jobBar(pct)),
+      rows.length ? el('div', { class: 'rows qa-progress' }, rows) : '');
+  }
+
+  function renderQAApps(o) {
+    const running = new Map(((o.running && o.running.apps) || []).map((a) => [a.app, a]));
+    const rows = [];
+    for (const a of o.apps) {
+      const facts = [];
+      if (!a.spec) facts.push('No spec yet');
+      if (a.open) facts.push(a.open + ' open');
+      if (a.passed) facts.push(a.passed + ' for you');
+      if (a.grown) facts.push(a.grown + ' grown, awaiting your verdict');
+      const now = running.get(a.id);
+      if (now) facts.push(QA_APP_STATUS[now.status] + (now.why ? ': ' + now.why : ''));
+      else if (a.explored) facts.push('Checked ' + dated(a.explored));
+      const grow = button(a.grow ? 'Growing' : 'Grow', () => qaGrow(a, !a.grow), '',
+        a.grow ? 'QA may grow features in this app: stop it' : 'Let QA propose and build new features in this app');
+      const run = button('Run', () => qaStart([a.id]), '', 'Run QA on this app now');
+      run.disabled = !!o.running;
+      const open = qaOpen.has(a.id);
+      const more = button(open ? 'Hide' : 'Findings', () => { open ? qaOpen.delete(a.id) : qaOpen.add(a.id); loadQA(); });
+      const name = el('b', {}, appLabel(a.id), el('span', { class: 'tag' }, a.phone ? 'phone' : 'tablet'),
+        a.grow ? el('span', { class: 'tag on' }, 'grows') : null);
+      rows.push(row(a.phone ? 'file' : 'tablet', name, facts.join(' · ') || 'Nothing found yet', [grow, run, more]));
+      if (open) {
+        const box = empty(el('div', { class: 'qa-findings' }), 'Loading…');
+        rows.push(box);
+        qaFindings(a.id, box);
+      }
+    }
+    $('#qa-apps').replaceChildren(...rows);
+  }
+
+  async function qaFindings(app, box) {
+    let list;
+    try {
+      list = await api('/qa/findings?limit=100&app=' + encodeURIComponent(app));
+    } catch (e) {
+      empty(box, e.message);
+      return;
+    }
+    if (!list.length) { empty(box, 'No findings yet.'); return; }
+    box.replaceChildren(...list.map((f) => {
+      const d = el('details', { class: 'qa-finding' },
+        el('summary', {}, el('span', { class: 'st ' + f.status }, QA_STATUS[f.status] || f.status),
+          el('span', {}, f.title, el('span', { class: 'tag' }, f.kind))));
+      if (f.reason) d.append(el('div', { class: 'why' }, f.reason + (f.commit ? ' (' + f.commit.slice(0, 7) + ')' : '')));
+      if (f.status === 'grown') {
+        const pick = (v) => qaVerdict(f, f.verdict === v ? '' : v);
+        d.append(el('div', { class: 'verdict' },
+          button('👍 Keep', () => pick('up'), f.verdict === 'up' ? 'chosen' : ''),
+          button('👎 Take out', () => pick('down'), f.verdict === 'down' ? 'chosen' : '')));
+      }
+      d.addEventListener('toggle', () => {
+        if (!d.open || d.dataset.filled) return;
+        d.dataset.filled = '1';
+        d.append(el('pre', {}, f.detail));
+        if (f.shots && f.shots.length) {
+          const shots = el('div', { class: 'shots' });
+          d.append(shots);
+          for (const name of f.shots) {
+            api('/qa/shots/' + encodeURIComponent(name), { raw: true }).then((r) => r.blob())
+              .then((b) => shots.append(el('img', { src: URL.createObjectURL(b), alt: 'Screenshot' }))).catch(() => {});
+          }
+        }
+      });
+      return d;
+    }));
+  }
+
+  function qaSettings(change) {
+    act('/qa/settings', { method: 'PUT', json: { ...change, server: SERVER } }, loadQA);
+  }
+
+  function qaGrow(a, grow) {
+    act('/qa/apps/' + a.id.split('/').map(encodeURIComponent).join('/'), { method: 'PUT', json: { grow } }, loadQA,
+      grow ? appLabel(a.id) + ' may grow now' : appLabel(a.id) + ' no longer grows');
+  }
+
+  function qaStart(apps) {
+    act('/qa/runs', { method: 'POST', json: { apps, server: SERVER } }, loadQA,
+      apps.length ? 'QA started on ' + apps.map(appLabel).join(', ') : 'QA started on every app', "Couldn't start: ");
+  }
+
+  function qaVerdict(f, verdict) {
+    act('/qa/findings/' + encodeURIComponent(f.id) + '/verdict', { method: 'PUT', json: { verdict } }, loadQA,
+      verdict === 'down' ? 'The next run takes it out' : '');
+  }
+
+  async function qaRunButton() {
+    if (!qaRunning) return qaStart([]);
+    if (!confirm('Cancel the QA run? Its agents stop where they are.')) return;
+    act('/qa/runs/' + encodeURIComponent(qaRunning.id), { method: 'DELETE' }, loadQA);
+  }
+
   // ---------------------------------------------------------------------
   // Accounts
   // ---------------------------------------------------------------------
 
   const planName = (p) => p ? p.replace(/^claude_/, '').replace(/_/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase()) : '';
+  const accountLabel = (a) => accountName(a.id) + (a.plan ? ' · ' + planName(a.plan) : '');
 
   async function loadUsage() {
     const box = $('#accounts');
-    if (!box.childNodes.length) box.append(el('div', { class: 'empty' }, 'Loading…'));
+    loading(box);
     let accounts;
     try {
       accounts = await loadAccounts();
     } catch (e) {
-      box.replaceChildren(el('div', { class: 'empty' }, "Couldn't list the accounts: " + e.message));
+      empty(box, "Couldn't list the accounts: " + e.message);
       return;
     }
-    if (!accounts.length) {
-      box.replaceChildren(el('div', { class: 'empty' }, 'No accounts yet. An agent can add one with `delta accounts login`.'));
-      return;
-    }
+    if (!accounts.length) { empty(box, 'No accounts yet. An agent can add one with `delta accounts login`.'); return; }
     const heads = new Map();
     const cards = accounts.map((a) => {
       const usage = el('div', {}, el('div', { class: 'meter-label' }, 'Loading usage…'));
@@ -2307,21 +2279,23 @@
     renderComposer();
   }
 
-  function creditMeter(c) {
-    if (!c) return el('div', { class: 'meter' }, el('div', { class: 'meter-label' }, el('b', {}, 'Cloud credits'), el('span', {}, 'None')));
-    const used = c.limit > 0 ? Math.max(0, Math.min(100, c.used / c.limit * 100)) : 100;
+  /** A line on an account's card: what it measures, how it stands, and a bar `used`% full, unless there is none. */
+  function gauge(label, text, used, full) {
     return el('div', { class: 'meter' },
-      el('div', { class: 'meter-label' }, el('b', {}, 'Cloud credits'),
-        el('span', {}, dollars(c.left) + ' of ' + dollars(c.limit) + ' left' + (c.resets ? ' · resets ' + when(c.resets) : ''))),
-      el('div', { class: 'bar' }, el('div', { class: c.left <= 0 ? 'full' : '', style: 'width:' + used + '%' })));
+      el('div', { class: 'meter-label' }, el('b', {}, label), el('span', {}, text)),
+      used === undefined ? null : el('div', { class: 'bar' }, el('div', { class: full ? 'full' : '', style: 'width:' + used + '%' })));
+  }
+
+  function creditMeter(c) {
+    if (!c) return gauge('Cloud credits', 'None');
+    const used = c.limit > 0 ? Math.max(0, Math.min(100, c.used / c.limit * 100)) : 100;
+    return gauge('Cloud credits', dollars(c.left) + ' of ' + dollars(c.limit) + ' left' + (c.resets ? ' · resets ' + when(c.resets) : ''), used, c.left <= 0);
   }
 
   function meter(label, w) {
     const used = w && typeof w.utilization === 'number' ? Math.max(0, Math.min(100, w.utilization)) : null;
     const resets = w && instant(w.resets_at);
-    return el('div', { class: 'meter' },
-      el('div', { class: 'meter-label' }, el('b', {}, label), el('span', {}, used === null ? 'No data' : Math.round(used) + '% used' + (resets ? ' · resets ' + when(resets) : ''))),
-      el('div', { class: 'bar' }, el('div', { class: used >= 100 ? 'full' : '', style: 'width:' + (used || 0) + '%' })));
+    return gauge(label, used === null ? 'No data' : Math.round(used) + '% used' + (resets ? ' · resets ' + when(resets) : ''), used || 0, used >= 100);
   }
 
   // ---------------------------------------------------------------------
@@ -2343,8 +2317,10 @@
     $('#signin-token').focus();
   }
 
+  const checkToken = (t) => fetch(url('/auth'), { headers: { Authorization: 'Bearer ' + t } });
+
   async function signIn(candidate) {
-    const resp = await fetch(url('/auth'), { headers: { Authorization: 'Bearer ' + candidate } });
+    const resp = await checkToken(candidate);
     if (resp.status === 401) throw new Error("That token isn't right.");
     if (!resp.ok) throw new Error("Couldn't reach the command center (HTTP " + resp.status + ').');
     const info = await resp.json();
@@ -2415,16 +2391,27 @@
   $('#attach').addEventListener('click', () => $('#file-input').click());
   $('#file-input').addEventListener('change', (e) => { attach(Array.from(e.target.files)); e.target.value = ''; });
 
-  function toggleKindMenu(e) {
+  // The kind of a new chat, from the composer's menu or the hero's copy of it.
+  const checkKind = (menu) => menu.querySelectorAll('[data-kind]').forEach((b) => b.classList.toggle('checked', b.dataset.kind === state.kind));
+  function pickKind(e) {
+    const b = e.target.closest('[data-kind]');
+    if (!b) return;
+    state.kind = b.dataset.kind;
+    stored('delta.kind', state.kind);
+    closeMenus();
+    renderComposer();
+    input.focus();
+  }
+  $('#kind-btn').addEventListener('click', (e) => {
     e.stopPropagation();
     if (state.view !== 'new') return;
     const menu = $('#kind-menu');
     const wasHidden = menu.hidden;
     closeMenus();
     menu.hidden = !wasHidden;
-    menu.querySelectorAll('[data-kind]').forEach((b) => b.classList.toggle('checked', b.dataset.kind === state.kind));
-  }
-  $('#kind-btn').addEventListener('click', toggleKindMenu);
+    checkKind(menu);
+  });
+  $('#kind-menu').addEventListener('click', pickKind);
   $('#account-btn').addEventListener('click', (e) => { e.stopPropagation(); accountMenu(e.currentTarget); });
   // From the hero, the same choice opens under it, as Codex's does.
   $('#hero-kind').addEventListener('click', (e) => {
@@ -2436,30 +2423,13 @@
     menu.hidden = false;
     menu.classList.remove('up');
     menu.classList.add('floating');
-    menu.querySelectorAll('[data-kind]').forEach((b) => b.classList.toggle('checked', b.dataset.kind === state.kind));
-    menu.addEventListener('click', (x) => {
-      const b = x.target.closest('[data-kind]');
-      if (!b) return;
-      state.kind = b.dataset.kind;
-      stored('delta.kind', state.kind);
-      closeMenus();
-      renderComposer();
-      input.focus();
-    });
+    checkKind(menu);
+    menu.addEventListener('click', pickKind);
     document.body.append(menu);
     const r = anchor.getBoundingClientRect();
     menu.style.position = 'fixed';
     menu.style.top = r.bottom + 6 + 'px';
     menu.style.left = Math.max(8, r.left + r.width / 2 - menu.offsetWidth / 2) + 'px';
-  });
-  $('#kind-menu').addEventListener('click', (e) => {
-    const b = e.target.closest('[data-kind]');
-    if (!b) return;
-    state.kind = b.dataset.kind;
-    stored('delta.kind', state.kind);
-    closeMenus();
-    renderComposer();
-    input.focus();
   });
   document.addEventListener('click', (e) => {
     if (!e.target.closest('.menu')) closeMenus();
@@ -2505,7 +2475,7 @@
   setInterval(() => { if (token && state.open) renderComposer(); }, 30000);
 
   if (token) {
-    fetch(url('/auth'), { headers: { Authorization: 'Bearer ' + token } }).then((r) => {
+    checkToken(token).then((r) => {
       if (r.status === 401) signOut('Your saved token no longer works. Sign in again.');
       else start();
     }).catch(() => start());
